@@ -2,7 +2,10 @@ const { buildSchema } = require("./schemaBuilder");
 const { createPlan } = require("./intentParser");
 const { executePlan } = require("./calculationEngine");
 const { answerSchemaQuestion } = require("./schemaEngine");
-const { answerGeneralQuestion } = require("./groqService");
+const {
+  answerGeneralQuestion,
+  createSchemaAwarePlan,
+} = require("./groqService");
 const { normalizeDatasets } = require("./utils");
 
 /**
@@ -45,40 +48,78 @@ async function answerQuestion(input, question) {
       console.log("Chatbot local plan:", plan);
     }
 
-    if (plan.route === "schema") {
-      return answerSchemaQuestion({
-        datasets,
-        schema,
-        plan,
-        question: cleanQuestion,
-      });
+    const executeResolvedPlan = async (resolvedPlan) => {
+      if (resolvedPlan.route === "schema") {
+        return answerSchemaQuestion({
+          datasets,
+          schema,
+          plan: resolvedPlan,
+          question: cleanQuestion,
+        });
+      }
+
+      if (resolvedPlan.route === "dataset") {
+        return executePlan({
+          datasets,
+          schema,
+          plan: resolvedPlan,
+          question: cleanQuestion,
+        });
+      }
+
+      if (resolvedPlan.route === "general") {
+        return await answerGeneralQuestion({
+          question: cleanQuestion,
+          schema,
+        });
+      }
+
+      if (resolvedPlan.route === "clarify") {
+        return {
+          success: false,
+          source: "router",
+          operation: "clarify",
+          answer:
+            resolvedPlan.question ||
+            "Please specify the worksheet, column, or calculation you want.",
+        };
+      }
+
+      return null;
+    };
+
+    // Strong local plans run immediately.
+    if (
+      ["dataset", "schema"].includes(plan.route) &&
+      (plan.confidence ?? 1) >= 0.7
+    ) {
+      return await executeResolvedPlan(plan);
     }
 
-    if (plan.route === "dataset") {
-      return executePlan({
-        datasets,
-        schema,
-        plan,
-        question: cleanQuestion,
-      });
+    // Clearly general requests do not need another planning round.
+    if (
+      plan.route === "general" &&
+      (plan.confidence ?? 0) >= 0.9
+    ) {
+      return await executeResolvedPlan(plan);
     }
 
-    if (plan.route === "general") {
-      return await answerGeneralQuestion({
-        question: cleanQuestion,
-        schema,
-      });
+    // For uncertain local plans, ask Groq to interpret only the schema and wording.
+    // Groq does not receive all rows and does not calculate any dataset answer.
+    const fallbackPlan = await createSchemaAwarePlan({
+      question: cleanQuestion,
+      schema,
+    });
+
+    if (process.env.NODE_ENV !== "production") {
+      console.log("Chatbot Groq fallback plan:", fallbackPlan);
     }
 
-    if (plan.route === "clarify") {
-      return {
-        success: false,
-        source: "router",
-        operation: "clarify",
-        answer:
-          plan.question ||
-          "Please specify the worksheet, column, or calculation you want.",
-      };
+    const fallbackResult =
+      await executeResolvedPlan(fallbackPlan);
+
+    if (fallbackResult) {
+      return fallbackResult;
     }
 
     return {
