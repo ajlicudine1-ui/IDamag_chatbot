@@ -1,7 +1,9 @@
 const express = require("express");
 const divisions = require("./divisions");
 const { loadDivisionData } = require("./googleSheetsService");
-const { answerQuestion } = require("./chatbotService");
+const {
+  answerQuestion,
+} = require("../chatbotEngine/chatbotService");
 
 const router = express.Router();
 
@@ -157,46 +159,27 @@ router.post("/chat", async (req, res) => {
       });
     }
 
-    const selectedSheetName =
-      requestedSheet || availableSheets[0];
+    const result = await answerQuestion(divisionData, question);
 
-    const sheetData =
-      divisionData[selectedSheetName];
-
-    if (!sheetData) {
-      return res.status(404).json({
-        success: false,
-        message:
-          `Worksheet "${selectedSheetName}" was not found. ` +
-          `Available worksheets: ${availableSheets.join(", ")}`,
-      });
-    }
-
-    let rows = [];
-
-    if (Array.isArray(sheetData)) {
-      rows = sheetData;
-    } else {
-      if (sheetData.error) {
-        return res.status(500).json({
-          success: false,
-          message: sheetData.error,
-        });
+    const totalRows = Object.values(divisionData).reduce(
+    (total, sheet) => {
+      if (Array.isArray(sheet)) {
+        return total + sheet.length;
       }
 
-      rows = sheetData.rows || [];
-    }
+      return total + (sheet.rows?.length || 0);
+    },
+    0
+  );
 
-    const result = answerQuestion(rows, question);
-
-    return res.json({
-      ...result,
-      division: divisionCode,
-      divisionName: divisionConfig.name,
-      worksheet: selectedSheetName,
-      question,
-      rowCount: rows.length,
-    });
+  return res.json({
+    ...result,
+    division: divisionCode,
+    divisionName: divisionConfig.name,
+    question,
+    worksheetCount: availableSheets.length,
+    totalRows,
+  });
   } catch (error) {
     console.error("Chatbot question error:", error);
 
