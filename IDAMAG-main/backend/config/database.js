@@ -1,36 +1,49 @@
-const { Sequelize } = require('sequelize');
-require('dotenv').config();
+const { Sequelize } = require("sequelize");
+const mysql2 = require("mysql2");
+require("dotenv").config();
 
 let sequelize;
 
+const commonOptions = {
+  dialect: process.env.DB_DIALECT || "mysql",
+  dialectModule: mysql2,
+  logging: false,
+  pool: {
+    max: 5,
+    min: 0,
+    acquire: 30000,
+    idle: 10000,
+  },
+};
+
 if (process.env.DATABASE_URL) {
-  // Use connection string if provided (standard for cloud platforms)
   sequelize = new Sequelize(process.env.DATABASE_URL, {
-    dialect: process.env.DB_DIALECT || 'mysql',
-    logging: false,
+    ...commonOptions,
     dialectOptions: {
-      ssl: process.env.NODE_ENV === 'production' ? {
+      ssl: {
         require: true,
-        rejectUnauthorized: false // Often required for managed DB services
-      } : false
-    }
+        rejectUnauthorized: false,
+      },
+    },
   });
 } else {
-  // Use individual parameters (local development)
   sequelize = new Sequelize(
     process.env.DB_NAME,
     process.env.DB_USER,
     process.env.DB_PASSWORD,
     {
-      host: process.env.DB_HOST || 'localhost',
-      dialect: process.env.DB_DIALECT || 'mysql',
-      logging: false,
-      dialectOptions: {
-        ssl: process.env.DB_SSL === 'true' ? {
-          require: true,
-          rejectUnauthorized: false
-        } : false
-      }
+      ...commonOptions,
+      host: process.env.DB_HOST || "localhost",
+      port: Number(process.env.DB_PORT || 3306),
+      dialectOptions:
+        process.env.DB_SSL === "true"
+          ? {
+              ssl: {
+                require: true,
+                rejectUnauthorized: false,
+              },
+            }
+          : {},
     }
   );
 }
