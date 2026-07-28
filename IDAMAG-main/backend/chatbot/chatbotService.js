@@ -106,7 +106,7 @@ function normalizeText(value) {
     .toLowerCase()
     .replace(/[’']/g, "")
     .replace(/&/g, " and ")
-    .replace(/[^\p{L}\p{N}\s()./%_-]/gu, " ")
+    .replace(/[^\w\s()./%-]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
