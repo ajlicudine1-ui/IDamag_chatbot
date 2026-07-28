@@ -627,6 +627,128 @@ function detectRequestedOutputColumns(
   };
 }
 
+
+function extractRankingRequest(
+  question,
+  schema,
+  datasetName
+) {
+  const text = normalizeText(question);
+
+  const direction =
+    /\b(bottom|lowest|smallest|least)\b/.test(text)
+      ? "asc"
+      : /\b(top|highest|largest|biggest|greatest|most)\b/.test(text)
+        ? "desc"
+        : null;
+
+  if (!direction) {
+    return null;
+  }
+
+  const limit = detectLimit(question, 10);
+
+  let labelTarget = null;
+  let metricTarget = null;
+  let aggregation = null;
+
+  // Examples:
+  // top 10 farmers by area
+  // bottom 5 municipalities by production
+  let match = text.match(
+    /\b(?:top|bottom)\s+\d{1,3}\s+(.+?)\s+(?:by|based on|according to)\s+(.+)$/
+  );
+
+  if (match) {
+    labelTarget = normalizeTarget(match[1]);
+    metricTarget = normalizeTarget(match[2]);
+  }
+
+  // Examples:
+  // top 5 farmers with the biggest area
+  // 10 farmers with highest expected yield
+  if (!match) {
+    match = text.match(
+      /\b(?:top|bottom)?\s*(?:\d{1,3})?\s*(.+?)\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+)$/
+    );
+
+    if (match) {
+      labelTarget = normalizeTarget(match[1]);
+      metricTarget = normalizeTarget(match[2]);
+    }
+  }
+
+  // Examples:
+  // highest area farmers
+  // lowest yield municipalities
+  if (!labelTarget || !metricTarget) {
+    match = text.match(
+      /\b(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+?)\s+(?:for|among)\s+(.+)$/
+    );
+
+    if (match) {
+      metricTarget = normalizeTarget(match[1]);
+      labelTarget = normalizeTarget(match[2]);
+    }
+  }
+
+  if (!labelTarget || !metricTarget) {
+    return null;
+  }
+
+  // If the metric explicitly asks for an aggregate, preserve that intent.
+  if (/\b(total|sum|combined|overall)\b/.test(metricTarget)) {
+    aggregation = "sum";
+  } else if (/\b(average|avg|mean)\b/.test(metricTarget)) {
+    aggregation = "average";
+  } else if (/\b(count|number)\b/.test(metricTarget)) {
+    aggregation = "count";
+  }
+
+  metricTarget = metricTarget
+    .replace(/\b(total|sum|combined|overall|average|avg|mean|count|number)\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const labelCandidates = rankColumns(
+    labelTarget,
+    schema,
+    datasetName
+  )
+    .filter((item) => item.type !== "number")
+    .sort((a, b) => b.score - a.score);
+
+  const metricCandidates = rankColumns(
+    metricTarget,
+    schema,
+    datasetName
+  )
+    .filter((item) => item.type === "number")
+    .sort((a, b) => b.score - a.score);
+
+  const labelColumn =
+    labelCandidates[0]?.score >= 0.75
+      ? labelCandidates[0]
+      : null;
+
+  const metricColumn =
+    metricCandidates[0]?.score >= 0.75
+      ? metricCandidates[0]
+      : null;
+
+  if (!labelColumn || !metricColumn) {
+    return null;
+  }
+
+  return {
+    labelColumn: labelColumn.name,
+    metricColumn: metricColumn.name,
+    direction,
+    limit,
+    aggregation,
+  };
+}
+
 function createLocalPlan({
   question,
   schema,
@@ -662,6 +784,58 @@ function createLocalPlan({
     Array.isArray(datasets?.[datasetName])
       ? datasets[datasetName]
       : [];
+
+  const rankingRequest = extractRankingRequest(
+    question,
+    schema,
+    datasetName
+  );
+
+  if (rankingRequest) {
+    const schemaFilters = findExplicitFilters(
+      question,
+      schema,
+      datasetName,
+      [
+        rankingRequest.labelColumn,
+        rankingRequest.metricColumn,
+      ]
+    );
+
+    const liveFilters = currentRows.length
+      ? inferValueFilters(
+          currentRows,
+          question,
+          [
+            rankingRequest.labelColumn,
+            rankingRequest.metricColumn,
+          ]
+        )
+      : [];
+
+    return {
+      route: "dataset",
+      dataset: datasetName,
+      operation: rankingRequest.aggregation
+        ? "rank_groups"
+        : "rank_rows",
+      column: rankingRequest.metricColumn,
+      labelColumn: rankingRequest.labelColumn,
+      groupBy: rankingRequest.labelColumn,
+      aggregation: rankingRequest.aggregation,
+      direction: rankingRequest.direction,
+      filters: mergeFilters(
+        schemaFilters,
+        liveFilters
+      ),
+      selectColumns: [
+        rankingRequest.labelColumn,
+        rankingRequest.metricColumn,
+      ],
+      limit: rankingRequest.limit,
+      confidence: 0.95,
+    };
+  }
 
   if (!datasetName) {
     return {
