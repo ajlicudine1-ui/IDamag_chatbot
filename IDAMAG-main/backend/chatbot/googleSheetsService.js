@@ -1,6 +1,15 @@
 const { parse } = require("csv-parse/sync");
 
 /**
+ * Adds a cache-busting query parameter so each request asks Google
+ * for the latest published CSV instead of reusing a stale cached URL.
+ */
+function withCacheBuster(csvUrl) {
+  const separator = csvUrl.includes("?") ? "&" : "?";
+  return `${csvUrl}${separator}_ts=${Date.now()}`;
+}
+
+/**
  * Downloads and converts one public Google Sheets CSV link
  * into an array of JavaScript objects.
  */
@@ -13,7 +22,17 @@ async function loadPublishedWorksheet(csvUrl) {
     throw new Error("The Google Sheets CSV URL must start with https://");
   }
 
-  const response = await fetch(csvUrl);
+  const freshUrl = withCacheBuster(csvUrl);
+
+  const response = await fetch(freshUrl, {
+    method: "GET",
+    headers: {
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+      Pragma: "no-cache",
+      Expires: "0",
+    },
+    cache: "no-store",
+  });
 
   if (!response.ok) {
     throw new Error(
@@ -23,7 +42,6 @@ async function loadPublishedWorksheet(csvUrl) {
 
   const csvText = await response.text();
 
-  // This usually means Google returned a login page or normal webpage.
   if (
     csvText.toLowerCase().includes("<!doctype html") ||
     csvText.toLowerCase().includes("<html")
@@ -61,6 +79,8 @@ async function loadPublishedWorksheet(csvUrl) {
 
 /**
  * Loads every worksheet configured for one division.
+ *
+ * Every call reloads the configured public CSVs.
  */
 async function loadDivisionData(divisionConfig) {
   if (!divisionConfig) {
@@ -81,9 +101,17 @@ async function loadDivisionData(divisionConfig) {
 
     try {
       const rows = await loadPublishedWorksheet(sheet.csvUrl);
+
+      console.log(
+        `[Google Sheets] Loaded "${sheet.name}" with ${rows.length} row(s).`
+      );
+
       divisionData[sheet.name] = rows;
     } catch (error) {
-      console.error(`Failed to load sheet "${sheet.name}":`, error.message);
+      console.error(
+        `Failed to load sheet "${sheet.name}":`,
+        error.message
+      );
 
       divisionData[sheet.name] = {
         error: error.message,
@@ -96,6 +124,7 @@ async function loadDivisionData(divisionConfig) {
 }
 
 module.exports = {
+  withCacheBuster,
   loadPublishedWorksheet,
   loadDivisionData,
 };

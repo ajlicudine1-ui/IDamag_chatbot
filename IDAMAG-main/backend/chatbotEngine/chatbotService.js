@@ -8,8 +8,8 @@ const { normalizeDatasets } = require("./utils");
 /**
  * Main chatbot entry point.
  *
- * Local JavaScript handles dataset routing, filtering, lookups, and math.
- * Groq is called only for general-language questions.
+ * Dataset questions stay local.
+ * Groq is only allowed for clearly general-language questions.
  */
 async function answerQuestion(input, question) {
   const cleanQuestion = String(question || "").trim();
