@@ -169,7 +169,8 @@ Allowed routes:
   ],
   "selectColumns": ["exact output column names"],
   "transform": "first_word|last_word|null",
-  "limit": 10
+  "limit": 10,
+  "showAll": false
 }
 
 2) Schema question:
@@ -193,6 +194,7 @@ Allowed routes:
 
 Rules:
 - Use only worksheet and column names that exist in the supplied schema.
+- Example values are only hints and are NOT exhaustive. A filter value may come directly from the user's question even if it is not present in schema examples.
 - Do not invent worksheet names or column names.
 - Do not compute any answer.
 - If the user asks for a value from a row, use lookup.
@@ -204,7 +206,11 @@ Rules:
 - "top N X by average Y" generally means rank_groups with aggregation "average".
 - "bottom/lowest/smallest" means direction "asc".
 - "top/highest/largest/biggest/most" means direction "desc".
-- "what are the X", "list X", "show all X" means list.
+- "what are the X" usually means list.
+- "list all X", "show all X", "every X", or requests that clearly ask for the complete set must set "showAll": true.
+- If the user asks for multiple fields together, use lookup and put ALL requested fields in selectColumns.
+  Example intent: "list farmers and their municipality" -> lookup with selectColumns containing the matching person/farmer column and municipality/location column, showAll true.
+- Do not collapse a multi-column request into a single-column list.
 - "how many rows/records/entries" means row_count.
 - "how many unique/distinct X" means distinct_count.
 - Grammar, translation, rewriting, explanation, and general knowledge use general.
