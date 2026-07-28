@@ -61,7 +61,6 @@ const OPERATION_WORDS = new Set([
   "median",
   "minimum",
   "min",
-  "name",
   "number",
   "of",
   "overall",
@@ -525,13 +524,30 @@ function detectRequestedOutputColumns(
   filterColumns = []
 ) {
   const text = normalizeText(question);
+
   const targetMatch = text.match(
     /^(?:what|which|who|show|give|tell me)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:of|for|from)\s+/
   );
 
-  const targetText = targetMatch?.[1]
-    ? normalizeTarget(targetMatch[1])
+  const rawTarget = targetMatch?.[1]
+    ? targetMatch[1].trim()
     : extractTargetPhrase(question);
+
+  let transform = null;
+
+  if (/\bfirst name\b/.test(text)) {
+    transform = "first_word";
+  } else if (/\blast name\b/.test(text)) {
+    transform = "last_word";
+  }
+
+  // For "first name" and "last name", match the underlying name/person
+  // column, then apply the requested word transformation.
+  const targetText = normalizeTarget(
+    rawTarget
+      .replace(/\bfirst name\b/g, "name")
+      .replace(/\blast name\b/g, "name")
+  );
 
   const candidates = rankColumns(
     targetText,
@@ -544,16 +560,35 @@ function detectRequestedOutputColumns(
     )
     .map((item) => {
       let score = item.score;
+      const normalizedColumn = normalizeText(item.name);
+      const examples = Array.isArray(item.examples)
+        ? item.examples
+        : [];
+
+      const asksForName =
+        /\b(name|person|who)\b/.test(targetText) ||
+        transform !== null;
 
       if (
-        /\b(first name|last name|name|person|who)\b/.test(
-          targetText
-        ) &&
-        /\b(name|farmer|person|respondent|beneficiary|owner|operator|employee|staff)\b/.test(
-          normalizeText(item.name)
+        asksForName &&
+        /\b(name|farmer|person|respondent|beneficiary|owner|operator|employee|staff|applicant|client|customer|student|teacher|member)\b/.test(
+          normalizedColumn
         )
       ) {
-        score += 0.6;
+        score += 1;
+      }
+
+      // Generic evidence that a text column contains full names.
+      if (
+        asksForName &&
+        item.type === "text" &&
+        examples.some((value) =>
+          /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
+            String(value).trim()
+          )
+        )
+      ) {
+        score += 0.35;
       }
 
       return {
@@ -564,21 +599,16 @@ function detectRequestedOutputColumns(
     .sort((a, b) => b.score - a.score);
 
   const selected =
-    candidates[0]?.score >= 0.75
+    candidates[0]?.score >= 0.55
       ? [candidates[0].name]
       : [];
-
-  let transform = null;
-
-  if (/\bfirst name\b/.test(text)) {
-    transform = "first_word";
-  } else if (/\blast name\b/.test(text)) {
-    transform = "last_word";
-  }
 
   return {
     selectColumns: selected,
     transform,
+    outputRequested:
+      Boolean(targetMatch?.[1]) ||
+      transform !== null,
   };
 }
 
@@ -671,6 +701,7 @@ function createLocalPlan({
         selectColumns:
           output.selectColumns,
         transform: output.transform,
+        outputRequested: output.outputRequested,
         limit: detectLimit(question),
         confidence: 0.8,
       };
@@ -760,6 +791,7 @@ function createLocalPlan({
     selectColumns:
       output.selectColumns,
     transform: output.transform,
+    outputRequested: output.outputRequested,
     limit: detectLimit(question),
     confidence: Math.min(
       1,

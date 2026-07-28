@@ -255,7 +255,18 @@ function executePlan({
         ? plan.selectColumns
             .map((item) => findColumn(rows, item))
             .filter(Boolean)
-        : getColumns(rows).slice(0, 10);
+        : plan.outputRequested
+          ? []
+          : getColumns(rows).slice(0, 10);
+
+    if (
+      plan.outputRequested &&
+      selectedColumns.length === 0
+    ) {
+      throw new Error(
+        "I found the matching record, but could not determine which field you want returned."
+      );
+    }
 
     const shown = filteredRows.slice(0, limit);
 
@@ -275,9 +286,9 @@ function executePlan({
     const singleValueAnswer =
       filteredRows.length === 1 &&
       selectedColumns.length === 1
-        ? `${selectedColumns[0]}: ${
+        ? String(
             projectedResults[0]?.[selectedColumns[0]] ?? ""
-          }`
+          )
         : null;
 
     return {
@@ -291,20 +302,31 @@ function executePlan({
       answer:
         singleValueAnswer ||
         (
-          `I found ${formatNumber(filteredRows.length)} matching ` +
-          `record(s) in ${datasetName}${filterText}.\n` +
-          projectedResults
-            .map(
-              (row, index) =>
-                `${index + 1}. ` +
-                selectedColumns
+          selectedColumns.length === 1
+            ? projectedResults
+                .map(
+                  (row, index) =>
+                    `${index + 1}. ${
+                      row?.[selectedColumns[0]] ?? ""
+                    }`
+                )
+                .join("\n")
+            : (
+                `I found ${formatNumber(filteredRows.length)} matching ` +
+                `record(s) in ${datasetName}${filterText}.\n` +
+                projectedResults
                   .map(
-                    (selected) =>
-                      `${selected}: ${row?.[selected] ?? ""}`
+                    (row, index) =>
+                      `${index + 1}. ` +
+                      selectedColumns
+                        .map(
+                          (selected) =>
+                            `${selected}: ${row?.[selected] ?? ""}`
+                        )
+                        .join(", ")
                   )
-                  .join(", ")
-            )
-            .join("\n")
+                  .join("\n")
+              )
         ),
     };
   }
