@@ -1,5 +1,9 @@
 import React, { useState } from "react";
 
+const API_URL =
+  import.meta.env.VITE_API_URL ||
+  "http://localhost:5000/api";
+
 const Chatbot = () => {
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([
@@ -29,7 +33,7 @@ const Chatbot = () => {
     setLoading(true);
 
     try {
-      const response = await fetch("/api/chatbot/chat", {
+      const response = await fetch(`${API_URL}/chatbot/chat`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -45,7 +49,9 @@ const Chatbot = () => {
 
       if (!response.ok) {
         throw new Error(
-          data.message || "Unable to get an answer."
+          data.message ||
+            data.error ||
+            "Unable to get an answer."
         );
       }
 
@@ -91,8 +97,7 @@ const Chatbot = () => {
           </h1>
 
           <p className="mt-1 text-sm text-green-100">
-            Ask questions about the Field Operations Division
-            data.
+            Ask questions about the Field Operations Division data.
           </p>
         </div>
 
