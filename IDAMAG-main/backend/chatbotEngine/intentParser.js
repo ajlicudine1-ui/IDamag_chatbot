@@ -635,12 +635,21 @@ function extractRankingRequest(
 ) {
   const text = normalizeText(question);
 
+  const hasDescendingMetric =
+    /\b(highest|largest|biggest|greatest|most)\b/.test(text);
+  const hasAscendingMetric =
+    /\b(lowest|smallest|least)\b/.test(text);
+
   const direction =
-    /\b(bottom|lowest|smallest|least)\b/.test(text)
+    hasAscendingMetric
       ? "asc"
-      : /\b(top|highest|largest|biggest|greatest|most)\b/.test(text)
+      : hasDescendingMetric
         ? "desc"
-        : null;
+        : /\b(bottom|last)\b/.test(text)
+          ? "asc"
+          : /\b(top|first)\b/.test(text)
+            ? "desc"
+            : null;
 
   if (!direction) {
     return null;
@@ -656,7 +665,7 @@ function extractRankingRequest(
   // top 10 farmers by area
   // bottom 5 municipalities by production
   let match = text.match(
-    /\b(?:top|bottom)\s+\d{1,3}\s+(.+?)\s+(?:by|based on|according to)\s+(.+)$/
+    /\b(?:top|bottom|first|last)\s+\d{1,3}\s+(.+?)\s+(?:by|based on|according to)\s+(.+)$/
   );
 
   if (match) {
@@ -669,7 +678,7 @@ function extractRankingRequest(
   // 10 farmers with highest expected yield
   if (!match) {
     match = text.match(
-      /\b(?:top|bottom)?\s*(?:\d{1,3})?\s*(.+?)\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+)$/
+      /\b(?:top|bottom|first|last)?\s*(?:\d{1,3})?\s*(.+?)\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+)$/
     );
 
     if (match) {

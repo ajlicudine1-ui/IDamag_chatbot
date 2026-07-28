@@ -84,12 +84,41 @@ function resolveFilters(rows, filters = []) {
  * This means newly added values such as a new ID can be found
  * immediately as long as loadDivisionData() fetched the latest sheet.
  */
+
+function removeControlNumbers(question) {
+  let text = normalizeText(question);
+
+  // Ranking/list limits: "top 3", "bottom 5", "first 10", "last 4"
+  text = text.replace(
+    /\b(top|bottom|first|last)\s+\d{1,3}\b/g,
+    "$1"
+  );
+
+  // Natural ranking wording:
+  // "3 farmers with the highest yield"
+  // "5 municipalities having the lowest production"
+  text = text.replace(
+    /\b\d{1,3}\s+(?=[\p{L}][\p{L}\s._%()/+-]*\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\b)/gu,
+    ""
+  );
+
+  // "show 5 farmers by area", "give me 10 crops based on yield"
+  text = text.replace(
+    /\b(?:show|list|give|display|return|get)\s+\d{1,3}\s+(?=[\p{L}])/g,
+    (match) => match.replace(/\d{1,3}/, "")
+  );
+
+  return text
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function inferValueFilters(
   rows,
   question,
   excludedColumns = []
 ) {
-  const normalizedQuestion = normalizeText(question);
+  const normalizedQuestion = removeControlNumbers(question);
   const excluded = new Set(
     excludedColumns.filter(Boolean)
   );
@@ -209,6 +238,7 @@ function applyFilters(rows, filters = []) {
 
 module.exports = {
   compare,
+  removeControlNumbers,
   resolveFilters,
   inferValueFilters,
   mergeFilters,
