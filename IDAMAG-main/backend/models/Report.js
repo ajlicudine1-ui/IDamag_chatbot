@@ -1,37 +1,43 @@
 const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
-const Report = sequelize.define('Report', {
-  id: {
-    type: DataTypes.INTEGER,
-    primaryKey: true,
-    autoIncrement: true,
-  },
-  title: {
-    type: DataTypes.STRING,
-    allowNull: false,
-  },
-  description: {
-    type: DataTypes.TEXT,
-    allowNull: true,
-  },
-  reportId: {
-    type: DataTypes.STRING,
-    allowNull: false,
-    validate: {
-      notEmpty: true,
+const Report = sequelize.define(
+  'Report',
+  {
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true,
+    },
+    title: {
+      type: DataTypes.STRING,
+      allowNull: false,
+    },
+    description: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
+    reportId: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      validate: {
+        notEmpty: true,
+      },
+    },
+    divisionId: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      references: {
+        model: 'divisions', // Match Railway table name
+        key: 'id',
+      },
     },
   },
-  divisionId: {
-    type: DataTypes.INTEGER,
-    allowNull: false,
-    references: {
-      model: 'Divisions',
-      key: 'id',
-    },
-  },
-}, {
-  timestamps: true,
-});
+  {
+    tableName: 'reports',
+    freezeTableName: true,
+    timestamps: true,
+  }
+);
 
 module.exports = Report;
