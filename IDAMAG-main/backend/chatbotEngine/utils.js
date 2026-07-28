@@ -49,7 +49,10 @@ function formatNumber(value) {
 function normalizeRows(value) {
   if (Array.isArray(value)) {
     return value.filter(
-      (row) => row && typeof row === "object" && !Array.isArray(row)
+      (row) =>
+        row &&
+        typeof row === "object" &&
+        !Array.isArray(row)
     );
   }
 
@@ -59,7 +62,10 @@ function normalizeRows(value) {
     Array.isArray(value.rows)
   ) {
     return value.rows.filter(
-      (row) => row && typeof row === "object" && !Array.isArray(row)
+      (row) =>
+        row &&
+        typeof row === "object" &&
+        !Array.isArray(row)
     );
   }
 
@@ -143,32 +149,29 @@ function normalizeMatchTokens(value) {
 }
 
 function similarity(left, right) {
-  const a = normalizeText(left);
-  const b = normalizeText(right);
+  const aTokens = normalizeMatchTokens(left);
+  const bTokens = normalizeMatchTokens(right);
 
-  if (!a || !b) return 0;
-  if (a === b) return 1;
+  if (!aTokens.length || !bTokens.length) {
+    return 0;
+  }
 
-  const aTokens = normalizeMatchTokens(a);
-  const bTokens = normalizeMatchTokens(b);
-  const normalizedA = aTokens.join(" ");
-  const normalizedB = bTokens.join(" ");
+  const a = aTokens.join(" ");
+  const b = bTokens.join(" ");
 
-  if (normalizedA === normalizedB) {
+  if (a === b) {
     return 1;
   }
 
-  if (
-    normalizedA.includes(normalizedB) ||
-    normalizedB.includes(normalizedA)
-  ) {
-    return Math.min(normalizedA.length, normalizedB.length) /
-      Math.max(normalizedA.length, normalizedB.length);
+  if (a.includes(b) || b.includes(a)) {
+    return (
+      Math.min(a.length, b.length) /
+      Math.max(a.length, b.length)
+    );
   }
 
   const aSet = new Set(aTokens);
   const bSet = new Set(bTokens);
-
   let matched = 0;
 
   for (const token of aSet) {
@@ -178,33 +181,15 @@ function similarity(left, right) {
   }
 
   const union = new Set([...aSet, ...bSet]).size;
-  const tokenScore = union ? matched / union : 0;
 
-  // Reward a strong single-token match such as
-  // "municipalities" -> "Municipality".
-  let bestTokenScore = 0;
-
-  for (const leftToken of aTokens) {
-    for (const rightToken of bTokens) {
-      if (leftToken === rightToken) {
-        bestTokenScore = 1;
-      } else if (
-        leftToken.includes(rightToken) ||
-        rightToken.includes(leftToken)
-      ) {
-        bestTokenScore = Math.max(
-          bestTokenScore,
-          Math.min(leftToken.length, rightToken.length) /
-            Math.max(leftToken.length, rightToken.length)
-        );
-      }
-    }
-  }
-
-  return Math.max(tokenScore, bestTokenScore * 0.9);
+  return union ? matched / union : 0;
 }
 
-function findBestMatch(requested, available, minimum = 0.4) {
+function findBestMatch(
+  requested,
+  available,
+  minimum = 0.4
+) {
   if (!requested) return null;
 
   const ranked = available

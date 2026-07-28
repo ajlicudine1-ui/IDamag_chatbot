@@ -1,6 +1,7 @@
 const {
   normalizeText,
   similarity,
+  singularizeToken,
 } = require("./utils");
 
 const GENERAL_PATTERNS = [
@@ -30,8 +31,99 @@ const SCHEMA_PATTERNS = {
   ],
 };
 
+const TARGET_PREFIX_PATTERNS = [
+  /^(?:please\s+)?(?:list|show|display|enumerate|name)\s+(?:all\s+)?(?:the\s+)?(.+)$/,
+  /^(?:what|which)\s+(?:are|is)\s+(?:all\s+)?(?:the\s+)?(.+?)\??$/,
+  /^(?:give|tell)\s+me\s+(?:all\s+)?(?:the\s+)?(.+)$/,
+  /^(?:how many|number of|count of)\s+(?:the\s+)?(.+)$/,
+  /^(?:what is|what are)\s+(?:the\s+)?(?:total|sum|average|avg|mean|median|highest|lowest|maximum|minimum)\s+(?:of\s+)?(.+)$/,
+];
+
+const OPERATION_WORDS = new Set([
+  "all",
+  "average",
+  "avg",
+  "bottom",
+  "combined",
+  "count",
+  "different",
+  "display",
+  "distinct",
+  "enumerate",
+  "give",
+  "highest",
+  "in",
+  "list",
+  "lowest",
+  "max",
+  "maximum",
+  "mean",
+  "median",
+  "minimum",
+  "min",
+  "name",
+  "number",
+  "of",
+  "overall",
+  "show",
+  "sum",
+  "tell",
+  "the",
+  "top",
+  "total",
+  "unique",
+  "value",
+  "values",
+]);
+
 function matchesAny(text, patterns) {
   return patterns.some((pattern) => pattern.test(text));
+}
+
+function normalizeTarget(value) {
+  return normalizeText(value)
+    .replace(/[?]+$/g, "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(singularizeToken)
+    .filter((token) => !OPERATION_WORDS.has(token))
+    .join(" ")
+    .trim();
+}
+
+function extractTargetPhrase(question) {
+  const text = normalizeText(question);
+
+  for (const pattern of TARGET_PREFIX_PATTERNS) {
+    const match = text.match(pattern);
+
+    if (match?.[1]) {
+      return normalizeTarget(match[1]);
+    }
+  }
+
+  const byMatch = text.match(
+    /\b(?:by|per|for each|grouped by)\s+(.+)$/
+  );
+
+  if (byMatch?.[1]) {
+    return normalizeTarget(
+      text.replace(byMatch[0], "")
+    );
+  }
+
+  return normalizeTarget(text);
+}
+
+function extractGroupingPhrase(question) {
+  const text = normalizeText(question);
+  const match = text.match(
+    /\b(?:by|per|for each|grouped by)\s+(.+)$/
+  );
+
+  return match?.[1]
+    ? normalizeTarget(match[1])
+    : null;
 }
 
 function getAllColumns(schema) {
@@ -51,24 +143,78 @@ function getAllColumns(schema) {
   return columns;
 }
 
+function scoreColumnTarget(target, columnName) {
+  const cleanTarget = normalizeTarget(target);
+  const cleanColumn = normalizeTarget(columnName);
+
+  if (!cleanTarget || !cleanColumn) {
+    return 0;
+  }
+
+  if (cleanTarget === cleanColumn) {
+    return 2;
+  }
+
+  let score = similarity(cleanTarget, cleanColumn);
+
+  if (
+    cleanTarget.includes(cleanColumn) ||
+    cleanColumn.includes(cleanTarget)
+  ) {
+    score += 0.8;
+  }
+
+  const targetTokens = new Set(
+    cleanTarget.split(/\s+/)
+  );
+  const columnTokens = new Set(
+    cleanColumn.split(/\s+/)
+  );
+
+  let matched = 0;
+
+  for (const token of columnTokens) {
+    if (targetTokens.has(token)) {
+      matched += 1;
+    }
+  }
+
+  if (columnTokens.size) {
+    score += matched / columnTokens.size;
+  }
+
+  return score;
+}
+
 function rankDatasets(question, schema) {
   return schema
     .map((dataset) => {
-      let score = similarity(question, dataset.name);
+      let score = similarity(
+        question,
+        dataset.name
+      );
 
       for (const column of dataset.columns || []) {
         score = Math.max(
           score,
-          similarity(question, column.name) * 0.9
+          scoreColumnTarget(
+            extractTargetPhrase(question),
+            column.name
+          ) * 0.9
         );
 
         for (const example of column.examples || []) {
+          const normalizedExample =
+            normalizeText(example);
+
           if (
-            normalizeText(example).length >= 2 &&
-            normalizeText(question).includes(normalizeText(example))
+            normalizedExample.length >= 2 &&
+            normalizeText(question).includes(
+              normalizedExample
+            )
           ) {
             score += Math.min(
-              normalizeText(example).length / 50,
+              normalizedExample.length / 50,
               0.45
             );
           }
@@ -83,30 +229,26 @@ function rankDatasets(question, schema) {
     .sort((a, b) => b.score - a.score);
 }
 
-function rankColumns(question, schema, datasetName = null) {
+function rankColumns(
+  target,
+  schema,
+  datasetName = null
+) {
+  const cleanTarget = extractTargetPhrase(target);
+
   return getAllColumns(schema)
     .filter(
       (item) =>
-        !datasetName || item.dataset === datasetName
+        !datasetName ||
+        item.dataset === datasetName
     )
-    .map((item) => {
-      let score = similarity(question, item.name);
-
-      const normalizedName = normalizeText(item.name);
-      const normalizedQuestion = normalizeText(question);
-
-      if (
-        normalizedName &&
-        normalizedQuestion.includes(normalizedName)
-      ) {
-        score += 0.8;
-      }
-
-      return {
-        ...item,
-        score,
-      };
-    })
+    .map((item) => ({
+      ...item,
+      score: scoreColumnTarget(
+        cleanTarget,
+        item.name
+      ),
+    }))
     .sort((a, b) => b.score - a.score);
 }
 
@@ -114,8 +256,12 @@ function detectLimit(question, fallback = 10) {
   const text = normalizeText(question);
 
   const match =
-    text.match(/\b(?:top|bottom|first|last)\s+(\d{1,3})\b/) ||
-    text.match(/\b(\d{1,3})\s+(?:highest|lowest|largest|smallest)\b/);
+    text.match(
+      /\b(?:top|bottom|first|last)\s+(\d{1,3})\b/
+    ) ||
+    text.match(
+      /\b(\d{1,3})\s+(?:highest|lowest|largest|smallest)\b/
+    );
 
   if (!match) return fallback;
 
@@ -126,51 +272,74 @@ function detectLimit(question, fallback = 10) {
     : fallback;
 }
 
-function detectOperation(question, selectedColumn) {
+function detectOperation(
+  question,
+  selectedColumn
+) {
   const text = normalizeText(question);
   const isNumeric =
     selectedColumn?.type === "number";
 
   const hasGrouping =
-    /\b(by|per|for each|grouped by|each)\b/.test(text);
+    /\b(by|per|for each|grouped by|each)\b/.test(
+      text
+    );
 
   let baseOperation = null;
 
   if (/\b(median|middle value)\b/.test(text)) {
     baseOperation = "median";
-  } else if (/\b(average|avg|mean)\b/.test(text)) {
+  } else if (
+    /\b(average|avg|mean)\b/.test(text)
+  ) {
     baseOperation = "average";
   } else if (
-    /\b(top|highest|maximum|max|largest|greatest|most)\b/.test(text)
+    /\b(top|highest|maximum|max|largest|greatest|most)\b/.test(
+      text
+    )
   ) {
     baseOperation = "maximum";
   } else if (
-    /\b(bottom|lowest|minimum|min|smallest|least)\b/.test(text)
+    /\b(bottom|lowest|minimum|min|smallest|least)\b/.test(
+      text
+    )
   ) {
     baseOperation = "minimum";
   } else if (
-    /\b(sum|total|combined|overall|altogether|in all)\b/.test(text)
+    /\b(sum|total|combined|overall|altogether|in all)\b/.test(
+      text
+    )
   ) {
     baseOperation = "sum";
   } else if (
-    /\b(unique|distinct|different)\b/.test(text) &&
+    /\b(unique|distinct|different)\b/.test(
+      text
+    ) &&
     /\b(how many|count|number)\b/.test(text)
   ) {
     baseOperation = "distinct_count";
   } else if (
-    /\b(list|show all|display all|enumerate|what are the|which are the)\b/.test(text)
+    /\b(list|show all|display all|enumerate|what are|which are|give me all|name all)\b/.test(
+      text
+    )
   ) {
     baseOperation = "list";
   } else if (
-    /\b(show|find|lookup|search|get|retrieve)\b/.test(text)
+    /\b(show|find|lookup|search|get|retrieve)\b/.test(
+      text
+    )
   ) {
     baseOperation = "lookup";
   } else if (
-    /\b(how many rows|number of rows|row count|records|entries)\b/.test(text)
+    /\b(how many rows|number of rows|row count|records|entries)\b/.test(
+      text
+    )
   ) {
     baseOperation = "row_count";
   } else if (
-    /\b(how many|number of|count)\b/.test(text)
+    /\b(how many|number of|count)\b/.test(
+      text
+    )
   ) {
     baseOperation = isNumeric
       ? "sum"
@@ -184,39 +353,71 @@ function detectOperation(question, selectedColumn) {
   }
 
   if (hasGrouping) {
-    if (baseOperation === "sum") return "group_sum";
-    if (baseOperation === "average") return "group_average";
-    if (baseOperation === "minimum") return "group_minimum";
-    if (baseOperation === "maximum") return "group_maximum";
-    if (baseOperation === "row_count") return "group_count";
+    if (baseOperation === "sum") {
+      return "group_sum";
+    }
+
+    if (baseOperation === "average") {
+      return "group_average";
+    }
+
+    if (baseOperation === "minimum") {
+      return "group_minimum";
+    }
+
+    if (baseOperation === "maximum") {
+      return "group_maximum";
+    }
+
+    if (baseOperation === "row_count") {
+      return "group_count";
+    }
   }
 
   return baseOperation;
 }
 
-function findGroupingColumn(question, schema, datasetName, metricColumn) {
-  const text = normalizeText(question);
+function findGroupingColumn(
+  question,
+  schema,
+  datasetName,
+  metricColumn
+) {
+  const groupingTarget =
+    extractGroupingPhrase(question);
 
-  const explicitMatch = text.match(
-    /\b(?:by|per|for each|grouped by|each)\s+(.+)$/
-  );
+  if (!groupingTarget) {
+    return null;
+  }
 
   const candidates = rankColumns(
-    explicitMatch ? explicitMatch[1] : question,
+    groupingTarget,
     schema,
     datasetName
-  ).filter((item) => item.name !== metricColumn?.name);
-
-  const preferred = candidates.find(
-    (item) => item.type !== "number" && item.score >= 0.35
+  ).filter(
+    (item) =>
+      item.name !== metricColumn?.name
   );
 
-  return preferred || null;
+  return (
+    candidates.find(
+      (item) =>
+        item.type !== "number" &&
+        item.score >= 0.75
+    ) || null
+  );
 }
 
-function findExplicitFilters(question, schema, datasetName, excluded = []) {
+function findExplicitFilters(
+  question,
+  schema,
+  datasetName,
+  excluded = []
+) {
   const text = normalizeText(question);
-  const excludedSet = new Set(excluded.filter(Boolean));
+  const excludedSet = new Set(
+    excluded.filter(Boolean)
+  );
   const filters = [];
 
   const columns = getAllColumns(schema).filter(
@@ -227,7 +428,8 @@ function findExplicitFilters(question, schema, datasetName, excluded = []) {
 
   for (const column of columns) {
     for (const example of column.examples || []) {
-      const normalizedExample = normalizeText(example);
+      const normalizedExample =
+        normalizeText(example);
 
       if (
         normalizedExample.length >= 2 &&
@@ -259,24 +461,37 @@ function findExplicitFilters(question, schema, datasetName, excluded = []) {
   return finalFilters;
 }
 
-function detectSchemaPlan(question, schema) {
+function detectSchemaPlan(
+  question,
+  schema
+) {
   const text = normalizeText(question);
 
-  for (const [intent, patterns] of Object.entries(SCHEMA_PATTERNS)) {
-    if (!matchesAny(text, patterns)) continue;
-
-    let dataset = null;
-    let column = null;
-
-    const datasetRank = rankDatasets(question, schema);
-    if (datasetRank[0]?.score >= 0.55) {
-      dataset = datasetRank[0].dataset;
+  for (const [intent, patterns] of Object.entries(
+    SCHEMA_PATTERNS
+  )) {
+    if (!matchesAny(text, patterns)) {
+      continue;
     }
 
-    const columnRank = rankColumns(question, schema, dataset);
-    if (columnRank[0]?.score >= 0.45) {
-      column = columnRank[0].name;
-    }
+    const datasetRank =
+      rankDatasets(question, schema);
+    const dataset =
+      datasetRank[0]?.score >= 0.55
+        ? datasetRank[0].dataset
+        : null;
+
+    const target =
+      extractTargetPhrase(question);
+    const columnRank = rankColumns(
+      target,
+      schema,
+      dataset
+    );
+    const column =
+      columnRank[0]?.score >= 0.75
+        ? columnRank[0].name
+        : null;
 
     return {
       route: "schema",
@@ -303,7 +518,6 @@ function detectGeneralPlan(question) {
   return null;
 }
 
-
 function detectRequestedOutputColumns(
   question,
   schema,
@@ -311,44 +525,46 @@ function detectRequestedOutputColumns(
   filterColumns = []
 ) {
   const text = normalizeText(question);
-  const candidates = [];
-
-  // Prefer the phrase before "of", "for", or "from" as the requested output.
   const targetMatch = text.match(
     /^(?:what|which|who|show|give|tell me)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:of|for|from)\s+/
   );
 
-  const targetText = targetMatch
-    ? targetMatch[1].trim()
-    : question;
+  const targetText = targetMatch?.[1]
+    ? normalizeTarget(targetMatch[1])
+    : extractTargetPhrase(question);
 
-  for (const item of rankColumns(targetText, schema, datasetName)) {
-    if (filterColumns.includes(item.name)) {
-      continue;
-    }
+  const candidates = rankColumns(
+    targetText,
+    schema,
+    datasetName
+  )
+    .filter(
+      (item) =>
+        !filterColumns.includes(item.name)
+    )
+    .map((item) => {
+      let score = item.score;
 
-    let score = item.score;
+      if (
+        /\b(first name|last name|name|person|who)\b/.test(
+          targetText
+        ) &&
+        /\b(name|farmer|person|respondent|beneficiary|owner|operator|employee|staff)\b/.test(
+          normalizeText(item.name)
+        )
+      ) {
+        score += 0.6;
+      }
 
-    // Generic semantic support for person/name fields.
-    if (
-      /\b(first name|name|person|who)\b/.test(targetText) &&
-      /\b(name|farmer|person|respondent|beneficiary|owner|operator|employee|staff)\b/.test(
-        normalizeText(item.name)
-      )
-    ) {
-      score += 0.45;
-    }
-
-    candidates.push({
-      ...item,
-      score,
-    });
-  }
-
-  candidates.sort((a, b) => b.score - a.score);
+      return {
+        ...item,
+        score,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
 
   const selected =
-    candidates[0]?.score >= 0.35
+    candidates[0]?.score >= 0.75
       ? [candidates[0].name]
       : [];
 
@@ -370,13 +586,22 @@ function createLocalPlan({
   question,
   schema,
 }) {
-  const schemaPlan = detectSchemaPlan(question, schema);
-  if (schemaPlan) return schemaPlan;
+  const schemaPlan =
+    detectSchemaPlan(question, schema);
 
-  const generalPlan = detectGeneralPlan(question);
-  if (generalPlan) return generalPlan;
+  if (schemaPlan) {
+    return schemaPlan;
+  }
 
-  const datasetRanking = rankDatasets(question, schema);
+  const generalPlan =
+    detectGeneralPlan(question);
+
+  if (generalPlan) {
+    return generalPlan;
+  }
+
+  const datasetRanking =
+    rankDatasets(question, schema);
   const bestDataset = datasetRanking[0];
 
   let datasetName = null;
@@ -392,19 +617,23 @@ function createLocalPlan({
       route: "clarify",
       question:
         "Which worksheet should I use? Available worksheets: " +
-        schema.map((item) => item.name).join(", "),
+        schema
+          .map((item) => item.name)
+          .join(", "),
       confidence: 0.2,
     };
   }
 
+  const target =
+    extractTargetPhrase(question);
   const columnRanking = rankColumns(
-    question,
+    target,
     schema,
     datasetName
   );
 
   const selectedColumn =
-    columnRanking[0]?.score >= 0.2
+    columnRanking[0]?.score >= 0.75
       ? columnRanking[0]
       : null;
 
@@ -422,12 +651,15 @@ function createLocalPlan({
     );
 
     if (filters.length) {
-      const output = detectRequestedOutputColumns(
-        question,
-        schema,
-        datasetName,
-        filters.map((filter) => filter.column)
-      );
+      const output =
+        detectRequestedOutputColumns(
+          question,
+          schema,
+          datasetName,
+          filters.map(
+            (filter) => filter.column
+          )
+        );
 
       return {
         route: "dataset",
@@ -436,10 +668,11 @@ function createLocalPlan({
         column: null,
         groupBy: null,
         filters,
-        selectColumns: output.selectColumns,
+        selectColumns:
+          output.selectColumns,
         transform: output.transform,
         limit: detectLimit(question),
-        confidence: 0.7,
+        confidence: 0.8,
       };
     }
 
@@ -449,23 +682,18 @@ function createLocalPlan({
     };
   }
 
-  const groupingColumn = operation.startsWith("group_")
-    ? findGroupingColumn(
-        question,
-        schema,
-        datasetName,
-        selectedColumn
-      )
-    : (
-        ["minimum", "maximum"].includes(operation)
-          ? findGroupingColumn(
-              question,
-              schema,
-              datasetName,
-              selectedColumn
-            )
-          : null
-      );
+  const groupingColumn =
+    operation.startsWith("group_") ||
+    ["minimum", "maximum"].includes(
+      operation
+    )
+      ? findGroupingColumn(
+          question,
+          schema,
+          datasetName,
+          selectedColumn
+        )
+      : null;
 
   const filters = findExplicitFilters(
     question,
@@ -479,7 +707,11 @@ function createLocalPlan({
 
   if (
     !selectedColumn &&
-    !["row_count", "group_count", "lookup"].includes(operation)
+    ![
+      "row_count",
+      "group_count",
+      "lookup",
+    ].includes(operation)
   ) {
     return {
       route: "clarify",
@@ -507,7 +739,9 @@ function createLocalPlan({
           question,
           schema,
           datasetName,
-          filters.map((filter) => filter.column)
+          filters.map(
+            (filter) => filter.column
+          )
         )
       : {
           selectColumns: [],
@@ -518,27 +752,26 @@ function createLocalPlan({
     route: "dataset",
     dataset: datasetName,
     operation,
-    column: selectedColumn?.name || null,
-    groupBy: groupingColumn?.name || null,
+    column:
+      selectedColumn?.name || null,
+    groupBy:
+      groupingColumn?.name || null,
     filters,
-    selectColumns: output.selectColumns,
+    selectColumns:
+      output.selectColumns,
     transform: output.transform,
     limit: detectLimit(question),
     confidence: Math.min(
       1,
-      0.55 +
-        (selectedColumn?.score || 0) * 0.3 +
-        (bestDataset?.score || 0) * 0.15
+      0.65 +
+        (selectedColumn?.score || 0) *
+          0.2 +
+        (bestDataset?.score || 0) *
+          0.1
     ),
   };
 }
 
-/**
- * Local-first parser.
- *
- * Groq is not called here. This function uses only the loaded schema,
- * worksheet names, column names, detected types, and example values.
- */
 async function createPlan({
   question,
   schema,
@@ -552,4 +785,6 @@ async function createPlan({
 module.exports = {
   createPlan,
   createLocalPlan,
+  extractTargetPhrase,
+  extractGroupingPhrase,
 };
