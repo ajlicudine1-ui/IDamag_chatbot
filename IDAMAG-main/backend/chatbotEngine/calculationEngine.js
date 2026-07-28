@@ -226,7 +226,9 @@ function executePlan({
       };
     }
 
-    const shown = unique.slice(0, limit);
+    const shown = plan.showAll
+      ? unique
+      : unique.slice(0, limit);
 
     return {
       success: true,
@@ -268,7 +270,9 @@ function executePlan({
       );
     }
 
-    const shown = filteredRows.slice(0, limit);
+    const shown = plan.showAll
+      ? filteredRows
+      : filteredRows.slice(0, limit);
 
     const projectedResults = shown.map((row) => {
       const projected = {};
@@ -355,8 +359,11 @@ function executePlan({
         label,
         value,
       }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, limit);
+      .sort((a, b) => b.value - a.value);
+
+    const displayedResults = plan.showAll
+      ? results
+      : results.slice(0, limit);
 
     return {
       success: true,
@@ -364,11 +371,11 @@ function executePlan({
       dataset: datasetName,
       operation,
       groupBy: groupColumn,
-      results,
+      results: displayedResults,
       filters,
       answer:
         `Record count by ${groupColumn} in ${datasetName}${filterText}:\n` +
-        results
+        displayedResults
           .map(
             (item, index) =>
               `${index + 1}. ${item.label}: ${formatNumber(item.value)}`

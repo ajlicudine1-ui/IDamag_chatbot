@@ -275,6 +275,17 @@ function detectLimit(question, fallback = 10) {
     : fallback;
 }
 
+
+function detectShowAll(question) {
+  const text = normalizeText(question);
+
+  return (
+    /\b(all|every|entire|complete|full)\b/.test(text) ||
+    /\blist of\b/.test(text)
+  );
+}
+
+
 function detectOperation(
   question,
   selectedColumn
@@ -728,6 +739,8 @@ function createLocalPlan({
         transform: output.transform,
         outputRequested: output.outputRequested,
         limit: detectLimit(question),
+    showAll: detectShowAll(question),
+        showAll: detectShowAll(question),
         confidence: 0.9,
       };
     }
@@ -834,6 +847,7 @@ function createLocalPlan({
     transform: output.transform,
     outputRequested: output.outputRequested,
     limit: detectLimit(question),
+    showAll: detectShowAll(question),
     confidence: Math.min(
       1,
       0.65 +
