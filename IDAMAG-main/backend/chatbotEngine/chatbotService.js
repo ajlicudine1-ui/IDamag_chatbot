@@ -38,6 +38,7 @@ async function answerQuestion(input, question) {
     const plan = await createPlan({
       question: cleanQuestion,
       schema,
+      datasets,
     });
 
     if (process.env.NODE_ENV !== "production") {

@@ -3,6 +3,10 @@ const {
   similarity,
   singularizeToken,
 } = require("./utils");
+const {
+  inferValueFilters,
+  mergeFilters,
+} = require("./filterEngine");
 
 const GENERAL_PATTERNS = [
   /\b(translate|translation)\b/,
@@ -615,6 +619,7 @@ function detectRequestedOutputColumns(
 function createLocalPlan({
   question,
   schema,
+  datasets = {},
 }) {
   const schemaPlan =
     detectSchemaPlan(question, schema);
@@ -641,6 +646,11 @@ function createLocalPlan({
   } else if (bestDataset?.score >= 0.25) {
     datasetName = bestDataset.dataset;
   }
+
+  const currentRows =
+    Array.isArray(datasets?.[datasetName])
+      ? datasets[datasetName]
+      : [];
 
   if (!datasetName) {
     return {
@@ -673,24 +683,39 @@ function createLocalPlan({
   );
 
   if (!operation) {
-    const filters = findExplicitFilters(
+    const schemaFilters = findExplicitFilters(
       question,
       schema,
       datasetName,
       []
     );
 
-    if (filters.length) {
-      const output =
-        detectRequestedOutputColumns(
+    const liveFilters = currentRows.length
+      ? inferValueFilters(
+          currentRows,
           question,
-          schema,
-          datasetName,
-          filters.map(
-            (filter) => filter.column
-          )
-        );
+          []
+        )
+      : [];
 
+    const filters = mergeFilters(
+      schemaFilters,
+      liveFilters
+    );
+
+    const output =
+      detectRequestedOutputColumns(
+        question,
+        schema,
+        datasetName,
+        filters.map(
+          (filter) => filter.column
+        )
+      );
+
+    // If the question identifies a real current-row value, it is a
+    // dataset lookup even when the value was added after startup.
+    if (filters.length) {
       return {
         route: "dataset",
         dataset: datasetName,
@@ -703,7 +728,7 @@ function createLocalPlan({
         transform: output.transform,
         outputRequested: output.outputRequested,
         limit: detectLimit(question),
-        confidence: 0.8,
+        confidence: 0.9,
       };
     }
 
@@ -726,7 +751,7 @@ function createLocalPlan({
         )
       : null;
 
-  const filters = findExplicitFilters(
+  const schemaFilters = findExplicitFilters(
     question,
     schema,
     datasetName,
@@ -734,6 +759,22 @@ function createLocalPlan({
       selectedColumn?.name,
       groupingColumn?.name,
     ]
+  );
+
+  const liveFilters = currentRows.length
+    ? inferValueFilters(
+        currentRows,
+        question,
+        [
+          selectedColumn?.name,
+          groupingColumn?.name,
+        ]
+      )
+    : [];
+
+  const filters = mergeFilters(
+    schemaFilters,
+    liveFilters
   );
 
   if (
@@ -807,10 +848,12 @@ function createLocalPlan({
 async function createPlan({
   question,
   schema,
+  datasets = {},
 }) {
   return createLocalPlan({
     question,
     schema,
+    datasets,
   });
 }
 
