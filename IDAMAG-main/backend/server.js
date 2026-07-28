@@ -12,7 +12,25 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
-app.use(cors());
+const allowedOrigins = [
+  'http://localhost:5173',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, callback) {
+      // Allow server-to-server requests and approved browser origins
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error('Not allowed by CORS'));
+    },
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-user-id']
+  })
+);
 app.use(express.json());
 app.use("/api/chatbot", chatbotRoutes);
 
@@ -468,23 +486,32 @@ app.get('/api/activity-logs', async (req, res) => {
   }
 });
 
-const startServer = async () => {
+const initializeDatabase = async () => {
   try {
     await sequelize.authenticate();
     console.log('Database connected successfully.');
-    
-    // Sync models
-    await sequelize.sync();
-    console.log('Models synchronized.');
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+    // Avoid changing the database structure on every request.
+    // Run migrations or your init-db script separately when needed.
+    console.log('Database ready.');
   } catch (error) {
     console.error('Unable to connect to the database:', error);
+    throw error;
   }
 };
 
+// Local development only
+if (!process.env.VERCEL) {
+  initializeDatabase()
+    .then(() => {
+      app.listen(PORT, '0.0.0.0', () => {
+        console.log(`Server running on http://localhost:${PORT}`);
+      });
+    })
+    .catch(() => {
+      process.exit(1);
+    });
+}
 
-
-startServer();
+// Vercel imports this Express application
+module.exports = app;
