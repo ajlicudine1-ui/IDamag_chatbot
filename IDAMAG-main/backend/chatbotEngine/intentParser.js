@@ -303,6 +303,69 @@ function detectGeneralPlan(question) {
   return null;
 }
 
+
+function detectRequestedOutputColumns(
+  question,
+  schema,
+  datasetName,
+  filterColumns = []
+) {
+  const text = normalizeText(question);
+  const candidates = [];
+
+  // Prefer the phrase before "of", "for", or "from" as the requested output.
+  const targetMatch = text.match(
+    /^(?:what|which|who|show|give|tell me)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:of|for|from)\s+/
+  );
+
+  const targetText = targetMatch
+    ? targetMatch[1].trim()
+    : question;
+
+  for (const item of rankColumns(targetText, schema, datasetName)) {
+    if (filterColumns.includes(item.name)) {
+      continue;
+    }
+
+    let score = item.score;
+
+    // Generic semantic support for person/name fields.
+    if (
+      /\b(first name|name|person|who)\b/.test(targetText) &&
+      /\b(name|farmer|person|respondent|beneficiary|owner|operator|employee|staff)\b/.test(
+        normalizeText(item.name)
+      )
+    ) {
+      score += 0.45;
+    }
+
+    candidates.push({
+      ...item,
+      score,
+    });
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+
+  const selected =
+    candidates[0]?.score >= 0.35
+      ? [candidates[0].name]
+      : [];
+
+  let transform = null;
+
+  if (/\bfirst name\b/.test(text)) {
+    transform = "first_word";
+  } else if (/\blast name\b/.test(text)) {
+    transform = "last_word";
+  }
+
+  return {
+    selectColumns: selected,
+    transform,
+  };
+}
+
 function createLocalPlan({
   question,
   schema,
@@ -359,6 +422,13 @@ function createLocalPlan({
     );
 
     if (filters.length) {
+      const output = detectRequestedOutputColumns(
+        question,
+        schema,
+        datasetName,
+        filters.map((filter) => filter.column)
+      );
+
       return {
         route: "dataset",
         dataset: datasetName,
@@ -366,7 +436,8 @@ function createLocalPlan({
         column: null,
         groupBy: null,
         filters,
-        selectColumns: [],
+        selectColumns: output.selectColumns,
+        transform: output.transform,
         limit: detectLimit(question),
         confidence: 0.7,
       };
@@ -430,6 +501,19 @@ function createLocalPlan({
     };
   }
 
+  const output =
+    operation === "lookup"
+      ? detectRequestedOutputColumns(
+          question,
+          schema,
+          datasetName,
+          filters.map((filter) => filter.column)
+        )
+      : {
+          selectColumns: [],
+          transform: null,
+        };
+
   return {
     route: "dataset",
     dataset: datasetName,
@@ -437,7 +521,8 @@ function createLocalPlan({
     column: selectedColumn?.name || null,
     groupBy: groupingColumn?.name || null,
     filters,
-    selectColumns: [],
+    selectColumns: output.selectColumns,
+    transform: output.transform,
     limit: detectLimit(question),
     confidence: Math.min(
       1,

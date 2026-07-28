@@ -66,6 +66,29 @@ function describeFilters(filters) {
   );
 }
 
+
+function transformLookupValue(value, transform) {
+  const text = String(value ?? "").trim();
+
+  if (!transform || !text) {
+    return text;
+  }
+
+  const parts = text
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (transform === "first_word") {
+    return parts[0] || "";
+  }
+
+  if (transform === "last_word") {
+    return parts[parts.length - 1] || "";
+  }
+
+  return text;
+}
+
 function executePlan({
   datasets,
   plan,
@@ -236,29 +259,53 @@ function executePlan({
 
     const shown = filteredRows.slice(0, limit);
 
+    const projectedResults = shown.map((row) => {
+      const projected = {};
+
+      for (const selected of selectedColumns) {
+        projected[selected] = transformLookupValue(
+          row?.[selected],
+          plan.transform
+        );
+      }
+
+      return projected;
+    });
+
+    const singleValueAnswer =
+      filteredRows.length === 1 &&
+      selectedColumns.length === 1
+        ? `${selectedColumns[0]}: ${
+            projectedResults[0]?.[selectedColumns[0]] ?? ""
+          }`
+        : null;
+
     return {
       success: true,
       source: "dataset",
       dataset: datasetName,
       operation,
       count: filteredRows.length,
-      results: shown,
+      results: projectedResults,
       filters,
       answer:
-        `I found ${formatNumber(filteredRows.length)} matching ` +
-        `record(s) in ${datasetName}${filterText}.\n` +
-        shown
-          .map(
-            (row, index) =>
-              `${index + 1}. ` +
-              selectedColumns
-                .map(
-                  (selected) =>
-                    `${selected}: ${row?.[selected] ?? ""}`
-                )
-                .join(", ")
-          )
-          .join("\n"),
+        singleValueAnswer ||
+        (
+          `I found ${formatNumber(filteredRows.length)} matching ` +
+          `record(s) in ${datasetName}${filterText}.\n` +
+          projectedResults
+            .map(
+              (row, index) =>
+                `${index + 1}. ` +
+                selectedColumns
+                  .map(
+                    (selected) =>
+                      `${selected}: ${row?.[selected] ?? ""}`
+                  )
+                  .join(", ")
+            )
+            .join("\n")
+        ),
     };
   }
 

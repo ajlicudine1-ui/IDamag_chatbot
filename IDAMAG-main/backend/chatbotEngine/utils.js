@@ -104,6 +104,44 @@ function getColumns(rows) {
   return [...columns];
 }
 
+function singularizeToken(token) {
+  const word = String(token || "").toLowerCase();
+
+  if (word.endsWith("ies") && word.length > 4) {
+    return `${word.slice(0, -3)}y`;
+  }
+
+  if (
+    word.endsWith("ches") ||
+    word.endsWith("shes") ||
+    word.endsWith("xes") ||
+    word.endsWith("zes")
+  ) {
+    return word.slice(0, -2);
+  }
+
+  if (word.endsWith("ses") && word.length > 4) {
+    return word.slice(0, -2);
+  }
+
+  if (
+    word.endsWith("s") &&
+    !word.endsWith("ss") &&
+    word.length > 3
+  ) {
+    return word.slice(0, -1);
+  }
+
+  return word;
+}
+
+function normalizeMatchTokens(value) {
+  return normalizeText(value)
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(singularizeToken);
+}
+
 function similarity(left, right) {
   const a = normalizeText(left);
   const b = normalizeText(right);
@@ -111,25 +149,59 @@ function similarity(left, right) {
   if (!a || !b) return 0;
   if (a === b) return 1;
 
-  if (a.includes(b) || b.includes(a)) {
-    return Math.min(a.length, b.length) /
-      Math.max(a.length, b.length);
+  const aTokens = normalizeMatchTokens(a);
+  const bTokens = normalizeMatchTokens(b);
+  const normalizedA = aTokens.join(" ");
+  const normalizedB = bTokens.join(" ");
+
+  if (normalizedA === normalizedB) {
+    return 1;
   }
 
-  const aTokens = new Set(a.split(/\s+/));
-  const bTokens = new Set(b.split(/\s+/));
+  if (
+    normalizedA.includes(normalizedB) ||
+    normalizedB.includes(normalizedA)
+  ) {
+    return Math.min(normalizedA.length, normalizedB.length) /
+      Math.max(normalizedA.length, normalizedB.length);
+  }
+
+  const aSet = new Set(aTokens);
+  const bSet = new Set(bTokens);
 
   let matched = 0;
 
-  for (const token of aTokens) {
-    if (bTokens.has(token)) {
+  for (const token of aSet) {
+    if (bSet.has(token)) {
       matched += 1;
     }
   }
 
-  const union = new Set([...aTokens, ...bTokens]).size;
+  const union = new Set([...aSet, ...bSet]).size;
+  const tokenScore = union ? matched / union : 0;
 
-  return union ? matched / union : 0;
+  // Reward a strong single-token match such as
+  // "municipalities" -> "Municipality".
+  let bestTokenScore = 0;
+
+  for (const leftToken of aTokens) {
+    for (const rightToken of bTokens) {
+      if (leftToken === rightToken) {
+        bestTokenScore = 1;
+      } else if (
+        leftToken.includes(rightToken) ||
+        rightToken.includes(leftToken)
+      ) {
+        bestTokenScore = Math.max(
+          bestTokenScore,
+          Math.min(leftToken.length, rightToken.length) /
+            Math.max(leftToken.length, rightToken.length)
+        );
+      }
+    }
+  }
+
+  return Math.max(tokenScore, bestTokenScore * 0.9);
 }
 
 function findBestMatch(requested, available, minimum = 0.4) {
@@ -155,5 +227,7 @@ module.exports = {
   normalizeDatasets,
   getColumns,
   similarity,
+  singularizeToken,
+  normalizeMatchTokens,
   findBestMatch,
 };
