@@ -17,7 +17,7 @@ import Help from "./pages/Help";
 
 import ProtectedRoute from "./components/auth/ProtectedRoute";
 import PublicRoute from "./components/auth/PublicRoute";
-import FloatingChatbotButton from "./components/chatbot/FloatingChatbotButton";
+import FloatingChatbotButton from "./components/public/FloatingChatbotButton";
 
 function App() {
   const [isChatbotOpen, setIsChatbotOpen] = useState(false);
