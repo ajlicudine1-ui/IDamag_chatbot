@@ -16,6 +16,11 @@ const {
   mergeFilters,
   applyFilters,
 } = require("./filterEngine");
+const {
+  formatLookupAnswer,
+  formatAggregateAnswer,
+  formatCountAnswer,
+} = require("./responseFormatter");
 
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
@@ -250,11 +255,6 @@ function tryCrossDatasetLookup({
         return projected;
       });
 
-      const singleValueAnswer =
-        targetMatches.length === 1 && requestedColumns.length === 1
-          ? String(results[0]?.[requestedColumns[0]] ?? "")
-          : null;
-
       return {
         success: true,
         source: "dataset",
@@ -269,29 +269,12 @@ function tryCrossDatasetLookup({
         filters: [sourceFilter],
         count: targetMatches.length,
         results,
-        answer:
-          singleValueAnswer ||
-          (
-            requestedColumns.length === 1
-              ? results
-                  .map(
-                    (row, index) =>
-                      `${index + 1}. ${row?.[requestedColumns[0]] ?? ""}`
-                  )
-                  .join("\n")
-              : results
-                  .map(
-                    (row, index) =>
-                      `${index + 1}. ` +
-                      requestedColumns
-                        .map(
-                          (column) =>
-                            `${column}: ${row?.[column] ?? ""}`
-                        )
-                        .join(", ")
-                  )
-                  .join("\n")
-          ),
+        answer: formatLookupAnswer({
+          results,
+          selectedColumns: requestedColumns,
+          count: targetMatches.length,
+          subject: valueMatch.value,
+        }),
       };
     }
   }
@@ -534,14 +517,6 @@ function executePlan({
       return projected;
     });
 
-    const singleValueAnswer =
-      filteredRows.length === 1 &&
-      selectedColumns.length === 1
-        ? String(
-            projectedResults[0]?.[selectedColumns[0]] ?? ""
-          )
-        : null;
-
     return {
       success: true,
       source: "dataset",
@@ -550,35 +525,11 @@ function executePlan({
       count: filteredRows.length,
       results: projectedResults,
       filters,
-      answer:
-        singleValueAnswer ||
-        (
-          selectedColumns.length === 1
-            ? projectedResults
-                .map(
-                  (row, index) =>
-                    `${index + 1}. ${
-                      row?.[selectedColumns[0]] ?? ""
-                    }`
-                )
-                .join("\n")
-            : (
-                `I found ${formatNumber(filteredRows.length)} matching ` +
-                `record(s) in ${datasetName}${filterText}.\n` +
-                projectedResults
-                  .map(
-                    (row, index) =>
-                      `${index + 1}. ` +
-                      selectedColumns
-                        .map(
-                          (selected) =>
-                            `${selected}: ${row?.[selected] ?? ""}`
-                        )
-                        .join(", ")
-                  )
-                  .join("\n")
-              )
-        ),
+      answer: formatLookupAnswer({
+        results: projectedResults,
+        selectedColumns,
+        count: filteredRows.length,
+      }),
     };
   }
 
