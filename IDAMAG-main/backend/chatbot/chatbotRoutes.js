@@ -4,6 +4,7 @@ const {
   Report,
   Division,
   Office,
+  DashboardWorksheet,
 } = require("../models/index");
 
 const {
@@ -17,9 +18,22 @@ const {
 const router = express.Router();
 
 /**
- * Convert a normal Google Sheets URL into a CSV export URL.
+ * ============================================================
+ * GOOGLE SHEETS HELPERS
+ * ============================================================
  */
-function normalizeGoogleSheetsUrl(sheetUrl) {
+
+/**
+ * Extract the Google Spreadsheet ID from the URL stored
+ * in reports.sheetUrl.
+ *
+ * Example:
+ * https://docs.google.com/spreadsheets/d/ABC123/edit?usp=sharing
+ *
+ * Returns:
+ * ABC123
+ */
+function getGoogleSpreadsheetId(sheetUrl) {
   if (!sheetUrl || typeof sheetUrl !== "string") {
     throw new Error(
       "No Google Sheets URL is configured for this report."
@@ -34,54 +48,65 @@ function normalizeGoogleSheetsUrl(sheetUrl) {
     );
   }
 
-  // Already a CSV-compatible URL
-  if (
-    trimmedUrl.includes("output=csv") ||
-    trimmedUrl.includes("export?format=csv")
-  ) {
-    return trimmedUrl;
-  }
-
-  const sheetIdMatch = trimmedUrl.match(
+  const match = trimmedUrl.match(
     /\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/
   );
 
-  if (!sheetIdMatch) {
+  if (!match) {
     throw new Error(
       "The configured link is not a valid Google Sheets URL."
     );
   }
 
-  const sheetId = sheetIdMatch[1];
-  let gid = "0";
-
-  try {
-    const parsedUrl = new URL(trimmedUrl);
-
-    const queryGid =
-      parsedUrl.searchParams.get("gid");
-
-    if (queryGid) {
-      gid = queryGid;
-    }
-
-    if (parsedUrl.hash) {
-      const hashMatch =
-        parsedUrl.hash.match(/gid=(\d+)/);
-
-      if (hashMatch) {
-        gid = hashMatch[1];
-      }
-    }
-  } catch {
-    // Use the first worksheet when no gid is found.
-  }
-
-  return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+  return match[1];
 }
 
 /**
- * Load a report and confirm that it has a Google Sheet URL.
+ * Build the CSV URL for ONE worksheet.
+ *
+ * The Google Sheet URL itself comes from:
+ *
+ * reports.sheetUrl
+ *
+ * The worksheet GID comes from:
+ *
+ * dashboard_worksheets.gid
+ */
+function buildWorksheetCsvUrl(sheetUrl, gid) {
+  const spreadsheetId =
+    getGoogleSpreadsheetId(sheetUrl);
+
+  const worksheetGid = String(
+    gid ?? ""
+  ).trim();
+
+  if (!worksheetGid) {
+    throw new Error(
+      "A worksheet does not have a configured GID."
+    );
+  }
+
+  return (
+    `https://docs.google.com/spreadsheets/d/` +
+    `${spreadsheetId}/export?format=csv&gid=` +
+    `${encodeURIComponent(worksheetGid)}`
+  );
+}
+
+/**
+ * ============================================================
+ * REPORT DATASET
+ * ============================================================
+ *
+ * Loads:
+ *
+ * reports
+ *      +
+ * dashboard_worksheets
+ *
+ * reports.id
+ *      ↓
+ * dashboard_worksheets.dashboardId
  */
 async function getReportDataset(reportId) {
   const numericReportId = Number(reportId);
@@ -95,6 +120,9 @@ async function getReportDataset(reportId) {
     throw error;
   }
 
+  /**
+   * Get the dashboard/report.
+   */
   const report = await Report.findByPk(
     numericReportId,
     {
@@ -122,6 +150,10 @@ async function getReportDataset(reportId) {
     throw error;
   }
 
+  /**
+   * Google Spreadsheet URL is still stored
+   * in the reports table.
+   */
   if (!report.sheetUrl) {
     const error = new Error(
       `No Google Sheet is configured for "${report.title}".`
@@ -131,26 +163,84 @@ async function getReportDataset(reportId) {
     throw error;
   }
 
-  const csvUrl =
-    normalizeGoogleSheetsUrl(
-      report.sheetUrl
+  /**
+   * Get ALL worksheet tabs belonging to this dashboard.
+   *
+   * dashboard_worksheets.dashboardId
+   * points to:
+   *
+   * reports.id
+   */
+  const worksheets =
+    await DashboardWorksheet.findAll({
+      where: {
+        dashboardId: numericReportId,
+      },
+
+      order: [
+        ["worksheetId", "ASC"],
+      ],
+    });
+
+  if (!worksheets.length) {
+    const error = new Error(
+      `No worksheets are configured for "${report.title}".`
     );
+
+    error.statusCode = 400;
+    throw error;
+  }
+
+  /**
+   * Build the configuration expected by
+   * googleSheetsService.js.
+   *
+   * Example:
+   *
+   * {
+   *   name: "CSM Analytics Dashboard 2025",
+   *   sheets: [
+   *      {
+   *         name: "FIRST",
+   *         csvUrl: "...gid=0"
+   *      },
+   *      {
+   *         name: "Second",
+   *         csvUrl: "...gid=123456"
+   *      }
+   *   ]
+   * }
+   */
+  const reportConfig = {
+    name: report.title,
+
+    sheets: worksheets.map(
+      (worksheet) => ({
+        name:
+          worksheet.worksheetName,
+
+        csvUrl:
+          buildWorksheetCsvUrl(
+            report.sheetUrl,
+            worksheet.gid
+          ),
+      })
+    ),
+  };
 
   return {
     report,
-    csvUrl,
+    worksheets,
+    reportConfig,
   };
 }
 
 /**
+ * ============================================================
+ * GET DIVISIONS
+ * ============================================================
+ *
  * GET /api/chatbot/divisions
- *
- * Returns top-level entries from the offices table.
- *
- * In your database:
- * offices = AFD, FOD, PMED, AMAD, etc.
- *
- * The chatbot UI labels these as "Division".
  */
 router.get("/divisions", async (req, res) => {
   try {
@@ -160,12 +250,21 @@ router.get("/divisions", async (req, res) => {
 
     return res.json({
       success: true,
-      divisions: offices.map((office) => ({
-        id: Number(office.id),
-        code: office.acronym || "",
-        acronym: office.acronym || "",
-        name: office.name,
-      })),
+
+      divisions: offices.map(
+        (office) => ({
+          id: Number(office.id),
+
+          code:
+            office.acronym || "",
+
+          acronym:
+            office.acronym || "",
+
+          name:
+            office.name,
+        })
+      ),
     });
   } catch (error) {
     console.error(
@@ -175,6 +274,7 @@ router.get("/divisions", async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message:
         error.message ||
         "Unable to load divisions.",
@@ -183,15 +283,11 @@ router.get("/divisions", async (req, res) => {
 });
 
 /**
+ * ============================================================
+ * GET OFFICES / SECTIONS
+ * ============================================================
+ *
  * GET /api/chatbot/offices?divisionId=1
- *
- * Returns the sections belonging to the selected
- * top-level division.
- *
- * In your database:
- * divisions = Budget Section, Accounting Section, etc.
- *
- * The chatbot UI labels these as "Office / Section".
  */
 router.get("/offices", async (req, res) => {
   try {
@@ -202,17 +298,21 @@ router.get("/offices", async (req, res) => {
     if (!Number.isInteger(divisionId)) {
       return res.status(400).json({
         success: false,
+
         message:
           "A valid division ID is required.",
       });
     }
 
     const parentOffice =
-      await Office.findByPk(divisionId);
+      await Office.findByPk(
+        divisionId
+      );
 
     if (!parentOffice) {
       return res.status(404).json({
         success: false,
+
         message:
           "The selected division was not found.",
       });
@@ -223,27 +323,48 @@ router.get("/offices", async (req, res) => {
         where: {
           officeId: divisionId,
         },
+
         order: [["name", "ASC"]],
       });
 
     return res.json({
       success: true,
+
       division: {
-        id: Number(parentOffice.id),
-        code: parentOffice.acronym || "",
+        id: Number(
+          parentOffice.id
+        ),
+
+        code:
+          parentOffice.acronym || "",
+
         acronym:
           parentOffice.acronym || "",
-        name: parentOffice.name,
+
+        name:
+          parentOffice.name,
       },
-      offices: sections.map((section) => ({
-        id: Number(section.id),
-        code: section.acronym || "",
-        acronym: section.acronym || "",
-        name: section.name,
-        divisionId: Number(
-          section.officeId
-        ),
-      })),
+
+      offices: sections.map(
+        (section) => ({
+          id: Number(
+            section.id
+          ),
+
+          code:
+            section.acronym || "",
+
+          acronym:
+            section.acronym || "",
+
+          name:
+            section.name,
+
+          divisionId: Number(
+            section.officeId
+          ),
+        })
+      ),
     });
   } catch (error) {
     console.error(
@@ -253,6 +374,7 @@ router.get("/offices", async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message:
         error.message ||
         "Unable to load offices.",
@@ -261,10 +383,11 @@ router.get("/offices", async (req, res) => {
 });
 
 /**
- * GET /api/chatbot/reports?officeId=8
+ * ============================================================
+ * GET REPORTS
+ * ============================================================
  *
- * Returns reports belonging to the selected
- * office or section.
+ * GET /api/chatbot/reports?officeId=8
  */
 router.get("/reports", async (req, res) => {
   try {
@@ -275,54 +398,134 @@ router.get("/reports", async (req, res) => {
     if (!Number.isInteger(officeId)) {
       return res.status(400).json({
         success: false,
+
         message:
           "A valid office ID is required.",
       });
     }
 
     const selectedDivision =
-      await Division.findByPk(officeId);
+      await Division.findByPk(
+        officeId
+      );
 
     if (!selectedDivision) {
       return res.status(404).json({
         success: false,
+
         message:
           "The selected office or section was not found.",
       });
     }
 
+    /**
+     * Include the worksheets so the frontend can know
+     * whether this dashboard actually has chatbot data.
+     */
     const reports =
       await Report.findAll({
         where: {
           divisionId: officeId,
         },
+
+        include: [
+          {
+            model:
+              DashboardWorksheet,
+
+            as: "worksheets",
+
+            required: false,
+
+            attributes: [
+              "worksheetId",
+              "worksheetName",
+              "gid",
+            ],
+          },
+        ],
+
         order: [["title", "ASC"]],
       });
 
     return res.json({
       success: true,
+
       office: {
         id: Number(
           selectedDivision.id
         ),
+
         code:
-          selectedDivision.acronym || "",
+          selectedDivision.acronym ||
+          "",
+
         acronym:
-          selectedDivision.acronym || "",
-        name: selectedDivision.name,
+          selectedDivision.acronym ||
+          "",
+
+        name:
+          selectedDivision.name,
+
         divisionId: Number(
           selectedDivision.officeId
         ),
       },
-      reports: reports.map((report) => ({
-        id: Number(report.id),
-        title: report.title,
-        description:
-          report.description || "",
-        hasSheet: Boolean(
-          report.sheetUrl
-        ),
-      })),
+
+      reports: reports.map(
+        (report) => ({
+          id: Number(
+            report.id
+          ),
+
+          title:
+            report.title,
+
+          description:
+            report.description || "",
+
+          /**
+           * hasSheet is TRUE only when:
+           *
+           * 1. reports.sheetUrl exists
+           * 2. at least one worksheet is configured
+           */
+          hasSheet:
+            Boolean(report.sheetUrl) &&
+            Array.isArray(
+              report.worksheets
+            ) &&
+            report.worksheets.length >
+              0,
+
+          worksheetCount:
+            Array.isArray(
+              report.worksheets
+            )
+              ? report.worksheets
+                  .length
+              : 0,
+
+          worksheets:
+            Array.isArray(
+              report.worksheets
+            )
+              ? report.worksheets.map(
+                  (worksheet) => ({
+                    id: Number(
+                      worksheet.worksheetId
+                    ),
+
+                    name:
+                      worksheet.worksheetName,
+
+                    gid:
+                      worksheet.gid,
+                  })
+                )
+              : [],
+        })
+      ),
     });
   } catch (error) {
     console.error(
@@ -332,6 +535,7 @@ router.get("/reports", async (req, res) => {
 
     return res.status(500).json({
       success: false,
+
       message:
         error.message ||
         "Unable to load reports.",
@@ -340,36 +544,44 @@ router.get("/reports", async (req, res) => {
 });
 
 /**
+ * ============================================================
+ * INSPECT REPORT DATA
+ * ============================================================
+ *
  * GET /api/chatbot/reports/:reportId/inspect
  *
- * Inspect the Google Sheet connected to a report.
+ * This now loads ALL worksheets configured in:
+ *
+ * dashboard_worksheets
  */
 router.get(
   "/reports/:reportId/inspect",
   async (req, res) => {
     try {
-      const { report, csvUrl } =
+      const {
+        report,
+        reportConfig,
+      } =
         await getReportDataset(
           req.params.reportId
         );
 
-      const reportConfig = {
-        name: report.title,
-        sheets: [
-          {
-            name: "Sheet1",
-            csvUrl,
-          },
-        ],
-      };
-
+      /**
+       * googleSheetsService.js already knows how
+       * to loop through reportConfig.sheets.
+       *
+       * Therefore ALL configured worksheets
+       * are downloaded here.
+       */
       const reportData =
         await loadDivisionData(
           reportConfig
         );
 
       const worksheets =
-        Object.entries(reportData).map(
+        Object.entries(
+          reportData
+        ).map(
           ([
             worksheetName,
             sheetData,
@@ -378,26 +590,38 @@ router.get(
             let error = null;
 
             if (
-              Array.isArray(sheetData)
+              Array.isArray(
+                sheetData
+              )
             ) {
-              rows = sheetData;
+              rows =
+                sheetData;
             } else {
               rows =
-                sheetData?.rows || [];
+                sheetData?.rows ||
+                [];
+
               error =
-                sheetData?.error || null;
+                sheetData?.error ||
+                null;
             }
 
             const columnNames =
               new Set();
 
+            /**
+             * Inspect up to 20 rows to discover
+             * the worksheet columns.
+             */
             for (
               const row of rows.slice(
                 0,
                 20
               )
             ) {
-              Object.keys(row).forEach(
+              Object.keys(
+                row
+              ).forEach(
                 (columnName) => {
                   columnNames.add(
                     columnName
@@ -408,9 +632,15 @@ router.get(
 
             return {
               worksheetName,
-              rowCount: rows.length,
+
+              rowCount:
+                rows.length,
+
               columns:
-                Array.from(columnNames),
+                Array.from(
+                  columnNames
+                ),
+
               error,
             };
           }
@@ -418,19 +648,32 @@ router.get(
 
       return res.json({
         success: true,
+
         report: {
-          id: Number(report.id),
-          title: report.title,
+          id: Number(
+            report.id
+          ),
+
+          title:
+            report.title,
+
           divisionId: Number(
             report.divisionId
           ),
+
           office:
-            report.division?.name ||
-            null,
-          division:
-            report.division?.office
+            report.division
               ?.name || null,
+
+          division:
+            report.division
+              ?.office?.name ||
+            null,
         },
+
+        worksheetCount:
+          worksheets.length,
+
         worksheets,
       });
     } catch (error) {
@@ -441,10 +684,12 @@ router.get(
 
       return res
         .status(
-          error.statusCode || 500
+          error.statusCode ||
+            500
         )
         .json({
           success: false,
+
           message:
             error.message ||
             "Unable to inspect the Google Sheet.",
@@ -454,13 +699,21 @@ router.get(
 );
 
 /**
+ * ============================================================
+ * CHAT
+ * ============================================================
+ *
  * POST /api/chatbot/chat
  *
  * Request:
+ *
  * {
- *   "reportId": 17,
- *   "question": "What is the total number of respondents?"
+ *   "reportId": 1,
+ *   "question": "What is the total expected yield?"
  * }
+ *
+ * The reportId here is reports.id,
+ * NOT reports.reportId.
  */
 router.post("/chat", async (req, res) => {
   try {
@@ -475,6 +728,7 @@ router.post("/chat", async (req, res) => {
     if (!question) {
       return res.status(400).json({
         success: false,
+
         message:
           "Question is required.",
       });
@@ -483,54 +737,82 @@ router.post("/chat", async (req, res) => {
     if (!Number.isInteger(reportId)) {
       return res.status(400).json({
         success: false,
+
         message:
           "A valid report ID is required.",
       });
     }
 
-    const { report, csvUrl } =
-      await getReportDataset(reportId);
+    /**
+     * Get:
+     *
+     * - report
+     * - Google Sheet URL
+     * - every configured worksheet
+     * - every worksheet GID
+     */
+    const {
+      report,
+      reportConfig,
+    } =
+      await getReportDataset(
+        reportId
+      );
 
-    const reportConfig = {
-      name: report.title,
-      sheets: [
-        {
-          name: "Sheet1",
-          csvUrl,
-        },
-      ],
-    };
-
+    /**
+     * Load every configured worksheet.
+     */
     const reportData =
       await loadDivisionData(
         reportConfig
       );
 
     const availableSheets =
-      Object.keys(reportData);
+      Object.keys(
+        reportData
+      );
 
     if (
-      availableSheets.length === 0
+      availableSheets.length ===
+      0
     ) {
       return res.status(500).json({
         success: false,
+
         message:
           "The selected report did not return any Google Sheets data.",
       });
     }
 
+    /**
+     * Calculate the total rows across
+     * ALL worksheets.
+     */
     const totalRows =
-      Object.values(reportData).reduce(
-        (total, sheet) => {
-          if (Array.isArray(sheet)) {
+      Object.values(
+        reportData
+      ).reduce(
+        (
+          total,
+          sheet
+        ) => {
+          if (
+            Array.isArray(
+              sheet
+            )
+          ) {
             return (
-              total + sheet.length
+              total +
+              sheet.length
             );
           }
 
           return (
             total +
-            (sheet?.rows?.length || 0)
+            (
+              sheet?.rows
+                ?.length || 0
+            )
           );
         },
         0
@@ -539,11 +821,27 @@ router.post("/chat", async (req, res) => {
     if (totalRows === 0) {
       return res.status(400).json({
         success: false,
+
         message:
-          "The connected Google Sheet contains no readable rows.",
+          "The connected Google Sheets contain no readable rows.",
       });
     }
 
+    /**
+     * IMPORTANT:
+     *
+     * reportData now contains ALL worksheets:
+     *
+     * {
+     *    FIRST: [...],
+     *    Second: [...],
+     *    Gender: [...],
+     *    Production: [...]
+     * }
+     *
+     * Your chatbotService dynamically builds
+     * the schema from this object.
+     */
     const result =
       await answerQuestion(
         reportData,
@@ -552,27 +850,43 @@ router.post("/chat", async (req, res) => {
 
     return res.json({
       ...result,
+
       success:
         typeof result?.success ===
         "boolean"
           ? result.success
           : true,
+
       question,
+
       report: {
-        id: Number(report.id),
-        title: report.title,
+        id: Number(
+          report.id
+        ),
+
+        title:
+          report.title,
+
         divisionId: Number(
           report.divisionId
         ),
+
         office:
-          report.division?.name ||
-          null,
-        division:
-          report.division?.office
+          report.division
             ?.name || null,
+
+        division:
+          report.division
+            ?.office?.name ||
+          null,
       },
+
       worksheetCount:
         availableSheets.length,
+
+      worksheets:
+        availableSheets,
+
       totalRows,
     });
   } catch (error) {
@@ -582,9 +896,13 @@ router.post("/chat", async (req, res) => {
     );
 
     return res
-      .status(error.statusCode || 500)
+      .status(
+        error.statusCode ||
+          500
+      )
       .json({
         success: false,
+
         message:
           error.message ||
           "The chatbot was unable to answer the question.",
