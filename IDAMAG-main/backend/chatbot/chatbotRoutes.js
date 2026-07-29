@@ -17,8 +17,7 @@ const {
 const router = express.Router();
 
 /**
- * Convert a normal Google Sheets sharing/edit link
- * into a downloadable CSV URL.
+ * Convert a normal Google Sheets URL into a CSV export URL.
  */
 function normalizeGoogleSheetsUrl(sheetUrl) {
   if (!sheetUrl || typeof sheetUrl !== "string") {
@@ -35,7 +34,7 @@ function normalizeGoogleSheetsUrl(sheetUrl) {
     );
   }
 
-  // Already a CSV/export link
+  // Already a CSV-compatible URL
   if (
     trimmedUrl.includes("output=csv") ||
     trimmedUrl.includes("export?format=csv")
@@ -43,13 +42,6 @@ function normalizeGoogleSheetsUrl(sheetUrl) {
     return trimmedUrl;
   }
 
-  /*
-   * Example input:
-   * https://docs.google.com/spreadsheets/d/SHEET_ID/edit?usp=sharing
-   *
-   * Output:
-   * https://docs.google.com/spreadsheets/d/SHEET_ID/export?format=csv&gid=0
-   */
   const sheetIdMatch = trimmedUrl.match(
     /\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/
   );
@@ -61,34 +53,35 @@ function normalizeGoogleSheetsUrl(sheetUrl) {
   }
 
   const sheetId = sheetIdMatch[1];
-
   let gid = "0";
 
   try {
     const parsedUrl = new URL(trimmedUrl);
 
-    const queryGid = parsedUrl.searchParams.get("gid");
+    const queryGid =
+      parsedUrl.searchParams.get("gid");
 
     if (queryGid) {
       gid = queryGid;
     }
 
     if (parsedUrl.hash) {
-      const hashMatch = parsedUrl.hash.match(/gid=(\d+)/);
+      const hashMatch =
+        parsedUrl.hash.match(/gid=(\d+)/);
 
       if (hashMatch) {
         gid = hashMatch[1];
       }
     }
   } catch {
-    // Use the first worksheet when no gid is available.
+    // Use the first worksheet when no gid is found.
   }
 
   return `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
 }
 
 /**
- * Load one report and confirm that it has a Google Sheet.
+ * Load a report and confirm that it has a Google Sheet URL.
  */
 async function getReportDataset(reportId) {
   const numericReportId = Number(reportId);
@@ -121,7 +114,9 @@ async function getReportDataset(reportId) {
   );
 
   if (!report) {
-    const error = new Error("Report not found.");
+    const error = new Error(
+      "Report not found."
+    );
 
     error.statusCode = 404;
     throw error;
@@ -136,15 +131,213 @@ async function getReportDataset(reportId) {
     throw error;
   }
 
-  const csvUrl = normalizeGoogleSheetsUrl(
-    report.sheetUrl
-  );
+  const csvUrl =
+    normalizeGoogleSheetsUrl(
+      report.sheetUrl
+    );
 
   return {
     report,
     csvUrl,
   };
 }
+
+/**
+ * GET /api/chatbot/divisions
+ *
+ * Returns top-level entries from the offices table.
+ *
+ * In your database:
+ * offices = AFD, FOD, PMED, AMAD, etc.
+ *
+ * The chatbot UI labels these as "Division".
+ */
+router.get("/divisions", async (req, res) => {
+  try {
+    const offices = await Office.findAll({
+      order: [["name", "ASC"]],
+    });
+
+    return res.json({
+      success: true,
+      divisions: offices.map((office) => ({
+        id: Number(office.id),
+        code: office.acronym || "",
+        acronym: office.acronym || "",
+        name: office.name,
+      })),
+    });
+  } catch (error) {
+    console.error(
+      "Unable to load chatbot divisions:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message ||
+        "Unable to load divisions.",
+    });
+  }
+});
+
+/**
+ * GET /api/chatbot/offices?divisionId=1
+ *
+ * Returns the sections belonging to the selected
+ * top-level division.
+ *
+ * In your database:
+ * divisions = Budget Section, Accounting Section, etc.
+ *
+ * The chatbot UI labels these as "Office / Section".
+ */
+router.get("/offices", async (req, res) => {
+  try {
+    const divisionId = Number(
+      req.query.divisionId
+    );
+
+    if (!Number.isInteger(divisionId)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "A valid division ID is required.",
+      });
+    }
+
+    const parentOffice =
+      await Office.findByPk(divisionId);
+
+    if (!parentOffice) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "The selected division was not found.",
+      });
+    }
+
+    const sections =
+      await Division.findAll({
+        where: {
+          officeId: divisionId,
+        },
+        order: [["name", "ASC"]],
+      });
+
+    return res.json({
+      success: true,
+      division: {
+        id: Number(parentOffice.id),
+        code: parentOffice.acronym || "",
+        acronym:
+          parentOffice.acronym || "",
+        name: parentOffice.name,
+      },
+      offices: sections.map((section) => ({
+        id: Number(section.id),
+        code: section.acronym || "",
+        acronym: section.acronym || "",
+        name: section.name,
+        divisionId: Number(
+          section.officeId
+        ),
+      })),
+    });
+  } catch (error) {
+    console.error(
+      "Unable to load chatbot offices:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message ||
+        "Unable to load offices.",
+    });
+  }
+});
+
+/**
+ * GET /api/chatbot/reports?officeId=8
+ *
+ * Returns reports belonging to the selected
+ * office or section.
+ */
+router.get("/reports", async (req, res) => {
+  try {
+    const officeId = Number(
+      req.query.officeId
+    );
+
+    if (!Number.isInteger(officeId)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "A valid office ID is required.",
+      });
+    }
+
+    const selectedDivision =
+      await Division.findByPk(officeId);
+
+    if (!selectedDivision) {
+      return res.status(404).json({
+        success: false,
+        message:
+          "The selected office or section was not found.",
+      });
+    }
+
+    const reports =
+      await Report.findAll({
+        where: {
+          divisionId: officeId,
+        },
+        order: [["title", "ASC"]],
+      });
+
+    return res.json({
+      success: true,
+      office: {
+        id: Number(
+          selectedDivision.id
+        ),
+        code:
+          selectedDivision.acronym || "",
+        acronym:
+          selectedDivision.acronym || "",
+        name: selectedDivision.name,
+        divisionId: Number(
+          selectedDivision.officeId
+        ),
+      },
+      reports: reports.map((report) => ({
+        id: Number(report.id),
+        title: report.title,
+        description:
+          report.description || "",
+        hasSheet: Boolean(
+          report.sheetUrl
+        ),
+      })),
+    });
+  } catch (error) {
+    console.error(
+      "Unable to load chatbot reports:",
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        error.message ||
+        "Unable to load reports.",
+    });
+  }
+});
 
 /**
  * GET /api/chatbot/reports/:reportId/inspect
@@ -160,11 +353,6 @@ router.get(
           req.params.reportId
         );
 
-      /*
-       * Reuse the existing Google Sheets loader.
-       * The object below has the same shape previously
-       * used in divisions.js.
-       */
       const reportConfig = {
         name: report.title,
         sheets: [
@@ -176,55 +364,73 @@ router.get(
       };
 
       const reportData =
-        await loadDivisionData(reportConfig);
+        await loadDivisionData(
+          reportConfig
+        );
 
-      const worksheets = Object.entries(
-        reportData
-      ).map(
-        ([worksheetName, sheetData]) => {
-          let rows = [];
-          let error = null;
-
-          if (Array.isArray(sheetData)) {
-            rows = sheetData;
-          } else {
-            rows = sheetData?.rows || [];
-            error = sheetData?.error || null;
-          }
-
-          const columnNames = new Set();
-
-          for (const row of rows.slice(0, 20)) {
-            Object.keys(row).forEach(
-              (columnName) => {
-                columnNames.add(columnName);
-              }
-            );
-          }
-
-          return {
+      const worksheets =
+        Object.entries(reportData).map(
+          ([
             worksheetName,
-            rowCount: rows.length,
-            columns: Array.from(columnNames),
-            error,
-          };
-        }
-      );
+            sheetData,
+          ]) => {
+            let rows = [];
+            let error = null;
+
+            if (
+              Array.isArray(sheetData)
+            ) {
+              rows = sheetData;
+            } else {
+              rows =
+                sheetData?.rows || [];
+              error =
+                sheetData?.error || null;
+            }
+
+            const columnNames =
+              new Set();
+
+            for (
+              const row of rows.slice(
+                0,
+                20
+              )
+            ) {
+              Object.keys(row).forEach(
+                (columnName) => {
+                  columnNames.add(
+                    columnName
+                  );
+                }
+              );
+            }
+
+            return {
+              worksheetName,
+              rowCount: rows.length,
+              columns:
+                Array.from(columnNames),
+              error,
+            };
+          }
+        );
 
       return res.json({
         success: true,
-
         report: {
-          id: report.id,
+          id: Number(report.id),
           title: report.title,
-          divisionId: report.divisionId,
-          division:
-            report.division?.name || null,
+          divisionId: Number(
+            report.divisionId
+          ),
           office:
-            report.division?.office?.name ||
+            report.division?.name ||
             null,
+          division:
+            report.division?.office
+              ?.name || null,
         },
-
         worksheets,
       });
     } catch (error) {
@@ -234,7 +440,9 @@ router.get(
       );
 
       return res
-        .status(error.statusCode || 500)
+        .status(
+          error.statusCode || 500
+        )
         .json({
           success: false,
           message:
@@ -267,28 +475,22 @@ router.post("/chat", async (req, res) => {
     if (!question) {
       return res.status(400).json({
         success: false,
-        message: "Question is required.",
+        message:
+          "Question is required.",
       });
     }
 
     if (!Number.isInteger(reportId)) {
       return res.status(400).json({
         success: false,
-        message: "A valid report ID is required.",
+        message:
+          "A valid report ID is required.",
       });
     }
 
-    /*
-     * Read the report and sheetUrl from MySQL.
-     * The frontend does not decide which URL is loaded.
-     */
     const { report, csvUrl } =
       await getReportDataset(reportId);
 
-    /*
-     * Reuse your existing loadDivisionData function
-     * without any hardcoded divisions.js configuration.
-     */
     const reportConfig = {
       name: report.title,
       sheets: [
@@ -300,12 +502,16 @@ router.post("/chat", async (req, res) => {
     };
 
     const reportData =
-      await loadDivisionData(reportConfig);
+      await loadDivisionData(
+        reportConfig
+      );
 
     const availableSheets =
       Object.keys(reportData);
 
-    if (availableSheets.length === 0) {
+    if (
+      availableSheets.length === 0
+    ) {
       return res.status(500).json({
         success: false,
         message:
@@ -313,15 +519,22 @@ router.post("/chat", async (req, res) => {
       });
     }
 
-    const totalRows = Object.values(
-      reportData
-    ).reduce((total, sheet) => {
-      if (Array.isArray(sheet)) {
-        return total + sheet.length;
-      }
+    const totalRows =
+      Object.values(reportData).reduce(
+        (total, sheet) => {
+          if (Array.isArray(sheet)) {
+            return (
+              total + sheet.length
+            );
+          }
 
-      return total + (sheet?.rows?.length || 0);
-    }, 0);
+          return (
+            total +
+            (sheet?.rows?.length || 0)
+          );
+        },
+        0
+      );
 
     if (totalRows === 0) {
       return res.status(400).json({
@@ -331,35 +544,35 @@ router.post("/chat", async (req, res) => {
       });
     }
 
-    const result = await answerQuestion(
-      reportData,
-      question
-    );
+    const result =
+      await answerQuestion(
+        reportData,
+        question
+      );
 
     return res.json({
       ...result,
-
       success:
-        typeof result?.success === "boolean"
+        typeof result?.success ===
+        "boolean"
           ? result.success
           : true,
-
       question,
-
       report: {
-        id: report.id,
+        id: Number(report.id),
         title: report.title,
-        divisionId: report.divisionId,
-        division:
-          report.division?.name || null,
+        divisionId: Number(
+          report.divisionId
+        ),
         office:
-          report.division?.office?.name ||
+          report.division?.name ||
           null,
+        division:
+          report.division?.office
+            ?.name || null,
       },
-
       worksheetCount:
         availableSheets.length,
-
       totalRows,
     });
   } catch (error) {
