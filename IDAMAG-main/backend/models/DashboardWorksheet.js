@@ -1,33 +1,34 @@
-module.exports = (sequelize, DataTypes) => {
-  const DashboardWorksheet = sequelize.define(
-    "DashboardWorksheet",
-    {
-      worksheetId: {
-        type: DataTypes.INTEGER,
-        autoIncrement: true,
-        primaryKey: true,
-      },
+const { DataTypes } = require('sequelize');
+const sequelize = require('../config/database');
 
-      dashboardId: {
-        type: DataTypes.INTEGER,
-        allowNull: false,
-      },
-
-      worksheetName: {
-        type: DataTypes.STRING(255),
-        allowNull: false,
-      },
-
-      gid: {
-        type: DataTypes.STRING(50),
-        allowNull: false,
-      },
+const DashboardWorksheet = sequelize.define(
+  'DashboardWorksheet',
+  {
+    worksheetId: {
+      type: DataTypes.INTEGER,
+      autoIncrement: true,
+      primaryKey: true,
     },
-    {
-      tableName: "dashboard_worksheets",
-      timestamps: true,
-    }
-  );
 
-  return DashboardWorksheet;
-};
+    dashboardId: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+    },
+
+    worksheetName: {
+      type: DataTypes.STRING(255),
+      allowNull: false,
+    },
+
+    gid: {
+      type: DataTypes.STRING(50),
+      allowNull: false,
+    },
+  },
+  {
+    tableName: 'dashboard_worksheets',
+    timestamps: true,
+  }
+);
+
+module.exports = DashboardWorksheet;
