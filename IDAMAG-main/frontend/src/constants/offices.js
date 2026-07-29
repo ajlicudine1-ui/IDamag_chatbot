@@ -1,13 +1,13 @@
 const API_URL = (
   import.meta.env.VITE_API_URL ||
-  "https://i-damag-chatbot-61hx.vercel.app"
+  "https://i-damag-chatbot-61hx.vercel.app/api"
 ).replace(/\/$/, "");
 
 /**
  * Load all categories/offices from the database.
  */
 export async function getOffices() {
-  const response = await fetch(`${API_URL}/api/offices`, {
+  const response = await fetch(`${API_URL}/offices`, {
     method: "GET",
     headers: {
       Accept: "application/json",
@@ -74,14 +74,17 @@ export async function getOfficeById(officeId) {
   const numericOfficeId = Number(officeId);
 
   if (!Number.isInteger(numericOfficeId)) {
-    throw new Error("A valid category ID is required.");
+    throw new Error(
+      "A valid category ID is required."
+    );
   }
 
   const offices = await getOffices();
 
   return (
     offices.find(
-      (office) => office.id === numericOfficeId
+      (office) =>
+        office.id === numericOfficeId
     ) || null
   );
 }
