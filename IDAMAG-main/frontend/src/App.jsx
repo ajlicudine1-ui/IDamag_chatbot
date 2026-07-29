@@ -36,7 +36,13 @@ function App() {
       setDivisionError("");
 
       try {
-        const response = await fetch("/api/chatbot/divisions");
+        const API_URL =
+          import.meta.env.VITE_API_URL ||
+          "https://i-damag-chatbot-61hx.vercel.app";
+
+        const response = await fetch(
+          `${API_URL}/api/chatbot/divisions`
+        );
 
         const contentType =
           response.headers.get("content-type") || "";
