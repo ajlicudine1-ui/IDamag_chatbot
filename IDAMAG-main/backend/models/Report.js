@@ -24,6 +24,10 @@ const Report = sequelize.define(
         notEmpty: true,
       },
     },
+    sheetUrl: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+    },
     divisionId: {
       type: DataTypes.INTEGER,
       allowNull: false,
