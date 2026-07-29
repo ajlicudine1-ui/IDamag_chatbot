@@ -1,0 +1,1647 @@
+/**
+ * Dataset-agnostic chatbot service with JavaScript calculations + Groq.
+ *
+ * IMPORTANT:
+ * - No dataset names, worksheet names, column names, questions, or answers
+ *   are hardcoded.
+ * - Exact numeric answers are calculated by JavaScript from the rows received
+ *   in the current request.
+ * - Groq is used only to understand the question and to answer general
+ *   non-dataset questions.
+ * - Supports one worksheet or multiple worksheets.
+ *
+ * Accepted input:
+ *
+ * 1. One worksheet:
+ *    await answerQuestion([{...}, {...}], question)
+ *
+ * 2. Multiple worksheets:
+ *    await answerQuestion({
+ *      SheetA: [{...}, {...}],
+ *      SheetB: [{...}, {...}]
+ *    }, question)
+ *
+ * 3. loadDivisionData()-style values:
+ *    await answerQuestion({
+ *      SheetA: { rows: [{...}], ...metadata },
+ *      SheetB: { rows: [{...}], ...metadata }
+ *    }, question)
+ */
+
+const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_MODEL =
+  process.env.GROQ_MODEL || "llama-3.3-70b-versatile";
+
+const MAX_SCHEMA_EXAMPLES = 8;
+const MAX_LOOKUP_ROWS = 50;
+const MAX_RESULT_ROWS = 100;
+const DEFAULT_LIMIT = 10;
+
+const OPERATION_ALIASES = {
+  sum: ["sum", "total", "combined", "overall", "altogether"],
+  average: ["average", "avg", "mean"],
+  median: ["median", "middle value"],
+  minimum: ["minimum", "min", "lowest", "smallest", "least"],
+  maximum: ["maximum", "max", "highest", "largest", "greatest"],
+  row_count: ["row count", "number of rows", "how many rows", "records", "entries"],
+  distinct_count: ["unique", "distinct", "different"],
+  list: ["list", "show", "display", "enumerate", "what are", "which are"],
+};
+
+function normalizeText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^\p{L}\p{N}\s._%()/+-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenize(value) {
+  return normalizeText(value)
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function parseNumber(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    String(value).trim() === ""
+  ) {
+    return null;
+  }
+
+  let text = String(value).trim();
+  const isNegativeWithParentheses =
+    text.startsWith("(") && text.endsWith(")");
+
+  text = text
+    .replace(/,/g, "")
+    .replace(/%/g, "")
+    .replace(/[^\d.+-]/g, "")
+    .trim();
+
+  if (!text || text === "-" || text === "+" || text === ".") {
+    return null;
+  }
+
+  const number = Number(text);
+
+  if (!Number.isFinite(number)) {
+    return null;
+  }
+
+  return isNegativeWithParentheses
+    ? -Math.abs(number)
+    : number;
+}
+
+function formatNumber(value) {
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function safeRows(value) {
+  if (Array.isArray(value)) {
+    return value.filter(
+      (row) => row && typeof row === "object" && !Array.isArray(row)
+    );
+  }
+
+  if (
+    value &&
+    typeof value === "object" &&
+    Array.isArray(value.rows)
+  ) {
+    return value.rows.filter(
+      (row) => row && typeof row === "object" && !Array.isArray(row)
+    );
+  }
+
+  return [];
+}
+
+function asDatasetMap(input, fallbackName = "Dataset") {
+  if (Array.isArray(input)) {
+    return {
+      [fallbackName]: safeRows(input),
+    };
+  }
+
+  if (!input || typeof input !== "object") {
+    return {};
+  }
+
+  const datasets = {};
+
+  for (const [name, value] of Object.entries(input)) {
+    const rows = safeRows(value);
+
+    if (rows.length > 0) {
+      datasets[String(name)] = rows;
+    }
+  }
+
+  return datasets;
+}
+
+function getColumns(rows) {
+  const columns = new Set();
+
+  for (const row of rows || []) {
+    for (const key of Object.keys(row || {})) {
+      if (String(key).trim()) {
+        columns.add(key);
+      }
+    }
+  }
+
+  return [...columns];
+}
+
+function getNonBlankValues(rows, column) {
+  return rows
+    .map((row) => row?.[column])
+    .filter(
+      (value) =>
+        value !== null &&
+        value !== undefined &&
+        String(value).trim() !== ""
+    );
+}
+
+function inferColumnType(rows, column) {
+  const values = getNonBlankValues(rows, column);
+
+  if (!values.length) {
+    return "empty";
+  }
+
+  const numericCount = values.filter(
+    (value) => parseNumber(value) !== null
+  ).length;
+
+  if (numericCount / values.length >= 0.7) {
+    return "number";
+  }
+
+  const dateCount = values.filter((value) => {
+    const text = String(value).trim();
+
+    if (!/[/-]/.test(text)) {
+      return false;
+    }
+
+    const timestamp = Date.parse(text);
+    return !Number.isNaN(timestamp);
+  }).length;
+
+  if (dateCount / values.length >= 0.7) {
+    return "date";
+  }
+
+  return "text";
+}
+
+function uniqueValues(rows, column, limit = MAX_SCHEMA_EXAMPLES) {
+  const result = [];
+  const seen = new Set();
+
+  for (const row of rows) {
+    const raw = row?.[column];
+
+    if (
+      raw === null ||
+      raw === undefined ||
+      String(raw).trim() === ""
+    ) {
+      continue;
+    }
+
+    const displayValue = String(raw).trim();
+    const key = normalizeText(displayValue);
+
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(displayValue);
+    }
+
+    if (result.length >= limit) {
+      break;
+    }
+  }
+
+  return result;
+}
+
+function buildSchema(datasets) {
+  return Object.entries(datasets).map(([name, rows]) => {
+    const columns = getColumns(rows);
+
+    return {
+      name,
+      rowCount: rows.length,
+      columns: columns.map((column) => ({
+        name: column,
+        type: inferColumnType(rows, column),
+        examples: uniqueValues(
+          rows,
+          column,
+          MAX_SCHEMA_EXAMPLES
+        ),
+      })),
+    };
+  });
+}
+
+function normalizedSimilarity(left, right) {
+  const a = normalizeText(left);
+  const b = normalizeText(right);
+
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  if (a.includes(b) || b.includes(a)) {
+    return Math.min(a.length, b.length) /
+      Math.max(a.length, b.length);
+  }
+
+  const aTokens = new Set(tokenize(a));
+  const bTokens = new Set(tokenize(b));
+  let intersection = 0;
+
+  for (const token of aTokens) {
+    if (bTokens.has(token)) {
+      intersection += 1;
+    }
+  }
+
+  const union = new Set([...aTokens, ...bTokens]).size;
+  return union ? intersection / union : 0;
+}
+
+function findDatasetName(datasets, requestedName) {
+  const names = Object.keys(datasets);
+
+  if (names.length === 1 && !requestedName) {
+    return names[0];
+  }
+
+  if (!requestedName) {
+    return null;
+  }
+
+  const ranked = names
+    .map((name) => ({
+      name,
+      score: normalizedSimilarity(name, requestedName),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  return ranked[0] && ranked[0].score >= 0.5
+    ? ranked[0].name
+    : null;
+}
+
+function findColumn(rows, requestedColumn) {
+  const columns = getColumns(rows);
+
+  if (!requestedColumn) {
+    return null;
+  }
+
+  const ranked = columns
+    .map((column) => ({
+      column,
+      score: normalizedSimilarity(column, requestedColumn),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  return ranked[0] && ranked[0].score >= 0.45
+    ? ranked[0].column
+    : null;
+}
+
+function requireColumn(rows, requestedColumn, label = "Column") {
+  const column = findColumn(rows, requestedColumn);
+
+  if (!column) {
+    throw new Error(
+      `${label} "${requestedColumn || ""}" was not found. ` +
+      `Available columns: ${getColumns(rows).join(", ")}`
+    );
+  }
+
+  return column;
+}
+
+function compareValue(actual, expected, operator = "equals") {
+  const leftText = normalizeText(actual);
+  const rightText = normalizeText(expected);
+  const leftNumber = parseNumber(actual);
+  const rightNumber = parseNumber(expected);
+
+  switch (operator) {
+    case "contains":
+      return leftText.includes(rightText);
+
+    case "starts_with":
+      return leftText.startsWith(rightText);
+
+    case "ends_with":
+      return leftText.endsWith(rightText);
+
+    case "greater_than":
+      return (
+        leftNumber !== null &&
+        rightNumber !== null &&
+        leftNumber > rightNumber
+      );
+
+    case "greater_or_equal":
+      return (
+        leftNumber !== null &&
+        rightNumber !== null &&
+        leftNumber >= rightNumber
+      );
+
+    case "less_than":
+      return (
+        leftNumber !== null &&
+        rightNumber !== null &&
+        leftNumber < rightNumber
+      );
+
+    case "less_or_equal":
+      return (
+        leftNumber !== null &&
+        rightNumber !== null &&
+        leftNumber <= rightNumber
+      );
+
+    case "not_equals":
+      return leftText !== rightText;
+
+    case "equals":
+    default:
+      return leftText === rightText;
+  }
+}
+
+function normalizeFilter(rows, filter) {
+  if (!filter || typeof filter !== "object") {
+    return null;
+  }
+
+  const column = findColumn(rows, filter.column);
+
+  if (!column) {
+    return null;
+  }
+
+  return {
+    column,
+    operator: filter.operator || "equals",
+    value: filter.value,
+  };
+}
+
+function applyFilters(rows, filters = []) {
+  const normalizedFilters = (Array.isArray(filters) ? filters : [])
+    .map((filter) => normalizeFilter(rows, filter))
+    .filter(Boolean);
+
+  if (!normalizedFilters.length) {
+    return rows;
+  }
+
+  return rows.filter((row) =>
+    normalizedFilters.every((filter) =>
+      compareValue(
+        row?.[filter.column],
+        filter.value,
+        filter.operator
+      )
+    )
+  );
+}
+
+function inferImplicitFilters(
+  question,
+  rows,
+  excludedColumns = []
+) {
+  const normalizedQuestion = normalizeText(question);
+  const excluded = new Set(excludedColumns.filter(Boolean));
+  const candidates = [];
+
+  for (const column of getColumns(rows)) {
+    if (excluded.has(column)) {
+      continue;
+    }
+
+    const type = inferColumnType(rows, column);
+
+    if (type === "number") {
+      continue;
+    }
+
+    const values = uniqueValues(
+      rows,
+      column,
+      Math.max(rows.length, 1)
+    );
+
+    if (values.length > 2000) {
+      continue;
+    }
+
+    for (const value of values) {
+      const normalizedValue = normalizeText(value);
+
+      if (
+        normalizedValue.length >= 2 &&
+        normalizedQuestion.includes(normalizedValue)
+      ) {
+        candidates.push({
+          column,
+          operator: "equals",
+          value,
+          score: normalizedValue.length,
+        });
+      }
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+
+  const selected = [];
+  const usedColumns = new Set();
+
+  for (const candidate of candidates) {
+    if (!usedColumns.has(candidate.column)) {
+      selected.push(candidate);
+      usedColumns.add(candidate.column);
+    }
+  }
+
+  return selected.map(({ score, ...filter }) => filter);
+}
+
+function mergeFilters(
+  plannedFilters,
+  inferredFilters
+) {
+  const result = [];
+  const seen = new Set();
+
+  for (const filter of [
+    ...(Array.isArray(plannedFilters) ? plannedFilters : []),
+    ...(Array.isArray(inferredFilters) ? inferredFilters : []),
+  ]) {
+    if (!filter) continue;
+
+    const key = [
+      normalizeText(filter.column),
+      filter.operator || "equals",
+      normalizeText(filter.value),
+    ].join("|");
+
+    if (!seen.has(key)) {
+      seen.add(key);
+      result.push(filter);
+    }
+  }
+
+  return result;
+}
+
+function getLimit(plan) {
+  const value = Number(plan?.limit);
+
+  if (!Number.isInteger(value)) {
+    return DEFAULT_LIMIT;
+  }
+
+  return Math.min(
+    Math.max(value, 1),
+    MAX_RESULT_ROWS
+  );
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+
+  if (sorted.length % 2 === 0) {
+    return (
+      sorted[middle - 1] + sorted[middle]
+    ) / 2;
+  }
+
+  return sorted[middle];
+}
+
+function formatFilterDescription(filters = []) {
+  if (!filters.length) return "";
+
+  return (
+    " where " +
+    filters
+      .map(
+        (filter) =>
+          `${filter.column} ${filter.operator || "equals"} "${filter.value}"`
+      )
+      .join(" and ")
+  );
+}
+
+function executePlan(datasets, rawPlan, question = "") {
+  const plan = {
+    ...rawPlan,
+    operation: normalizeText(rawPlan?.operation).replace(/\s+/g, "_"),
+  };
+
+  let datasetName = findDatasetName(
+    datasets,
+    plan.dataset
+  );
+
+  if (!datasetName && Object.keys(datasets).length === 1) {
+    datasetName = Object.keys(datasets)[0];
+  }
+
+  if (!datasetName) {
+    throw new Error(
+      `The requested dataset was not found. Available datasets: ` +
+      `${Object.keys(datasets).join(", ")}`
+    );
+  }
+
+  const rows = datasets[datasetName];
+  const resolvedColumn = plan.column
+    ? findColumn(rows, plan.column)
+    : null;
+  const resolvedGroupBy = plan.groupBy
+    ? findColumn(rows, plan.groupBy)
+    : null;
+
+  const inferredFilters = inferImplicitFilters(
+    question,
+    rows,
+    [resolvedColumn, resolvedGroupBy]
+  );
+
+  const filters = mergeFilters(
+    plan.filters,
+    inferredFilters
+  );
+
+  const filteredRows = applyFilters(rows, filters);
+  const filterText = formatFilterDescription(filters);
+  const limit = getLimit(plan);
+
+  if (plan.operation === "row_count") {
+    return {
+      success: true,
+      source: "dataset",
+      dataset: datasetName,
+      operation: "row_count",
+      value: filteredRows.length,
+      filters,
+      answer:
+        `There are ${formatNumber(filteredRows.length)} record(s) ` +
+        `in ${datasetName}${filterText}.`,
+    };
+  }
+
+  if (
+    plan.operation === "list" ||
+    plan.operation === "distinct_count" ||
+    plan.operation === "non_empty_count"
+  ) {
+    const column = requireColumn(
+      rows,
+      plan.column,
+      "Column"
+    );
+
+    const values = filteredRows
+      .map((row) => row?.[column])
+      .filter(
+        (value) =>
+          value !== null &&
+          value !== undefined &&
+          String(value).trim() !== ""
+      );
+
+    if (plan.operation === "non_empty_count") {
+      return {
+        success: true,
+        source: "dataset",
+        dataset: datasetName,
+        operation: "non_empty_count",
+        column,
+        value: values.length,
+        filters,
+        answer:
+          `There are ${formatNumber(values.length)} populated ` +
+          `${column} value(s) in ${datasetName}${filterText}.`,
+      };
+    }
+
+    const distinctValues = [];
+    const seen = new Set();
+
+    for (const value of values) {
+      const displayValue = String(value).trim();
+      const key = normalizeText(displayValue);
+
+      if (!seen.has(key)) {
+        seen.add(key);
+        distinctValues.push(displayValue);
+      }
+    }
+
+    distinctValues.sort((a, b) =>
+      a.localeCompare(b)
+    );
+
+    if (plan.operation === "distinct_count") {
+      return {
+        success: true,
+        source: "dataset",
+        dataset: datasetName,
+        operation: "distinct_count",
+        column,
+        value: distinctValues.length,
+        filters,
+        answer:
+          `There are ${formatNumber(distinctValues.length)} unique ` +
+          `${column} value(s) in ${datasetName}${filterText}.`,
+      };
+    }
+
+    const shown = distinctValues.slice(0, limit);
+
+    return {
+      success: true,
+      source: "dataset",
+      dataset: datasetName,
+      operation: "list",
+      column,
+      count: distinctValues.length,
+      results: shown,
+      filters,
+      answer:
+        `${column} values in ${datasetName}${filterText}:\n` +
+        shown
+          .map(
+            (value, index) =>
+              `${index + 1}. ${value}`
+          )
+          .join("\n") +
+        (
+          distinctValues.length > shown.length
+            ? `\n...and ${formatNumber(
+                distinctValues.length - shown.length
+              )} more.`
+            : ""
+        ),
+    };
+  }
+
+  if (plan.operation === "lookup") {
+    const selectedColumns =
+      Array.isArray(plan.selectColumns) &&
+      plan.selectColumns.length
+        ? plan.selectColumns
+            .map((column) =>
+              findColumn(rows, column)
+            )
+            .filter(Boolean)
+        : getColumns(rows).slice(0, 10);
+
+    const shown = filteredRows.slice(
+      0,
+      Math.min(limit, MAX_LOOKUP_ROWS)
+    );
+
+    return {
+      success: true,
+      source: "dataset",
+      dataset: datasetName,
+      operation: "lookup",
+      count: filteredRows.length,
+      results: shown,
+      filters,
+      answer:
+        `I found ${formatNumber(filteredRows.length)} matching ` +
+        `record(s) in ${datasetName}${filterText}.\n` +
+        shown
+          .map(
+            (row, index) =>
+              `${index + 1}. ` +
+              selectedColumns
+                .map(
+                  (column) =>
+                    `${column}: ${row?.[column] ?? ""}`
+                )
+                .join(", ")
+          )
+          .join("\n"),
+    };
+  }
+
+  if (plan.operation === "group_count") {
+    const groupColumn = requireColumn(
+      rows,
+      plan.groupBy,
+      "Group column"
+    );
+
+    const groups = new Map();
+
+    for (const row of filteredRows) {
+      const label = String(
+        row?.[groupColumn] ?? ""
+      ).trim();
+
+      if (!label) continue;
+
+      groups.set(
+        label,
+        (groups.get(label) || 0) + 1
+      );
+    }
+
+    const results = [...groups.entries()]
+      .map(([label, value]) => ({
+        label,
+        value,
+      }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, limit);
+
+    return {
+      success: true,
+      source: "dataset",
+      dataset: datasetName,
+      operation: "group_count",
+      groupBy: groupColumn,
+      results,
+      filters,
+      answer:
+        `Record count by ${groupColumn} in ${datasetName}` +
+        `${filterText}:\n` +
+        results
+          .map(
+            (item, index) =>
+              `${index + 1}. ${item.label}: ` +
+              `${formatNumber(item.value)}`
+          )
+          .join("\n"),
+    };
+  }
+
+  const numericColumn = requireColumn(
+    rows,
+    plan.column,
+    "Numeric column"
+  );
+
+  const numericRows = filteredRows
+    .map((row) => ({
+      row,
+      value: parseNumber(row?.[numericColumn]),
+    }))
+    .filter((item) => item.value !== null);
+
+  if (!numericRows.length) {
+    throw new Error(
+      `No numeric values were found in "${numericColumn}"` +
+      `${filterText}.`
+    );
+  }
+
+  if (
+    ["sum", "average", "median"].includes(
+      plan.operation
+    )
+  ) {
+    const values = numericRows.map(
+      (item) => item.value
+    );
+    const sum = values.reduce(
+      (total, value) => total + value,
+      0
+    );
+
+    let value;
+
+    if (plan.operation === "average") {
+      value = sum / values.length;
+    } else if (plan.operation === "median") {
+      value = median(values);
+    } else {
+      value = sum;
+    }
+
+    return {
+      success: true,
+      source: "dataset",
+      dataset: datasetName,
+      operation: plan.operation,
+      column: numericColumn,
+      value,
+      recordsUsed: values.length,
+      filters,
+      answer:
+        `The ${plan.operation} ${numericColumn} in ${datasetName}` +
+        `${filterText} is ${formatNumber(value)}, based on ` +
+        `${formatNumber(values.length)} record(s).`,
+    };
+  }
+
+  if (
+    ["minimum", "maximum"].includes(
+      plan.operation
+    )
+  ) {
+    numericRows.sort((a, b) =>
+      plan.operation === "maximum"
+        ? b.value - a.value
+        : a.value - b.value
+    );
+
+    const labelColumn = plan.groupBy
+      ? requireColumn(
+          rows,
+          plan.groupBy,
+          "Label column"
+        )
+      : null;
+
+    const results = numericRows
+      .slice(0, limit)
+      .map((item) => ({
+        label: labelColumn
+          ? item.row?.[labelColumn]
+          : null,
+        value: item.value,
+        row: item.row,
+      }));
+
+    return {
+      success: true,
+      source: "dataset",
+      dataset: datasetName,
+      operation: plan.operation,
+      column: numericColumn,
+      value: results[0]?.value,
+      results,
+      filters,
+      answer:
+        `${plan.operation === "maximum" ? "Highest" : "Lowest"} ` +
+        `${numericColumn} in ${datasetName}${filterText}:\n` +
+        results
+          .map(
+            (item, index) =>
+              `${index + 1}. ` +
+              (
+                item.label !== null &&
+                item.label !== undefined &&
+                String(item.label).trim() !== ""
+                  ? `${item.label}: `
+                  : ""
+              ) +
+              formatNumber(item.value)
+          )
+          .join("\n"),
+    };
+  }
+
+  if (
+    [
+      "group_sum",
+      "group_average",
+      "group_minimum",
+      "group_maximum",
+    ].includes(plan.operation)
+  ) {
+    const groupColumn = requireColumn(
+      rows,
+      plan.groupBy,
+      "Group column"
+    );
+
+    const groups = new Map();
+
+    for (const item of numericRows) {
+      const label = String(
+        item.row?.[groupColumn] ?? ""
+      ).trim();
+
+      if (!label) continue;
+
+      if (!groups.has(label)) {
+        groups.set(label, {
+          sum: 0,
+          count: 0,
+          minimum: item.value,
+          maximum: item.value,
+        });
+      }
+
+      const group = groups.get(label);
+      group.sum += item.value;
+      group.count += 1;
+      group.minimum = Math.min(
+        group.minimum,
+        item.value
+      );
+      group.maximum = Math.max(
+        group.maximum,
+        item.value
+      );
+    }
+
+    const results = [...groups.entries()]
+      .map(([label, group]) => {
+        let value;
+
+        switch (plan.operation) {
+          case "group_average":
+            value = group.sum / group.count;
+            break;
+          case "group_minimum":
+            value = group.minimum;
+            break;
+          case "group_maximum":
+            value = group.maximum;
+            break;
+          default:
+            value = group.sum;
+        }
+
+        return {
+          label,
+          value,
+          recordsUsed: group.count,
+        };
+      })
+      .sort((a, b) => b.value - a.value)
+      .slice(0, limit);
+
+    return {
+      success: true,
+      source: "dataset",
+      dataset: datasetName,
+      operation: plan.operation,
+      column: numericColumn,
+      groupBy: groupColumn,
+      results,
+      filters,
+      answer:
+        `${plan.operation.replace("group_", "")} ` +
+        `${numericColumn} by ${groupColumn} in ${datasetName}` +
+        `${filterText}:\n` +
+        results
+          .map(
+            (item, index) =>
+              `${index + 1}. ${item.label}: ` +
+              `${formatNumber(item.value)}`
+          )
+          .join("\n"),
+    };
+  }
+
+  throw new Error(
+    `Unsupported operation: ${plan.operation}`
+  );
+}
+
+function extractJson(text) {
+  const cleaned = String(text || "")
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+
+  if (
+    start === -1 ||
+    end === -1 ||
+    end <= start
+  ) {
+    throw new Error(
+      "Groq did not return valid JSON."
+    );
+  }
+
+  return JSON.parse(
+    cleaned.slice(start, end + 1)
+  );
+}
+
+async function callGroq(
+  messages,
+  options = {}
+) {
+  const apiKey = process.env.GROQ_API_KEY;
+
+  if (!apiKey) {
+    throw new Error(
+      "GROQ_API_KEY is missing from the backend environment variables."
+    );
+  }
+
+  const response = await fetch(GROQ_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: options.model || GROQ_MODEL,
+      temperature:
+        options.temperature ?? 0.1,
+      max_tokens:
+        options.maxTokens || 900,
+      messages,
+    }),
+  });
+
+  const body = await response
+    .json()
+    .catch(() => ({}));
+
+  if (!response.ok) {
+    throw new Error(
+      body?.error?.message ||
+      `Groq request failed with HTTP ${response.status}.`
+    );
+  }
+
+  return (
+    body?.choices?.[0]?.message?.content?.trim() ||
+    ""
+  );
+}
+
+async function createPlan(
+  question,
+  datasets
+) {
+  const schema = buildSchema(datasets);
+
+  const systemPrompt = `
+You are the intent detector and query planner for a dataset chatbot.
+
+The chatbot receives one or more datasets. Each dataset may have completely
+different names, columns, values, and subject matter.
+
+Return JSON only. Never calculate the final numeric answer yourself.
+
+Choose exactly one route:
+
+1. Dataset calculation or lookup:
+{
+  "route": "dataset",
+  "dataset": "exact dataset name",
+  "operation": "sum|average|median|minimum|maximum|row_count|non_empty_count|distinct_count|list|lookup|group_count|group_sum|group_average|group_minimum|group_maximum",
+  "column": "exact column name or null",
+  "groupBy": "exact column name or null",
+  "filters": [
+    {
+      "column": "exact column name",
+      "operator": "equals|not_equals|contains|starts_with|ends_with|greater_than|greater_or_equal|less_than|less_or_equal",
+      "value": "filter value"
+    }
+  ],
+  "selectColumns": [],
+  "limit": 10,
+  "reason": "brief reason"
+}
+
+2. Dataset/schema question:
+{
+  "route": "schema",
+  "intent": "datasets|columns|row_counts|find_column|describe",
+  "column": "requested column name or null",
+  "dataset": "requested dataset name or null"
+}
+
+3. General question:
+{
+  "route": "general",
+  "reason": "brief reason"
+}
+
+4. Ambiguous dataset request:
+{
+  "route": "clarify",
+  "question": "one concise clarification question"
+}
+
+Rules:
+- Use only dataset and column names that appear in the supplied schema.
+- Do not invent dataset names, column names, filters, or values.
+- Exact totals, averages, rankings, counts, lists, and record lookups must use
+  route "dataset".
+- Questions about available datasets, worksheets, columns, row counts, or
+  which dataset contains a column must use route "schema".
+- Grammar, translation, definitions, explanations, writing, greetings, and
+  general knowledge must use route "general".
+- "How many rows/records/entries" means row_count.
+- "How many values are filled in column X" means non_empty_count.
+- "How many unique/distinct X" means distinct_count.
+- "How many X" may mean sum when X is a numeric quantity column. Use the
+  column type in the schema.
+- "By", "per", or "for each" normally requires a group operation.
+- Use lookup when the user asks to find, show, or retrieve matching records.
+- If the request could refer to multiple datasets and the schema does not make
+  the intended one clear, use route "clarify".
+`;
+
+  const response = await callGroq(
+    [
+      {
+        role: "system",
+        content: systemPrompt,
+      },
+      {
+        role: "user",
+        content:
+          `DATASET SCHEMA:\n${JSON.stringify(schema)}\n\n` +
+          `USER QUESTION:\n${question}`,
+      },
+    ],
+    {
+      temperature: 0,
+      maxTokens: 900,
+    }
+  );
+
+  return extractJson(response);
+}
+
+function answerSchemaQuestion(
+  question,
+  datasets,
+  plan = {}
+) {
+  const schema = buildSchema(datasets);
+  const intent =
+    plan.intent || "describe";
+
+  if (intent === "datasets") {
+    return {
+      success: true,
+      source: "schema",
+      operation: "datasets",
+      results: schema.map((item) => ({
+        name: item.name,
+        rowCount: item.rowCount,
+      })),
+      answer:
+        "Available datasets:\n" +
+        schema
+          .map(
+            (item, index) =>
+              `${index + 1}. ${item.name} ` +
+              `(${formatNumber(item.rowCount)} rows)`
+          )
+          .join("\n"),
+    };
+  }
+
+  if (intent === "row_counts") {
+    return {
+      success: true,
+      source: "schema",
+      operation: "row_counts",
+      answer:
+        "Dataset row counts:\n" +
+        schema
+          .map(
+            (item, index) =>
+              `${index + 1}. ${item.name}: ` +
+              `${formatNumber(item.rowCount)}`
+          )
+          .join("\n"),
+    };
+  }
+
+  if (intent === "find_column") {
+    const requestedColumn =
+      plan.column || question;
+
+    const matches = schema
+      .map((dataset) => ({
+        dataset: dataset.name,
+        columns: dataset.columns
+          .filter(
+            (column) =>
+              normalizedSimilarity(
+                column.name,
+                requestedColumn
+              ) >= 0.45
+          )
+          .map((column) => column.name),
+      }))
+      .filter(
+        (item) => item.columns.length > 0
+      );
+
+    if (!matches.length) {
+      return {
+        success: false,
+        source: "schema",
+        operation: "find_column",
+        answer:
+          `I could not find a column matching "${requestedColumn}" ` +
+          `in the currently loaded datasets.`,
+      };
+    }
+
+    return {
+      success: true,
+      source: "schema",
+      operation: "find_column",
+      results: matches,
+      answer:
+        `Matching column locations:\n` +
+        matches
+          .map(
+            (item, index) =>
+              `${index + 1}. ${item.dataset}: ` +
+              item.columns.join(", ")
+          )
+          .join("\n"),
+    };
+  }
+
+  if (intent === "columns") {
+    const requestedDataset = findDatasetName(
+      datasets,
+      plan.dataset
+    );
+
+    const selected = requestedDataset
+      ? schema.filter(
+          (item) =>
+            item.name === requestedDataset
+        )
+      : schema;
+
+    return {
+      success: true,
+      source: "schema",
+      operation: "columns",
+      answer: selected
+        .map(
+          (dataset) =>
+            `${dataset.name} ` +
+            `(${formatNumber(dataset.rowCount)} rows):\n` +
+            dataset.columns
+              .map(
+                (column, index) =>
+                  `${index + 1}. ${column.name} [${column.type}]`
+              )
+              .join("\n")
+        )
+        .join("\n\n"),
+    };
+  }
+
+  return {
+    success: true,
+    source: "schema",
+    operation: "describe",
+    answer: schema
+      .map(
+        (dataset) =>
+          `${dataset.name} contains ` +
+          `${formatNumber(dataset.rowCount)} rows and ` +
+          `${formatNumber(dataset.columns.length)} columns. ` +
+          `Columns: ${dataset.columns
+            .map((column) => column.name)
+            .join(", ")}.`
+      )
+      .join("\n\n"),
+  };
+}
+
+async function answerGeneralQuestion(
+  question,
+  datasets
+) {
+  const schema = buildSchema(datasets).map(
+    (dataset) => ({
+      name: dataset.name,
+      rowCount: dataset.rowCount,
+      columns: dataset.columns.map(
+        (column) => ({
+          name: column.name,
+          type: column.type,
+        })
+      ),
+    })
+  );
+
+  const answer = await callGroq(
+    [
+      {
+        role: "system",
+        content: `
+You are a helpful general-purpose assistant inside a data chatbot.
+
+You may answer general questions, definitions, explanations, grammar,
+translation, writing, rewriting, and greetings.
+
+Important:
+- Do not invent exact values, totals, rows, rankings, or facts from datasets.
+- You only know the dataset schema below, not every dataset value.
+- When exact dataset data is required, state that the dataset engine should
+  calculate it.
+- Answer clearly and directly.
+`,
+      },
+      {
+        role: "user",
+        content:
+          `AVAILABLE DATASET SCHEMA:\n${JSON.stringify(schema)}\n\n` +
+          `QUESTION:\n${question}`,
+      },
+    ],
+    {
+      temperature: 0.3,
+      maxTokens: 1000,
+    }
+  );
+
+  return {
+    success: true,
+    source: "groq",
+    operation: "general",
+    answer,
+  };
+}
+
+function detectLocalOperation(question) {
+  const normalized = normalizeText(question);
+
+  for (const [operation, aliases] of Object.entries(
+    OPERATION_ALIASES
+  )) {
+    if (
+      aliases.some((alias) =>
+        normalized.includes(alias)
+      )
+    ) {
+      return operation;
+    }
+  }
+
+  if (
+    /\bhow many\b/.test(normalized) ||
+    /\bnumber of\b/.test(normalized) ||
+    /\bcount\b/.test(normalized)
+  ) {
+    return "row_count";
+  }
+
+  return null;
+}
+
+function createLocalFallbackPlan(
+  question,
+  datasets
+) {
+  const operation =
+    detectLocalOperation(question);
+
+  if (!operation) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (const [datasetName, rows] of Object.entries(
+    datasets
+  )) {
+    for (const column of getColumns(rows)) {
+      const score = normalizedSimilarity(
+        question,
+        column
+      );
+
+      candidates.push({
+        datasetName,
+        column,
+        score,
+        type: inferColumnType(rows, column),
+      });
+    }
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+
+  if (
+    !best ||
+    best.score < 0.2
+  ) {
+    if (
+      operation === "row_count" &&
+      Object.keys(datasets).length === 1
+    ) {
+      return {
+        route: "dataset",
+        dataset: Object.keys(datasets)[0],
+        operation: "row_count",
+        column: null,
+        groupBy: null,
+        filters: [],
+        limit: DEFAULT_LIMIT,
+      };
+    }
+
+    return null;
+  }
+
+  let resolvedOperation = operation;
+
+  if (
+    operation === "row_count" &&
+    best.type === "number" &&
+    !/\b(rows?|records?|entries)\b/.test(
+      normalizeText(question)
+    )
+  ) {
+    resolvedOperation = "sum";
+  }
+
+  return {
+    route: "dataset",
+    dataset: best.datasetName,
+    operation: resolvedOperation,
+    column:
+      resolvedOperation === "row_count"
+        ? null
+        : best.column,
+    groupBy: null,
+    filters: [],
+    selectColumns: [],
+    limit: DEFAULT_LIMIT,
+  };
+}
+
+/**
+ * Main exported function.
+ *
+ * IMPORTANT: this function is asynchronous.
+ */
+async function answerQuestion(
+  input,
+  question,
+  options = {}
+) {
+  if (
+    !question ||
+    !String(question).trim()
+  ) {
+    return {
+      success: false,
+      answer: "Please enter a question.",
+    };
+  }
+
+  const datasets = asDatasetMap(
+    input,
+    options.datasetName || "Dataset"
+  );
+
+  if (!Object.keys(datasets).length) {
+    try {
+      return await answerGeneralQuestion(
+        question,
+        {}
+      );
+    } catch (error) {
+      return {
+        success: false,
+        source: "system",
+        operation: "error",
+        answer:
+          "No dataset is currently available, and the general AI service " +
+          `could not respond. Details: ${error.message}`,
+      };
+    }
+  }
+
+  try {
+    const plan = await createPlan(
+      question,
+      datasets
+    );
+
+    if (plan.route === "clarify") {
+      return {
+        success: false,
+        source: "router",
+        operation: "clarify",
+        answer:
+          plan.question ||
+          "Please specify the dataset or column you want to use.",
+      };
+    }
+
+    if (plan.route === "schema") {
+      return answerSchemaQuestion(
+        question,
+        datasets,
+        plan
+      );
+    }
+
+    if (plan.route === "general") {
+      return await answerGeneralQuestion(
+        question,
+        datasets
+      );
+    }
+
+    if (plan.route === "dataset") {
+      return executePlan(
+        datasets,
+        plan,
+        question
+      );
+    }
+
+    throw new Error(
+      `Unsupported route: ${plan.route}`
+    );
+  } catch (primaryError) {
+    console.error(
+      "Primary chatbot routing failed:",
+      primaryError
+    );
+
+    const fallbackPlan =
+      createLocalFallbackPlan(
+        question,
+        datasets
+      );
+
+    if (fallbackPlan) {
+      try {
+        return executePlan(
+          datasets,
+          fallbackPlan,
+          question
+        );
+      } catch (fallbackError) {
+        return {
+          success: false,
+          source: "dataset",
+          operation:
+            fallbackPlan.operation || "unknown",
+          answer:
+            `I found a likely dataset request, but could not complete it. ` +
+            `Details: ${fallbackError.message}`,
+        };
+      }
+    }
+
+    try {
+      return await answerGeneralQuestion(
+        question,
+        datasets
+      );
+    } catch (generalError) {
+      return {
+        success: false,
+        source: "system",
+        operation: "error",
+        answer:
+          "I could not process the question. " +
+          `Routing error: ${primaryError.message}. ` +
+          `General AI error: ${generalError.message}.`,
+      };
+    }
+  }
+}
+
+module.exports = {
+  answerQuestion,
+  asDatasetMap,
+  buildSchema,
+  executePlan,
+  answerSchemaQuestion,
+};
