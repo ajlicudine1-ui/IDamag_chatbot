@@ -4,11 +4,11 @@ import ManagementLayout from '../../components/management/ManagementLayout';
 import SearchableSelect from '../../components/common/SearchableSelect';
 import { getUsers, createUser, updateUser, deleteUser, getOffices, getDivisions, updateUserStatus } from '../../services/api';
 import { UserPlus, Shield, Mail, Building2, Layers, CheckCircle2, AlertCircle, Edit3, Trash2, ShieldCheck, ShieldOff, UserCheck, UserMinus } from 'lucide-react';
-import { offices as hardcodedOffices } from '../../constants/offices';
+
 
 function UserManagement() {
   const [users, setUsers] = useState([]);
-  const [offices, setOffices] = useState(hardcodedOffices);
+  const [offices, setOffices] = useState([]);
   const [divisions, setDivisions] = useState([]);
   const [selectedOffice, setSelectedOffice] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
