@@ -5,6 +5,23 @@ const API_URL = (
   "http://localhost:5000/api"
 ).replace(/\/$/, "");
 
+async function readJsonResponse(response) {
+  const contentType =
+    response.headers.get("content-type") || "";
+
+  if (!contentType.includes("application/json")) {
+    const responseText = await response.text();
+
+    console.error("Non-JSON server response:", responseText);
+
+    throw new Error(
+      `The server did not return valid JSON. HTTP ${response.status}.`
+    );
+  }
+
+  return response.json();
+}
+
 const Chatbot = () => {
   const [divisions, setDivisions] = useState([]);
   const [offices, setOffices] = useState([]);
@@ -23,6 +40,7 @@ const Chatbot = () => {
     useState("");
 
   const [question, setQuestion] = useState("");
+
   const [messages, setMessages] = useState([
     {
       role: "bot",
@@ -32,13 +50,7 @@ const Chatbot = () => {
 
   const [loading, setLoading] = useState(false);
 
-  /*
-   * In the current database:
-   * offices table = top-level divisions such as AFD and FOD
-   *
-   * The UI calls these "Divisions" because that is the
-   * selection order requested by the user.
-   */
+  // Step 1: Load top-level divisions
   useEffect(() => {
     let isMounted = true;
 
@@ -48,7 +60,7 @@ const Chatbot = () => {
         setSelectionError("");
 
         const response = await fetch(
-          `${API_URL}/offices`,
+          `${API_URL}/chatbot/divisions`,
           {
             method: "GET",
             headers: {
@@ -57,7 +69,7 @@ const Chatbot = () => {
           }
         );
 
-        const data = await response.json();
+        const data = await readJsonResponse(response);
 
         if (!response.ok) {
           throw new Error(
@@ -69,11 +81,9 @@ const Chatbot = () => {
 
         if (isMounted) {
           setDivisions(
-            Array.isArray(data)
-              ? data
-              : Array.isArray(data.data)
-                ? data.data
-                : []
+            Array.isArray(data.divisions)
+              ? data.divisions
+              : []
           );
         }
       } catch (error) {
@@ -103,10 +113,7 @@ const Chatbot = () => {
     };
   }, []);
 
-  /*
-   * Load offices/sections belonging to the selected
-   * top-level division.
-   */
+  // Step 2: Load offices/sections
   useEffect(() => {
     let isMounted = true;
 
@@ -125,7 +132,7 @@ const Chatbot = () => {
         setSelectionError("");
 
         const response = await fetch(
-          `${API_URL}/divisions?officeId=${encodeURIComponent(
+          `${API_URL}/chatbot/offices?divisionId=${encodeURIComponent(
             selectedDivision
           )}`,
           {
@@ -136,7 +143,7 @@ const Chatbot = () => {
           }
         );
 
-        const data = await response.json();
+        const data = await readJsonResponse(response);
 
         if (!response.ok) {
           throw new Error(
@@ -148,11 +155,9 @@ const Chatbot = () => {
 
         if (isMounted) {
           setOffices(
-            Array.isArray(data)
-              ? data
-              : Array.isArray(data.data)
-                ? data.data
-                : []
+            Array.isArray(data.offices)
+              ? data.offices
+              : []
           );
         }
       } catch (error) {
@@ -182,9 +187,7 @@ const Chatbot = () => {
     };
   }, [selectedDivision]);
 
-  /*
-   * Load reports belonging to the selected office/section.
-   */
+  // Step 3: Load reports
   useEffect(() => {
     let isMounted = true;
 
@@ -201,7 +204,7 @@ const Chatbot = () => {
         setSelectionError("");
 
         const response = await fetch(
-          `${API_URL}/reports?divisionId=${encodeURIComponent(
+          `${API_URL}/chatbot/reports?officeId=${encodeURIComponent(
             selectedOffice
           )}`,
           {
@@ -212,7 +215,7 @@ const Chatbot = () => {
           }
         );
 
-        const data = await response.json();
+        const data = await readJsonResponse(response);
 
         if (!response.ok) {
           throw new Error(
@@ -224,11 +227,9 @@ const Chatbot = () => {
 
         if (isMounted) {
           setReports(
-            Array.isArray(data)
-              ? data
-              : Array.isArray(data.data)
-                ? data.data
-                : []
+            Array.isArray(data.reports)
+              ? data.reports
+              : []
           );
         }
       } catch (error) {
@@ -262,6 +263,8 @@ const Chatbot = () => {
     setSelectedDivision(event.target.value);
     setSelectedOffice("");
     setSelectedReport("");
+    setSelectionError("");
+
     setMessages([
       {
         role: "bot",
@@ -273,6 +276,8 @@ const Chatbot = () => {
   const handleOfficeChange = (event) => {
     setSelectedOffice(event.target.value);
     setSelectedReport("");
+    setSelectionError("");
+
     setMessages([
       {
         role: "bot",
@@ -285,18 +290,32 @@ const Chatbot = () => {
     const reportId = event.target.value;
 
     setSelectedReport(reportId);
+    setSelectionError("");
 
     const report = reports.find(
       (item) =>
         Number(item.id) === Number(reportId)
     );
 
+    if (!report) {
+      return;
+    }
+
+    if (!report.hasSheet) {
+      setMessages([
+        {
+          role: "bot",
+          text: `"${report.title}" does not have a Google Sheet connected yet.`,
+        },
+      ]);
+
+      return;
+    }
+
     setMessages([
       {
         role: "bot",
-        text: report
-          ? `You selected "${report.title}". You can now ask questions about its Google Sheet data.`
-          : "You can now ask questions about the selected report.",
+        text: `You selected "${report.title}". You can now ask questions about its Google Sheet data.`,
       },
     ]);
   };
@@ -304,11 +323,29 @@ const Chatbot = () => {
   const sendQuestion = async () => {
     const trimmedQuestion = question.trim();
 
+    const report = reports.find(
+      (item) =>
+        Number(item.id) ===
+        Number(selectedReport)
+    );
+
     if (
       !trimmedQuestion ||
       loading ||
       !selectedReport
     ) {
+      return;
+    }
+
+    if (!report?.hasSheet) {
+      setMessages((current) => [
+        ...current,
+        {
+          role: "bot",
+          text: "The selected report does not have a Google Sheet connected.",
+        },
+      ]);
+
       return;
     }
 
@@ -330,37 +367,16 @@ const Chatbot = () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
+            Accept: "application/json",
           },
           body: JSON.stringify({
             question: trimmedQuestion,
-
-            // This is the database reports.id,
-            // not the Power BI embed ID.
             reportId: Number(selectedReport),
-
-            // Included for reference if the backend needs them.
-            divisionId: Number(
-              selectedDivision
-            ),
-            officeId: Number(selectedOffice),
           }),
         }
       );
 
-      const contentType =
-        response.headers.get("content-type") || "";
-
-      if (
-        !contentType.includes(
-          "application/json"
-        )
-      ) {
-        throw new Error(
-          "The chatbot server did not return valid JSON."
-        );
-      }
-
-      const data = await response.json();
+      const data = await readJsonResponse(response);
 
       if (!response.ok) {
         throw new Error(
@@ -415,12 +431,12 @@ const Chatbot = () => {
   const canChat =
     Boolean(selectedDivision) &&
     Boolean(selectedOffice) &&
-    Boolean(selectedReport);
+    Boolean(selectedReport) &&
+    Boolean(selectedReportData?.hasSheet);
 
   return (
     <div className="min-h-screen bg-slate-100 px-4 py-8">
       <div className="mx-auto flex h-[85vh] max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-xl">
-        {/* Header */}
         <div className="bg-green-800 px-6 py-5 text-white">
           <h1 className="text-2xl font-bold">
             iDamag Chatbot
@@ -432,10 +448,8 @@ const Chatbot = () => {
           </p>
         </div>
 
-        {/* Data selection */}
         <div className="border-b border-slate-200 bg-white p-5">
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            {/* Division */}
             <div>
               <label
                 htmlFor="division"
@@ -468,7 +482,6 @@ const Chatbot = () => {
               </select>
             </div>
 
-            {/* Office or Section */}
             <div>
               <label
                 htmlFor="office"
@@ -506,7 +519,6 @@ const Chatbot = () => {
               </select>
             </div>
 
-            {/* Report */}
             <div>
               <label
                 htmlFor="report"
@@ -537,6 +549,9 @@ const Chatbot = () => {
                     value={report.id}
                   >
                     {report.title}
+                    {!report.hasSheet
+                      ? " — No Google Sheet"
+                      : ""}
                   </option>
                 ))}
               </select>
@@ -556,21 +571,39 @@ const Chatbot = () => {
           )}
 
           {selectedReportData && (
-            <div className="mt-4 rounded-xl border border-green-100 bg-green-50 px-4 py-3">
-              <p className="text-sm font-semibold text-green-800">
+            <div
+              className={`mt-4 rounded-xl border px-4 py-3 ${
+                selectedReportData.hasSheet
+                  ? "border-green-100 bg-green-50"
+                  : "border-amber-200 bg-amber-50"
+              }`}
+            >
+              <p
+                className={`text-sm font-semibold ${
+                  selectedReportData.hasSheet
+                    ? "text-green-800"
+                    : "text-amber-800"
+                }`}
+              >
                 Selected report:{" "}
                 {selectedReportData.title}
               </p>
 
-              <p className="mt-1 text-xs text-green-700">
-                The chatbot will use the Google
-                Sheet connected to this report.
+              <p
+                className={`mt-1 text-xs ${
+                  selectedReportData.hasSheet
+                    ? "text-green-700"
+                    : "text-amber-700"
+                }`}
+              >
+                {selectedReportData.hasSheet
+                  ? "The chatbot will use the Google Sheet connected to this report."
+                  : "This report has no Google Sheet URL configured."}
               </p>
             </div>
           )}
         </div>
 
-        {/* Messages */}
         <div className="flex-1 space-y-4 overflow-y-auto bg-slate-50 p-6">
           {messages.map((message, index) => (
             <div
@@ -596,19 +629,18 @@ const Chatbot = () => {
           {loading && (
             <div className="flex justify-start">
               <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
-                Checking the selected report's
+                Checking the selected report&apos;s
                 Google Sheet...
               </div>
             </div>
           )}
         </div>
 
-        {/* Input */}
         <div className="border-t border-slate-200 bg-white p-4">
           {!canChat && (
             <p className="mb-3 text-center text-sm font-medium text-amber-600">
-              Select a division, office or section,
-              and report to enable the chatbot.
+              Select a report with a connected Google
+              Sheet to enable the chatbot.
             </p>
           )}
 
