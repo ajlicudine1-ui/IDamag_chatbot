@@ -269,6 +269,18 @@ function StaffDashboard() {
                 <Plus size={18} />
                 Add New Report
               </button>
+              <button 
+                onClick={() => setIsModalOpen(true)}
+                disabled={user.role === 'Admin' && !selectedDivision}
+                className={`flex items-center gap-2 transition-all shadow-lg active:scale-95 px-6 py-3.5 rounded-2xl text-[11px] font-black uppercase tracking-widest ${
+                  user.role === 'Admin' && !selectedDivision
+                    ? 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
+                    : 'bg-moss-600 hover:bg-moss-700 text-white shadow-moss-600/20'
+                }`}
+              >
+                <Plus size={18} />
+                Add New Worksheet
+              </button>
             </div>
           </div>
           <div className="overflow-x-auto">
