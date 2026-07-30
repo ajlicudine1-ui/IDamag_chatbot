@@ -16,7 +16,7 @@ const FloatingChatbotButton = ({ onClick }) => {
       <div
         className="
           absolute
-          bottom-[82%]
+          bottom-[92%]
           right-2
 
           w-[300px]
