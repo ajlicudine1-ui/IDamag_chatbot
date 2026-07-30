@@ -12,7 +12,7 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
         group
       "
     >
-      {/* Hover Textbox - ONLY show when chatbot is CLOSED */}
+      {/* Hover Textbox - only when chatbot is closed */}
       {!isOpen && (
         <div
           className="
@@ -83,7 +83,7 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
             ? "Close iDamag Chatbot"
             : "Open iDamag Chatbot"
         }
-        className="
+        className={`
           w-36
           h-36
 
@@ -93,12 +93,13 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
           border-0
           p-0
 
-          hover:scale-105
           active:scale-95
 
           transition-all
           duration-300
-        "
+
+          ${!isOpen ? "hover:scale-105" : ""}
+        `}
       >
         <img
           src={chatbotLogo}

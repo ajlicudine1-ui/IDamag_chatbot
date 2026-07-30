@@ -1416,7 +1416,7 @@ function App() {
         </div>
       )}
 
-      <FloatingChatbotButton
+            <FloatingChatbotButton
         onClick={handleToggleChatbot}
         isOpen={isChatbotOpen}
       />
