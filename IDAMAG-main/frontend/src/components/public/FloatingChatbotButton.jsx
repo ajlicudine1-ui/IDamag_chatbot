@@ -12,13 +12,16 @@ const FloatingChatbotButton = ({ onClick }) => {
         group
       "
     >
-      {/* Hover Speech Bubble */}
+      {/* Speech Bubble */}
       <div
         className="
           absolute
-          right-[85%]
-          bottom-[65%]
-          w-64
+          bottom-full
+          left-1/2
+          -translate-x-1/2
+          mb-2
+
+          w-72
           bg-white
           text-[#1F2A7A]
           font-bold
@@ -26,6 +29,7 @@ const FloatingChatbotButton = ({ onClick }) => {
           leading-snug
           px-5
           py-4
+
           rounded-2xl
           border-2
           border-[#1F2A7A]
@@ -33,31 +37,35 @@ const FloatingChatbotButton = ({ onClick }) => {
 
           opacity-0
           invisible
-          translate-y-2
 
           group-hover:opacity-100
           group-hover:visible
-          group-hover:translate-y-0
 
           transition-all
           duration-300
           pointer-events-none
         "
       >
-        Hi! Need help with iDamag? Ask me anything. 🤖
+        Hi! Need help with iDamag?
+        <br />
+        Ask me anything. 🤖
 
-        {/* Speech Bubble Tail */}
+        {/* Bubble Tail */}
         <div
           className="
             absolute
-            -bottom-3
-            right-8
-            w-6
-            h-6
+            -bottom-[9px]
+            left-1/2
+            -translate-x-1/2
+
+            w-4
+            h-4
             bg-white
+
             border-r-2
             border-b-2
             border-[#1F2A7A]
+
             rotate-45
           "
         />
@@ -74,8 +82,10 @@ const FloatingChatbotButton = ({ onClick }) => {
           bg-transparent
           border-0
           p-0
+
           hover:scale-105
           active:scale-95
+
           transition-all
           duration-300
         "
