@@ -1,5 +1,5 @@
 import React from "react";
-import chatbotLogo from "../../assets/chatbot_logo.png";
+import chatbotLogo from "../../assets/botbot.png";
 
 const FloatingChatbotButton = ({ onClick }) => {
   return (
