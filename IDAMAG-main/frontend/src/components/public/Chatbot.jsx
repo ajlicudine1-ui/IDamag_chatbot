@@ -6,8 +6,7 @@ const API_URL = (
 ).replace(/\/$/, "");
 
 async function readJsonResponse(response) {
-  const contentType =
-    response.headers.get("content-type") || "";
+  const contentType = response.headers.get("content-type") || "";
 
   if (!contentType.includes("application/json")) {
     const responseText = await response.text();
@@ -27,17 +26,12 @@ const Chatbot = () => {
   const [offices, setOffices] = useState([]);
   const [reports, setReports] = useState([]);
 
-  const [selectedDivision, setSelectedDivision] =
-    useState("");
-  const [selectedOffice, setSelectedOffice] =
-    useState("");
-  const [selectedReport, setSelectedReport] =
-    useState("");
+  const [selectedDivision, setSelectedDivision] = useState("");
+  const [selectedOffice, setSelectedOffice] = useState("");
+  const [selectedReport, setSelectedReport] = useState("");
 
-  const [selectionLoading, setSelectionLoading] =
-    useState(false);
-  const [selectionError, setSelectionError] =
-    useState("");
+  const [selectionLoading, setSelectionLoading] = useState(false);
+  const [selectionError, setSelectionError] = useState("");
 
   const [question, setQuestion] = useState("");
 
@@ -50,7 +44,9 @@ const Chatbot = () => {
 
   const [loading, setLoading] = useState(false);
 
-  // Step 1: Load top-level divisions
+  // =========================================================
+  // STEP 1: LOAD DIVISIONS
+  // =========================================================
   useEffect(() => {
     let isMounted = true;
 
@@ -59,15 +55,12 @@ const Chatbot = () => {
         setSelectionLoading(true);
         setSelectionError("");
 
-        const response = await fetch(
-          `${API_URL}/chatbot/divisions`,
-          {
-            method: "GET",
-            headers: {
-              Accept: "application/json",
-            },
-          }
-        );
+        const response = await fetch(`${API_URL}/chatbot/divisions`, {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+          },
+        });
 
         const data = await readJsonResponse(response);
 
@@ -81,22 +74,17 @@ const Chatbot = () => {
 
         if (isMounted) {
           setDivisions(
-            Array.isArray(data.divisions)
-              ? data.divisions
-              : []
+            Array.isArray(data.divisions) ? data.divisions : []
           );
         }
       } catch (error) {
-        console.error(
-          "Error loading divisions:",
-          error
-        );
+        console.error("Error loading divisions:", error);
 
         if (isMounted) {
           setDivisions([]);
+
           setSelectionError(
-            error.message ||
-              "Unable to load divisions."
+            error.message || "Unable to load divisions."
           );
         }
       } finally {
@@ -113,13 +101,16 @@ const Chatbot = () => {
     };
   }, []);
 
-  // Step 2: Load offices/sections
+  // =========================================================
+  // STEP 2: LOAD OFFICES / SECTIONS
+  // =========================================================
   useEffect(() => {
     let isMounted = true;
 
     const loadOffices = async () => {
       setOffices([]);
       setReports([]);
+
       setSelectedOffice("");
       setSelectedReport("");
 
@@ -155,22 +146,17 @@ const Chatbot = () => {
 
         if (isMounted) {
           setOffices(
-            Array.isArray(data.offices)
-              ? data.offices
-              : []
+            Array.isArray(data.offices) ? data.offices : []
           );
         }
       } catch (error) {
-        console.error(
-          "Error loading offices:",
-          error
-        );
+        console.error("Error loading offices:", error);
 
         if (isMounted) {
           setOffices([]);
+
           setSelectionError(
-            error.message ||
-              "Unable to load offices."
+            error.message || "Unable to load offices."
           );
         }
       } finally {
@@ -187,7 +173,9 @@ const Chatbot = () => {
     };
   }, [selectedDivision]);
 
-  // Step 3: Load reports
+  // =========================================================
+  // STEP 3: LOAD REPORTS
+  // =========================================================
   useEffect(() => {
     let isMounted = true;
 
@@ -227,22 +215,17 @@ const Chatbot = () => {
 
         if (isMounted) {
           setReports(
-            Array.isArray(data.reports)
-              ? data.reports
-              : []
+            Array.isArray(data.reports) ? data.reports : []
           );
         }
       } catch (error) {
-        console.error(
-          "Error loading reports:",
-          error
-        );
+        console.error("Error loading reports:", error);
 
         if (isMounted) {
           setReports([]);
+
           setSelectionError(
-            error.message ||
-              "Unable to load reports."
+            error.message || "Unable to load reports."
           );
         }
       } finally {
@@ -259,8 +242,12 @@ const Chatbot = () => {
     };
   }, [selectedOffice]);
 
+  // =========================================================
+  // DIVISION CHANGE
+  // =========================================================
   const handleDivisionChange = (event) => {
     setSelectedDivision(event.target.value);
+
     setSelectedOffice("");
     setSelectedReport("");
     setSelectionError("");
@@ -273,8 +260,12 @@ const Chatbot = () => {
     ]);
   };
 
+  // =========================================================
+  // OFFICE CHANGE
+  // =========================================================
   const handleOfficeChange = (event) => {
     setSelectedOffice(event.target.value);
+
     setSelectedReport("");
     setSelectionError("");
 
@@ -286,6 +277,9 @@ const Chatbot = () => {
     ]);
   };
 
+  // =========================================================
+  // REPORT CHANGE
+  // =========================================================
   const handleReportChange = (event) => {
     const reportId = event.target.value;
 
@@ -293,8 +287,7 @@ const Chatbot = () => {
     setSelectionError("");
 
     const report = reports.find(
-      (item) =>
-        Number(item.id) === Number(reportId)
+      (item) => Number(item.id) === Number(reportId)
     );
 
     if (!report) {
@@ -320,20 +313,17 @@ const Chatbot = () => {
     ]);
   };
 
+  // =========================================================
+  // SEND QUESTION
+  // =========================================================
   const sendQuestion = async () => {
     const trimmedQuestion = question.trim();
 
     const report = reports.find(
-      (item) =>
-        Number(item.id) ===
-        Number(selectedReport)
+      (item) => Number(item.id) === Number(selectedReport)
     );
 
-    if (
-      !trimmedQuestion ||
-      loading ||
-      !selectedReport
-    ) {
+    if (!trimmedQuestion || loading || !selectedReport) {
       return;
     }
 
@@ -361,20 +351,19 @@ const Chatbot = () => {
     setLoading(true);
 
     try {
-      const response = await fetch(
-        `${API_URL}/chatbot/chat`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-          body: JSON.stringify({
-            question: trimmedQuestion,
-            reportId: Number(selectedReport),
-          }),
-        }
-      );
+      const response = await fetch(`${API_URL}/chatbot/chat`, {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+
+        body: JSON.stringify({
+          question: trimmedQuestion,
+          reportId: Number(selectedReport),
+        }),
+      });
 
       const data = await readJsonResponse(response);
 
@@ -412,20 +401,21 @@ const Chatbot = () => {
     }
   };
 
+  // =========================================================
+  // ENTER KEY
+  // =========================================================
   const handleKeyDown = (event) => {
-    if (
-      event.key === "Enter" &&
-      !event.shiftKey
-    ) {
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       sendQuestion();
     }
   };
 
+  // =========================================================
+  // SELECTED REPORT
+  // =========================================================
   const selectedReportData = reports.find(
-    (report) =>
-      Number(report.id) ===
-      Number(selectedReport)
+    (report) => Number(report.id) === Number(selectedReport)
   );
 
   const canChat =
@@ -434,246 +424,552 @@ const Chatbot = () => {
     Boolean(selectedReport) &&
     Boolean(selectedReportData?.hasSheet);
 
+  // =========================================================
+  // UI
+  // =========================================================
   return (
-    <div className="min-h-screen bg-slate-100 px-4 py-8">
-      <div className="mx-auto flex h-[85vh] max-w-5xl flex-col overflow-hidden rounded-3xl bg-white shadow-xl">
-        <div className="bg-green-800 px-6 py-5 text-white">
-          <h1 className="text-2xl font-bold">
-            iDamag Chatbot
-          </h1>
+    <div
+      className="
+        fixed
+        z-[9998]
 
-          <p className="mt-1 text-sm text-green-100">
-            Select a division, office or section,
-            and report before asking about its data.
-          </p>
-        </div>
+        top-[82px]
+        right-2
+        bottom-2
 
-        <div className="border-b border-slate-200 bg-white p-5">
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <div>
-              <label
-                htmlFor="division"
-                className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500"
-              >
-                1. Division
-              </label>
+        w-[calc(100vw-1rem)]
+        sm:w-[400px]
+        md:w-[430px]
+        lg:w-[450px]
 
-              <select
-                id="division"
-                value={selectedDivision}
-                onChange={handleDivisionChange}
-                disabled={selectionLoading}
-                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-green-700 focus:ring-2 focus:ring-green-100 disabled:cursor-not-allowed disabled:bg-slate-100"
-              >
-                <option value="">
-                  Select Division
+        max-h-[calc(100dvh-90px)]
+
+        flex
+        flex-col
+
+        bg-white
+
+        border
+        border-slate-200
+
+        rounded-2xl
+
+        shadow-2xl
+
+        overflow-hidden
+      "
+    >
+      {/* =====================================================
+          CHATBOT HEADER
+      ===================================================== */}
+      <div
+        className="
+          shrink-0
+          bg-green-800
+          px-4
+          sm:px-5
+          py-4
+          text-white
+        "
+      >
+        <h1 className="text-lg sm:text-xl font-bold">
+          iDamag Chatbot
+        </h1>
+
+        <p className="mt-1 text-xs sm:text-sm text-green-100">
+          Select a division, office or section, and report before
+          asking about its data.
+        </p>
+      </div>
+
+      {/* =====================================================
+          SELECTION AREA
+      ===================================================== */}
+      <div
+        className="
+          shrink-0
+          border-b
+          border-slate-200
+          bg-white
+          p-4
+
+          max-h-[42dvh]
+          overflow-y-auto
+        "
+      >
+        <div className="grid grid-cols-1 gap-3">
+
+          {/* DIVISION */}
+          <div>
+            <label
+              htmlFor="division"
+              className="
+                mb-1.5
+                block
+                text-[11px]
+                sm:text-xs
+                font-bold
+                uppercase
+                tracking-wider
+                text-slate-500
+              "
+            >
+              1. Division
+            </label>
+
+            <select
+              id="division"
+              value={selectedDivision}
+              onChange={handleDivisionChange}
+              disabled={selectionLoading}
+              className="
+                w-full
+                rounded-xl
+                border
+                border-slate-300
+                bg-white
+                px-3
+                py-2.5
+                text-sm
+                text-slate-700
+
+                outline-none
+
+                transition
+
+                focus:border-green-700
+                focus:ring-2
+                focus:ring-green-100
+
+                disabled:cursor-not-allowed
+                disabled:bg-slate-100
+              "
+            >
+              <option value="">Select Division</option>
+
+              {divisions.map((division) => (
+                <option
+                  key={division.id}
+                  value={division.id}
+                >
+                  {division.acronym
+                    ? `${division.acronym} - ${division.name}`
+                    : division.name}
                 </option>
-
-                {divisions.map((division) => (
-                  <option
-                    key={division.id}
-                    value={division.id}
-                  >
-                    {division.acronym
-                      ? `${division.acronym} - ${division.name}`
-                      : division.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label
-                htmlFor="office"
-                className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500"
-              >
-                2. Office / Section
-              </label>
-
-              <select
-                id="office"
-                value={selectedOffice}
-                onChange={handleOfficeChange}
-                disabled={
-                  !selectedDivision ||
-                  selectionLoading
-                }
-                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-green-700 focus:ring-2 focus:ring-green-100 disabled:cursor-not-allowed disabled:bg-slate-100"
-              >
-                <option value="">
-                  {selectedDivision
-                    ? "Select Office or Section"
-                    : "Select Division First"}
-                </option>
-
-                {offices.map((office) => (
-                  <option
-                    key={office.id}
-                    value={office.id}
-                  >
-                    {office.acronym
-                      ? `${office.acronym} - ${office.name}`
-                      : office.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div>
-              <label
-                htmlFor="report"
-                className="mb-2 block text-xs font-bold uppercase tracking-wider text-slate-500"
-              >
-                3. Report
-              </label>
-
-              <select
-                id="report"
-                value={selectedReport}
-                onChange={handleReportChange}
-                disabled={
-                  !selectedOffice ||
-                  selectionLoading
-                }
-                className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700 outline-none transition focus:border-green-700 focus:ring-2 focus:ring-green-100 disabled:cursor-not-allowed disabled:bg-slate-100"
-              >
-                <option value="">
-                  {selectedOffice
-                    ? "Select Report"
-                    : "Select Office First"}
-                </option>
-
-                {reports.map((report) => (
-                  <option
-                    key={report.id}
-                    value={report.id}
-                  >
-                    {report.title}
-                    {!report.hasSheet
-                      ? " — No Google Sheet"
-                      : ""}
-                  </option>
-                ))}
-              </select>
-            </div>
+              ))}
+            </select>
           </div>
 
-          {selectionLoading && (
-            <p className="mt-3 text-sm text-slate-500">
-              Loading available options...
-            </p>
-          )}
+          {/* OFFICE */}
+          <div>
+            <label
+              htmlFor="office"
+              className="
+                mb-1.5
+                block
+                text-[11px]
+                sm:text-xs
+                font-bold
+                uppercase
+                tracking-wider
+                text-slate-500
+              "
+            >
+              2. Office / Section
+            </label>
 
-          {selectionError && (
-            <p className="mt-3 text-sm font-semibold text-red-600">
-              {selectionError}
-            </p>
-          )}
+            <select
+              id="office"
+              value={selectedOffice}
+              onChange={handleOfficeChange}
+              disabled={!selectedDivision || selectionLoading}
+              className="
+                w-full
+                rounded-xl
+                border
+                border-slate-300
+                bg-white
+                px-3
+                py-2.5
+                text-sm
+                text-slate-700
 
-          {selectedReportData && (
-            <div
-              className={`mt-4 rounded-xl border px-4 py-3 ${
+                outline-none
+
+                transition
+
+                focus:border-green-700
+                focus:ring-2
+                focus:ring-green-100
+
+                disabled:cursor-not-allowed
+                disabled:bg-slate-100
+              "
+            >
+              <option value="">
+                {selectedDivision
+                  ? "Select Office or Section"
+                  : "Select Division First"}
+              </option>
+
+              {offices.map((office) => (
+                <option
+                  key={office.id}
+                  value={office.id}
+                >
+                  {office.acronym
+                    ? `${office.acronym} - ${office.name}`
+                    : office.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* REPORT */}
+          <div>
+            <label
+              htmlFor="report"
+              className="
+                mb-1.5
+                block
+                text-[11px]
+                sm:text-xs
+                font-bold
+                uppercase
+                tracking-wider
+                text-slate-500
+              "
+            >
+              3. Report
+            </label>
+
+            <select
+              id="report"
+              value={selectedReport}
+              onChange={handleReportChange}
+              disabled={!selectedOffice || selectionLoading}
+              className="
+                w-full
+                rounded-xl
+                border
+                border-slate-300
+                bg-white
+                px-3
+                py-2.5
+                text-sm
+                text-slate-700
+
+                outline-none
+
+                transition
+
+                focus:border-green-700
+                focus:ring-2
+                focus:ring-green-100
+
+                disabled:cursor-not-allowed
+                disabled:bg-slate-100
+              "
+            >
+              <option value="">
+                {selectedOffice
+                  ? "Select Report"
+                  : "Select Office First"}
+              </option>
+
+              {reports.map((report) => (
+                <option
+                  key={report.id}
+                  value={report.id}
+                >
+                  {report.title}
+                  {!report.hasSheet
+                    ? " — No Google Sheet"
+                    : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* LOADING */}
+        {selectionLoading && (
+          <p className="mt-3 text-xs sm:text-sm text-slate-500">
+            Loading available options...
+          </p>
+        )}
+
+        {/* ERROR */}
+        {selectionError && (
+          <p className="mt-3 text-xs sm:text-sm font-semibold text-red-600">
+            {selectionError}
+          </p>
+        )}
+
+        {/* SELECTED REPORT INFORMATION */}
+        {selectedReportData && (
+          <div
+            className={`
+              mt-3
+              rounded-xl
+              border
+              px-3
+              py-2.5
+
+              ${
                 selectedReportData.hasSheet
                   ? "border-green-100 bg-green-50"
                   : "border-amber-200 bg-amber-50"
-              }`}
-            >
-              <p
-                className={`text-sm font-semibold ${
+              }
+            `}
+          >
+            <p
+              className={`
+                text-xs
+                sm:text-sm
+                font-semibold
+
+                ${
                   selectedReportData.hasSheet
                     ? "text-green-800"
                     : "text-amber-800"
-                }`}
-              >
-                Selected report:{" "}
-                {selectedReportData.title}
-              </p>
+                }
+              `}
+            >
+              Selected report: {selectedReportData.title}
+            </p>
 
-              <p
-                className={`mt-1 text-xs ${
+            <p
+              className={`
+                mt-1
+                text-[11px]
+                sm:text-xs
+
+                ${
                   selectedReportData.hasSheet
                     ? "text-green-700"
                     : "text-amber-700"
-                }`}
-              >
-                {selectedReportData.hasSheet
-                  ? "The chatbot will use the Google Sheet connected to this report."
-                  : "This report has no Google Sheet URL configured."}
-              </p>
-            </div>
-          )}
-        </div>
-
-        <div className="flex-1 space-y-4 overflow-y-auto bg-slate-50 p-6">
-          {messages.map((message, index) => (
-            <div
-              key={`${message.role}-${index}`}
-              className={`flex ${
-                message.role === "user"
-                  ? "justify-end"
-                  : "justify-start"
-              }`}
+                }
+              `}
             >
-              <div
-                className={`max-w-[80%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+              {selectedReportData.hasSheet
+                ? "The chatbot will use the Google Sheet connected to this report."
+                : "This report has no Google Sheet URL configured."}
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* =====================================================
+          MESSAGES
+      ===================================================== */}
+      <div
+        className="
+          min-h-0
+          flex-1
+
+          space-y-3
+
+          overflow-y-auto
+
+          bg-slate-50
+
+          p-3
+          sm:p-4
+        "
+      >
+        {messages.map((message, index) => (
+          <div
+            key={`${message.role}-${index}`}
+            className={`flex ${
+              message.role === "user"
+                ? "justify-end"
+                : "justify-start"
+            }`}
+          >
+            <div
+              className={`
+                max-w-[88%]
+                sm:max-w-[82%]
+
+                whitespace-pre-wrap
+
+                rounded-2xl
+
+                px-3
+                sm:px-4
+
+                py-2.5
+                sm:py-3
+
+                text-xs
+                sm:text-sm
+
+                leading-relaxed
+
+                ${
                   message.role === "user"
                     ? "bg-green-700 text-white"
                     : "border border-slate-200 bg-white text-slate-700"
-                }`}
-              >
-                {message.text}
-              </div>
-            </div>
-          ))}
-
-          {loading && (
-            <div className="flex justify-start">
-              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
-                Checking the selected report&apos;s
-                Google Sheet...
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="border-t border-slate-200 bg-white p-4">
-          {!canChat && (
-            <p className="mb-3 text-center text-sm font-medium text-amber-600">
-              Select a report with a connected Google
-              Sheet to enable the chatbot.
-            </p>
-          )}
-
-          <div className="flex items-end gap-3">
-            <textarea
-              value={question}
-              onChange={(event) =>
-                setQuestion(event.target.value)
-              }
-              onKeyDown={handleKeyDown}
-              placeholder={
-                canChat
-                  ? "Ask a question about the selected report..."
-                  : "Complete the selections above first..."
-              }
-              rows={2}
-              disabled={!canChat || loading}
-              className="flex-1 resize-none rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-green-700 focus:ring-2 focus:ring-green-100 disabled:cursor-not-allowed disabled:bg-slate-100"
-            />
-
-            <button
-              type="button"
-              onClick={sendQuestion}
-              disabled={
-                loading ||
-                !question.trim() ||
-                !canChat
-              }
-              className="rounded-2xl bg-green-700 px-6 py-3 font-semibold text-white transition hover:bg-green-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                }
+              `}
             >
-              {loading ? "Sending..." : "Ask"}
-            </button>
+              {message.text}
+            </div>
           </div>
+        ))}
+
+        {/* CHATBOT LOADING */}
+        {loading && (
+          <div className="flex justify-start">
+            <div
+              className="
+                max-w-[88%]
+                rounded-2xl
+                border
+                border-slate-200
+                bg-white
+                px-3
+                sm:px-4
+                py-2.5
+                sm:py-3
+                text-xs
+                sm:text-sm
+                text-slate-500
+              "
+            >
+              Checking the selected report&apos;s Google Sheet...
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* =====================================================
+          INPUT AREA
+      ===================================================== */}
+      <div
+        className="
+          shrink-0
+
+          border-t
+          border-slate-200
+
+          bg-white
+
+          p-3
+          sm:p-4
+        "
+      >
+        {!canChat && (
+          <p
+            className="
+              mb-2
+              text-center
+              text-[11px]
+              sm:text-xs
+              font-medium
+              text-amber-600
+            "
+          >
+            Select a report with a connected Google Sheet to enable
+            the chatbot.
+          </p>
+        )}
+
+        <div
+          className="
+            flex
+            flex-col
+            sm:flex-row
+            sm:items-end
+            gap-2
+          "
+        >
+          <textarea
+            value={question}
+            onChange={(event) =>
+              setQuestion(event.target.value)
+            }
+            onKeyDown={handleKeyDown}
+            placeholder={
+              canChat
+                ? "Ask a question about the selected report..."
+                : "Complete the selections above first..."
+            }
+            rows={2}
+            disabled={!canChat || loading}
+            className="
+              min-h-[48px]
+              max-h-28
+
+              flex-1
+
+              resize-none
+
+              rounded-2xl
+
+              border
+              border-slate-300
+
+              px-3
+              sm:px-4
+
+              py-2.5
+              sm:py-3
+
+              text-sm
+
+              outline-none
+
+              transition
+
+              focus:border-green-700
+              focus:ring-2
+              focus:ring-green-100
+
+              disabled:cursor-not-allowed
+              disabled:bg-slate-100
+            "
+          />
+
+          <button
+            type="button"
+            onClick={sendQuestion}
+            disabled={
+              loading ||
+              !question.trim() ||
+              !canChat
+            }
+            className="
+              w-full
+              sm:w-auto
+
+              shrink-0
+
+              rounded-2xl
+
+              bg-green-700
+
+              px-6
+              py-3
+
+              text-sm
+              font-semibold
+              text-white
+
+              transition
+
+              hover:bg-green-800
+
+              active:scale-95
+
+              disabled:cursor-not-allowed
+              disabled:bg-slate-300
+              disabled:active:scale-100
+            "
+          >
+            {loading ? "Sending..." : "Ask"}
+          </button>
         </div>
       </div>
     </div>
