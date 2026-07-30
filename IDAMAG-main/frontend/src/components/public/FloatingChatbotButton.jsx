@@ -8,11 +8,11 @@ const FloatingChatbotButton = ({ onClick }) => {
       aria-label="Open iDamag Chatbot"
       className="
         fixed
-        bottom-2
-        right-2
+        bottom-1
+        right-1
         z-[9999]
-        w-50
-        h-50
+        w-45
+        h-45
         rounded-full
         bg-transparent
         border-0
