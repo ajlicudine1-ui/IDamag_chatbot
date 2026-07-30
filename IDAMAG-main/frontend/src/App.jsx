@@ -648,7 +648,7 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen font-sans selection:bg-moss-200 selection:text-moss-900 scroll-smooth text-slate-900">
+    <div className="min-h-screen font-sans selection:bg-[#DCEFD9] selection:text-[#235E26] scroll-smooth text-slate-900">
       <Routes>
         {/* PUBLIC ROUTES */}
 
@@ -783,7 +783,7 @@ function App() {
 
             rounded-2xl
             border
-            border-slate-200
+            border-[#B8D5B6]
 
             bg-white
 
@@ -818,7 +818,7 @@ function App() {
               items-center
               justify-between
 
-              bg-[#1F2A7A]
+              bg-[#235E26]
 
               px-4
               py-3
@@ -844,7 +844,7 @@ function App() {
 
                     transition
 
-                    hover:bg-white/10
+                    hover:bg-white/15
                   "
                   aria-label="Go back"
                 >
@@ -857,7 +857,7 @@ function App() {
                   iDamag Assistant
                 </h2>
 
-                <p className="truncate text-xs text-blue-100">
+                <p className="truncate text-xs text-[#EAF4E8]">
                   {chatbotSubtitle}
                 </p>
               </div>
@@ -882,7 +882,7 @@ function App() {
 
                 transition
 
-                hover:bg-white/10
+                hover:bg-white/15
               "
               aria-label="Close chatbot"
             >
@@ -895,7 +895,7 @@ function App() {
           ================================================= */}
 
           {selectionLoading && (
-            <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-5 text-center">
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-[#F5FAF4] px-5 text-center">
               <div
                 className="
                   h-9
@@ -906,12 +906,12 @@ function App() {
                   rounded-full
 
                   border-4
-                  border-slate-200
-                  border-t-[#1F2A7A]
+                  border-[#D7E7D5]
+                  border-t-[#235E26]
                 "
               />
 
-              <p className="mt-4 text-xs text-slate-500">
+              <p className="mt-4 text-xs text-[#4F7D45]">
                 Loading available options...
               </p>
             </div>
@@ -923,7 +923,7 @@ function App() {
 
           {!selectionLoading &&
             selectionError && (
-              <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-5 text-center">
+              <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto bg-[#F5FAF4] px-5 text-center">
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-red-100 text-xl text-red-600">
                   !
                 </div>
@@ -944,7 +944,7 @@ function App() {
 
                     rounded-xl
 
-                    bg-[#1F2A7A]
+                    bg-[#2F6F32]
 
                     px-4
                     py-2
@@ -955,7 +955,7 @@ function App() {
 
                     transition
 
-                    hover:opacity-90
+                    hover:bg-[#235E26]
                   "
                 >
                   Try again
@@ -970,9 +970,9 @@ function App() {
           {!selectionLoading &&
             !selectionError &&
             !selectedDivision && (
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <div className="min-h-0 flex-1 overflow-y-auto bg-[#F5FAF4] p-4">
                 <div className="mb-4">
-                  <h3 className="text-base font-bold text-slate-800">
+                  <h3 className="text-base font-bold text-[#235E26]">
                     Select a division
                   </h3>
 
@@ -1002,7 +1002,7 @@ function App() {
                             rounded-xl
 
                             border
-                            border-slate-200
+                            border-[#D7E7D5]
 
                             bg-white
 
@@ -1013,14 +1013,14 @@ function App() {
 
                             transition
 
-                            hover:border-[#1F2A7A]
-                            hover:bg-blue-50
+                            hover:border-[#2F6F32]
+                            hover:bg-[#EAF4E8]
                             hover:shadow-sm
                           "
                         >
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0">
-                              <p className="text-sm font-bold text-[#1F2A7A]">
+                              <p className="text-sm font-bold text-[#235E26]">
                                 {division.acronym ||
                                   division.code}
                               </p>
@@ -1041,12 +1041,12 @@ function App() {
                                 shrink-0
 
                                 text-xl
-                                text-slate-400
+                                text-[#7AA574]
 
                                 transition
 
                                 group-hover:translate-x-1
-                                group-hover:text-[#1F2A7A]
+                                group-hover:text-[#235E26]
                               "
                             >
                               ›
@@ -1079,16 +1079,16 @@ function App() {
             !selectionError &&
             selectedDivision &&
             !selectedOffice && (
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <div className="min-h-0 flex-1 overflow-y-auto bg-[#F5FAF4] p-4">
                 <div className="mb-4">
-                  <h3 className="text-base font-bold text-slate-800">
+                  <h3 className="text-base font-bold text-[#235E26]">
                     Select an office or section
                   </h3>
 
                   <p className="mt-1 text-xs leading-relaxed text-slate-500">
                     Choose an office or section
                     under{" "}
-                    <strong>
+                    <strong className="text-[#2F6F32]">
                       {selectedDivision.name}
                     </strong>
                     .
@@ -1114,7 +1114,7 @@ function App() {
                           rounded-xl
 
                           border
-                          border-slate-200
+                          border-[#D7E7D5]
 
                           bg-white
 
@@ -1125,15 +1125,15 @@ function App() {
 
                           transition
 
-                          hover:border-[#1F2A7A]
-                          hover:bg-blue-50
+                          hover:border-[#2F6F32]
+                          hover:bg-[#EAF4E8]
                           hover:shadow-sm
                         "
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
                             {office.acronym && (
-                              <p className="text-sm font-bold text-[#1F2A7A]">
+                              <p className="text-sm font-bold text-[#235E26]">
                                 {
                                   office.acronym
                                 }
@@ -1145,7 +1145,7 @@ function App() {
                             </p>
                           </div>
 
-                          <span className="shrink-0 text-xl text-slate-400 transition group-hover:translate-x-1 group-hover:text-[#1F2A7A]">
+                          <span className="shrink-0 text-xl text-[#7AA574] transition group-hover:translate-x-1 group-hover:text-[#235E26]">
                             ›
                           </span>
                         </div>
@@ -1175,15 +1175,15 @@ function App() {
             !selectionError &&
             selectedOffice &&
             !selectedReport && (
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <div className="min-h-0 flex-1 overflow-y-auto bg-[#F5FAF4] p-4">
                 <div className="mb-4">
-                  <h3 className="text-base font-bold text-slate-800">
+                  <h3 className="text-base font-bold text-[#235E26]">
                     Select a report
                   </h3>
 
                   <p className="mt-1 text-xs leading-relaxed text-slate-500">
                     Choose a report under{" "}
-                    <strong>
+                    <strong className="text-[#2F6F32]">
                       {selectedOffice.name}
                     </strong>
                     .
@@ -1203,8 +1203,8 @@ function App() {
                         }
                         className={`group w-full rounded-xl border px-3 py-3 text-left transition ${
                           report.hasSheet
-                            ? "border-slate-200 bg-white hover:border-[#1F2A7A] hover:bg-blue-50 hover:shadow-sm"
-                            : "border-amber-200 bg-amber-50"
+                            ? "border-[#D7E7D5] bg-white hover:border-[#2F6F32] hover:bg-[#EAF4E8] hover:shadow-sm"
+                            : "border-[#D7E7D5] bg-[#F1F6F0]"
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
@@ -1224,8 +1224,8 @@ function App() {
                             <p
                               className={`mt-2 text-[11px] font-semibold ${
                                 report.hasSheet
-                                  ? "text-green-600"
-                                  : "text-amber-600"
+                                  ? "text-[#2F6F32]"
+                                  : "text-[#6F8F6B]"
                               }`}
                             >
                               {report.hasSheet
@@ -1234,7 +1234,7 @@ function App() {
                             </p>
                           </div>
 
-                          <span className="shrink-0 text-xl text-slate-400 transition group-hover:translate-x-1 group-hover:text-[#1F2A7A]">
+                          <span className="shrink-0 text-xl text-[#7AA574] transition group-hover:translate-x-1 group-hover:text-[#235E26]">
                             ›
                           </span>
                         </div>
@@ -1266,16 +1266,16 @@ function App() {
               <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
                 {/* Selected report */}
 
-                <div className="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
-                  <p className="truncate text-xs font-bold text-slate-800">
+                <div className="shrink-0 border-b border-[#D7E7D5] bg-[#EAF4E8] px-4 py-2.5">
+                  <p className="truncate text-xs font-bold text-[#235E26]">
                     {selectedReport.title}
                   </p>
 
                   <p
                     className={`mt-1 text-[10px] ${
                       selectedReport.hasSheet
-                        ? "text-green-600"
-                        : "text-amber-600"
+                        ? "text-[#2F6F32]"
+                        : "text-[#6F8F6B]"
                     }`}
                   >
                     {selectedReport.hasSheet
@@ -1286,7 +1286,7 @@ function App() {
 
                 {/* Messages */}
 
-                <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto bg-slate-50 p-3">
+                <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto bg-[#F5FAF4] p-3">
                   {messages.map(
                     (message, index) => (
                       <div
@@ -1302,8 +1302,8 @@ function App() {
                           className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2.5 text-xs leading-relaxed ${
                             message.role ===
                             "user"
-                              ? "rounded-br-md bg-[#1F2A7A] text-white"
-                              : "rounded-tl-md bg-white text-slate-700 shadow-sm"
+                              ? "rounded-br-md bg-[#2F6F32] text-white"
+                              : "rounded-tl-md border border-[#D7E7D5] bg-white text-slate-700 shadow-sm"
                           }`}
                         >
                           {message.text}
@@ -1314,7 +1314,7 @@ function App() {
 
                   {chatLoading && (
                     <div className="flex justify-start">
-                      <div className="rounded-2xl rounded-tl-md bg-white px-3 py-2.5 text-xs text-slate-500 shadow-sm">
+                      <div className="rounded-2xl rounded-tl-md border border-[#D7E7D5] bg-white px-3 py-2.5 text-xs text-[#4F7D45] shadow-sm">
                         Checking the Google
                         Sheet...
                       </div>
@@ -1324,7 +1324,7 @@ function App() {
 
                 {/* Input */}
 
-                <div className="shrink-0 border-t border-slate-200 bg-white p-3">
+                <div className="shrink-0 border-t border-[#D7E7D5] bg-white p-3">
                   <div className="flex items-end gap-2">
                     <textarea
                       rows={1}
@@ -1356,23 +1356,24 @@ function App() {
                         rounded-xl
 
                         border
-                        border-slate-300
+                        border-[#B8D5B6]
 
                         px-3
                         py-2.5
 
                         text-xs
+                        text-slate-700
 
                         outline-none
 
                         transition
 
-                        focus:border-[#1F2A7A]
+                        focus:border-[#235E26]
                         focus:ring-2
-                        focus:ring-blue-100
+                        focus:ring-[#EAF4E8]
 
                         disabled:cursor-not-allowed
-                        disabled:bg-slate-100
+                        disabled:bg-[#F5FAF4]
                       "
                     />
 
@@ -1394,16 +1395,16 @@ function App() {
 
                         rounded-full
 
-                        bg-[#1F2A7A]
+                        bg-[#2F6F32]
 
                         text-white
 
                         transition
 
-                        hover:opacity-90
+                        hover:bg-[#235E26]
 
                         disabled:cursor-not-allowed
-                        disabled:bg-slate-300
+                        disabled:bg-[#B8D5B6]
                       "
                       aria-label="Send message"
                     >
@@ -1416,7 +1417,7 @@ function App() {
         </div>
       )}
 
-            <FloatingChatbotButton
+      <FloatingChatbotButton
         onClick={handleToggleChatbot}
         isOpen={isChatbotOpen}
       />

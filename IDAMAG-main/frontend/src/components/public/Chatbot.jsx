@@ -456,7 +456,7 @@ const Chatbot = () => {
         bg-white
 
         border
-        border-[#B8D5B6]
+        border-slate-200
 
         rounded-2xl
 
@@ -473,13 +473,11 @@ const Chatbot = () => {
         max-sm:max-h-[68dvh]
       "
     >
-      {/* =====================================================
-          CHATBOT HEADER
-      ===================================================== */}
+      {/* CHATBOT HEADER */}
       <div
         className="
           shrink-0
-          bg-[#235E26]
+          bg-green-800
           px-4
           py-3
           text-white
@@ -489,20 +487,18 @@ const Chatbot = () => {
           iDamag Chatbot
         </h1>
 
-        <p className="mt-1 text-[11px] sm:text-xs text-[#EAF4E8]">
+        <p className="mt-1 text-[11px] sm:text-xs text-green-100">
           Select a division, office or section, and report before
           asking about its data.
         </p>
       </div>
 
-      {/* =====================================================
-          SELECTION AREA
-      ===================================================== */}
+      {/* SELECTION AREA */}
       <div
         className="
           shrink-0
           border-b
-          border-[#D7E7D5]
+          border-slate-200
           bg-white
           p-3
           max-h-[34dvh]
@@ -523,7 +519,7 @@ const Chatbot = () => {
                 font-bold
                 uppercase
                 tracking-wider
-                text-[#235E26]
+                text-slate-500
               "
             >
               1. Division
@@ -538,7 +534,7 @@ const Chatbot = () => {
                 w-full
                 rounded-xl
                 border
-                border-[#B8D5B6]
+                border-slate-300
                 bg-white
                 px-3
                 py-2
@@ -547,17 +543,11 @@ const Chatbot = () => {
                 text-slate-700
                 outline-none
                 transition
-
-                hover:border-[#4F7D45]
-
-                focus:border-[#235E26]
+                focus:border-green-700
                 focus:ring-2
-                focus:ring-[#EAF4E8]
-
+                focus:ring-green-100
                 disabled:cursor-not-allowed
-                disabled:border-[#D7E7D5]
-                disabled:bg-[#F5FAF4]
-                disabled:text-slate-400
+                disabled:bg-slate-100
               "
             >
               <option value="">
@@ -589,7 +579,7 @@ const Chatbot = () => {
                 font-bold
                 uppercase
                 tracking-wider
-                text-[#235E26]
+                text-slate-500
               "
             >
               2. Office / Section
@@ -607,7 +597,7 @@ const Chatbot = () => {
                 w-full
                 rounded-xl
                 border
-                border-[#B8D5B6]
+                border-slate-300
                 bg-white
                 px-3
                 py-2
@@ -616,17 +606,11 @@ const Chatbot = () => {
                 text-slate-700
                 outline-none
                 transition
-
-                hover:border-[#4F7D45]
-
-                focus:border-[#235E26]
+                focus:border-green-700
                 focus:ring-2
-                focus:ring-[#EAF4E8]
-
+                focus:ring-green-100
                 disabled:cursor-not-allowed
-                disabled:border-[#D7E7D5]
-                disabled:bg-[#F5FAF4]
-                disabled:text-slate-400
+                disabled:bg-slate-100
               "
             >
               <option value="">
@@ -660,7 +644,7 @@ const Chatbot = () => {
                 font-bold
                 uppercase
                 tracking-wider
-                text-[#235E26]
+                text-slate-500
               "
             >
               3. Report
@@ -678,7 +662,7 @@ const Chatbot = () => {
                 w-full
                 rounded-xl
                 border
-                border-[#B8D5B6]
+                border-slate-300
                 bg-white
                 px-3
                 py-2
@@ -687,17 +671,11 @@ const Chatbot = () => {
                 text-slate-700
                 outline-none
                 transition
-
-                hover:border-[#4F7D45]
-
-                focus:border-[#235E26]
+                focus:border-green-700
                 focus:ring-2
-                focus:ring-[#EAF4E8]
-
+                focus:ring-green-100
                 disabled:cursor-not-allowed
-                disabled:border-[#D7E7D5]
-                disabled:bg-[#F5FAF4]
-                disabled:text-slate-400
+                disabled:bg-slate-100
               "
             >
               <option value="">
@@ -723,20 +701,9 @@ const Chatbot = () => {
 
         {/* LOADING */}
         {selectionLoading && (
-          <div
-            className="
-              mt-3
-              rounded-lg
-              bg-[#F5FAF4]
-              px-3
-              py-2
-              text-xs
-              font-medium
-              text-[#4F7D45]
-            "
-          >
+          <p className="mt-2 text-xs text-slate-500">
             Loading available options...
-          </div>
+          </p>
         )}
 
         {/* ERROR */}
@@ -757,8 +724,8 @@ const Chatbot = () => {
               py-2
               ${
                 selectedReportData.hasSheet
-                  ? "border-[#B8D5B6] bg-[#F5FAF4]"
-                  : "border-[#D7E7D5] bg-[#F5FAF4]"
+                  ? "border-green-100 bg-green-50"
+                  : "border-amber-200 bg-amber-50"
               }
             `}
           >
@@ -768,8 +735,8 @@ const Chatbot = () => {
                 font-semibold
                 ${
                   selectedReportData.hasSheet
-                    ? "text-[#235E26]"
-                    : "text-[#4F7D45]"
+                    ? "text-green-800"
+                    : "text-amber-800"
                 }
               `}
             >
@@ -783,8 +750,8 @@ const Chatbot = () => {
                 text-[11px]
                 ${
                   selectedReportData.hasSheet
-                    ? "text-[#4F7D45]"
-                    : "text-slate-500"
+                    ? "text-green-700"
+                    : "text-amber-700"
                 }
               `}
             >
@@ -796,16 +763,14 @@ const Chatbot = () => {
         )}
       </div>
 
-      {/* =====================================================
-          MESSAGES
-      ===================================================== */}
+      {/* MESSAGES */}
       <div
         className="
           min-h-0
           flex-1
           space-y-3
           overflow-y-auto
-          bg-[#F5FAF4]
+          bg-slate-50
           p-3
         "
       >
@@ -830,8 +795,8 @@ const Chatbot = () => {
                 leading-relaxed
                 ${
                   message.role === "user"
-                    ? "bg-[#2F6F32] text-white rounded-br-md"
-                    : "border border-[#D7E7D5] bg-white text-slate-700 rounded-tl-md shadow-sm"
+                    ? "bg-green-700 text-white"
+                    : "border border-slate-200 bg-white text-slate-700"
                 }
               `}
             >
@@ -840,23 +805,20 @@ const Chatbot = () => {
           </div>
         ))}
 
-        {/* CHATBOT LOADING */}
         {loading && (
           <div className="flex justify-start">
             <div
               className="
                 max-w-[85%]
                 rounded-2xl
-                rounded-tl-md
                 border
-                border-[#D7E7D5]
+                border-slate-200
                 bg-white
                 px-3
                 py-2.5
                 text-xs
                 sm:text-sm
-                text-[#4F7D45]
-                shadow-sm
+                text-slate-500
               "
             >
               Checking the selected report&apos;s Google Sheet...
@@ -865,14 +827,12 @@ const Chatbot = () => {
         )}
       </div>
 
-      {/* =====================================================
-          INPUT AREA
-      ===================================================== */}
+      {/* INPUT AREA */}
       <div
         className="
           shrink-0
           border-t
-          border-[#D7E7D5]
+          border-slate-200
           bg-white
           p-3
         "
@@ -885,7 +845,7 @@ const Chatbot = () => {
               text-[10px]
               sm:text-xs
               font-medium
-              text-[#4F7D45]
+              text-amber-600
             "
           >
             Select a report with a connected Google Sheet to enable
@@ -920,36 +880,20 @@ const Chatbot = () => {
               w-full
               flex-1
               resize-none
-
               rounded-xl
-
               border
-              border-[#B8D5B6]
-
-              bg-white
-
+              border-slate-300
               px-3
               py-2
-
               text-xs
               sm:text-sm
-              text-slate-700
-
               outline-none
               transition
-
-              placeholder:text-slate-400
-
-              hover:border-[#4F7D45]
-
-              focus:border-[#235E26]
+              focus:border-green-700
               focus:ring-2
-              focus:ring-[#EAF4E8]
-
+              focus:ring-green-100
               disabled:cursor-not-allowed
-              disabled:border-[#D7E7D5]
-              disabled:bg-[#F5FAF4]
-              disabled:text-slate-400
+              disabled:bg-slate-100
             "
           />
 
@@ -963,36 +907,20 @@ const Chatbot = () => {
             }
             className="
               shrink-0
-
               rounded-xl
-
-              bg-[#2F6F32]
-
+              bg-green-700
               px-5
               py-2.5
-
               text-xs
               sm:text-sm
-
               font-semibold
               text-white
-
-              shadow-sm
-
-              transition-all
-              duration-200
-
-              hover:bg-[#235E26]
-              hover:shadow-md
-
+              transition
+              hover:bg-green-800
               active:scale-95
-
               disabled:cursor-not-allowed
-              disabled:bg-[#B8D5B6]
-              disabled:text-white
-              disabled:shadow-none
+              disabled:bg-slate-300
               disabled:active:scale-100
-
               max-[380px]:w-full
             "
           >
