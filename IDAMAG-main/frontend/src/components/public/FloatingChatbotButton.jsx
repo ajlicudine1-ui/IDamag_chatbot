@@ -16,27 +16,26 @@ const FloatingChatbotButton = ({ onClick }) => {
       <div
         className="
           absolute
-          bottom-full
-          right-0
-          mb-2
+          bottom-[82%]
+          right-2
 
           w-[300px]
           bg-white
 
           border-2
-          border-[#1D2C8C]
+          border-[#235E26]
           rounded-[18px]
 
           px-[18px]
           py-[14px]
 
-          text-[#1D2C8C]
+          text-[#235E26]
           text-[17px]
           font-bold
           leading-[1.4]
           text-left
 
-          shadow-sm
+          shadow-md
 
           opacity-0
           invisible
@@ -50,7 +49,29 @@ const FloatingChatbotButton = ({ onClick }) => {
           pointer-events-none
         "
       >
-        Need help? Ask iDamag anything! 🤖
+        Need help? Ask iDamag
+        <br />
+        anything! 🤖
+
+        {/* Pointed / Spiky Bottom-Right Edge */}
+        <div
+          className="
+            absolute
+            -bottom-[11px]
+            right-[25px]
+
+            w-5
+            h-5
+
+            bg-white
+
+            border-r-2
+            border-b-2
+            border-[#235E26]
+
+            rotate-45
+          "
+        />
       </div>
 
       {/* Chatbot Button */}
