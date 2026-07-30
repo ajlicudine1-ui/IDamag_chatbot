@@ -358,11 +358,14 @@ function App() {
           setReports(
             reportList.map((report) => ({
               id: Number(report.id),
+
               title:
                 report.title ||
                 "Untitled Report",
+
               description:
                 report.description || "",
+
               hasSheet: Boolean(
                 report.hasSheet
               ),
@@ -408,6 +411,7 @@ function App() {
 
   const handleSelectDivision = (division) => {
     setSelectedDivision(division);
+
     setSelectedOffice(null);
     setSelectedReport(null);
 
@@ -421,8 +425,8 @@ function App() {
 
   const handleSelectOffice = (office) => {
     setSelectedOffice(office);
-    setSelectedReport(null);
 
+    setSelectedReport(null);
     setReports([]);
 
     setMessages([]);
@@ -432,6 +436,7 @@ function App() {
 
   const handleSelectReport = (report) => {
     setSelectedReport(report);
+
     setSelectionError("");
     setQuestion("");
 
@@ -465,9 +470,12 @@ function App() {
     if (selectedOffice) {
       setSelectedOffice(null);
       setSelectedReport(null);
+
       setReports([]);
+
       setMessages([]);
       setQuestion("");
+
       return;
     }
 
@@ -507,17 +515,21 @@ function App() {
       return;
     }
 
-    const savedOffice = selectedOffice;
+    const savedOffice =
+      selectedOffice;
 
     setSelectedOffice(null);
 
     setTimeout(() => {
-      setSelectedOffice(savedOffice);
+      setSelectedOffice(
+        savedOffice
+      );
     }, 0);
   };
 
   const sendQuestion = async () => {
-    const trimmedQuestion = question.trim();
+    const trimmedQuestion =
+      question.trim();
 
     if (
       !trimmedQuestion ||
@@ -544,15 +556,17 @@ function App() {
         `${API_URL}/chatbot/chat`,
         {
           method: "POST",
+
           headers: {
             "Content-Type":
               "application/json",
             Accept: "application/json",
           },
-          body: JSON.stringify({
-            question: trimmedQuestion,
 
-            // Database reports.id
+          body: JSON.stringify({
+            question:
+              trimmedQuestion,
+
             reportId: Number(
               selectedReport.id
             ),
@@ -560,7 +574,10 @@ function App() {
         }
       );
 
-      const data = await readJsonResponse(response);
+      const data =
+        await readJsonResponse(
+          response
+        );
 
       if (!response.ok) {
         throw new Error(
@@ -599,7 +616,9 @@ function App() {
     }
   };
 
-  const handleQuestionKeyDown = (event) => {
+  const handleQuestionKeyDown = (
+    event
+  ) => {
     if (
       event.key === "Enter" &&
       !event.shiftKey
@@ -614,7 +633,8 @@ function App() {
     selectedOffice ||
     selectedReport;
 
-  let chatbotSubtitle = "Choose a dashboard";
+  let chatbotSubtitle =
+    "Choose a dashboard";
 
   if (selectedReport) {
     chatbotSubtitle =
@@ -630,8 +650,12 @@ function App() {
   return (
     <div className="min-h-screen font-sans selection:bg-moss-200 selection:text-moss-900 scroll-smooth text-slate-900">
       <Routes>
-        {/* Public Routes */}
-        <Route path="/" element={<Home />} />
+        {/* PUBLIC ROUTES */}
+
+        <Route
+          path="/"
+          element={<Home />}
+        />
 
         <Route
           path="/office/:officeId"
@@ -648,7 +672,13 @@ function App() {
           element={<Chatbot />}
         />
 
-        {/* Authentication Routes */}
+        <Route
+          path="/user-guide"
+          element={<UserGuide />}
+        />
+
+        {/* AUTHENTICATION ROUTES */}
+
         <Route
           path="/login"
           element={
@@ -667,7 +697,8 @@ function App() {
           }
         />
 
-        {/* Protected Routes */}
+        {/* PROTECTED ROUTES */}
+
         <Route
           path="/reports"
           element={
@@ -718,7 +749,6 @@ function App() {
             </ProtectedRoute>
           }
         />
-        <Route path="/user-guide" element={<UserGuide />} />
 
         <Route
           path="*"
@@ -726,17 +756,96 @@ function App() {
         />
       </Routes>
 
-      {/* Floating Chatbot Popup */}
+      {/* =====================================================
+          FLOATING CHATBOT
+      ===================================================== */}
+
       {isChatbotOpen && (
-        <div className="fixed bottom-32 right-6 z-[9998] flex h-[620px] w-[420px] max-w-[calc(100vw-32px)] flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
-          {/* Header */}
-          <div className="flex min-h-[82px] items-center justify-between bg-[#1F2A7A] px-5 py-4">
-            <div className="flex min-w-0 items-center gap-3">
+        <div
+          className="
+            fixed
+            z-[9998]
+
+            top-[96px]
+            right-4
+
+            flex
+            flex-col
+
+            w-[28vw]
+            min-w-[300px]
+            max-w-[380px]
+
+            h-[min(620px,calc(100dvh-120px))]
+            max-h-[72dvh]
+
+            overflow-hidden
+
+            rounded-2xl
+            border
+            border-slate-200
+
+            bg-white
+
+            shadow-2xl
+
+            max-lg:w-[34vw]
+            max-lg:max-w-[360px]
+
+            max-md:w-[42vw]
+            max-md:min-w-[290px]
+            max-md:max-w-[340px]
+
+            max-sm:top-[88px]
+            max-sm:left-3
+            max-sm:right-3
+            max-sm:w-auto
+            max-sm:min-w-0
+            max-sm:max-w-none
+            max-sm:h-[calc(100dvh-105px)]
+            max-sm:max-h-[calc(100dvh-105px)]
+          "
+        >
+          {/* =================================================
+              CHATBOT HEADER
+          ================================================= */}
+
+          <div
+            className="
+              flex
+              min-h-[68px]
+              shrink-0
+              items-center
+              justify-between
+
+              bg-[#1F2A7A]
+
+              px-4
+              py-3
+            "
+          >
+            <div className="flex min-w-0 items-center gap-2">
               {showBackButton && (
                 <button
                   type="button"
                   onClick={handleBack}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xl text-white transition hover:bg-white/10"
+                  className="
+                    flex
+                    h-8
+                    w-8
+                    shrink-0
+                    items-center
+                    justify-center
+
+                    rounded-full
+
+                    text-lg
+                    text-white
+
+                    transition
+
+                    hover:bg-white/10
+                  "
                   aria-label="Go back"
                 >
                   ←
@@ -744,11 +853,11 @@ function App() {
               )}
 
               <div className="min-w-0">
-                <h2 className="truncate text-lg font-bold text-white">
+                <h2 className="truncate text-base font-bold text-white">
                   iDamag Assistant
                 </h2>
 
-                <p className="truncate text-sm text-blue-100">
+                <p className="truncate text-xs text-blue-100">
                   {chatbotSubtitle}
                 </p>
               </div>
@@ -757,29 +866,65 @@ function App() {
             <button
               type="button"
               onClick={handleCloseChatbot}
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-2xl leading-none text-white transition hover:bg-white/10"
+              className="
+                flex
+                h-8
+                w-8
+                shrink-0
+                items-center
+                justify-center
+
+                rounded-full
+
+                text-xl
+                leading-none
+                text-white
+
+                transition
+
+                hover:bg-white/10
+              "
               aria-label="Close chatbot"
             >
               ×
             </button>
           </div>
 
-          {/* Loading */}
-          {selectionLoading && (
-            <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-              <div className="h-10 w-10 animate-spin rounded-full border-4 border-slate-200 border-t-[#1F2A7A]" />
+          {/* =================================================
+              LOADING
+          ================================================= */}
 
-              <p className="mt-4 text-sm text-slate-500">
+          {selectionLoading && (
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center px-5 text-center">
+              <div
+                className="
+                  h-9
+                  w-9
+
+                  animate-spin
+
+                  rounded-full
+
+                  border-4
+                  border-slate-200
+                  border-t-[#1F2A7A]
+                "
+              />
+
+              <p className="mt-4 text-xs text-slate-500">
                 Loading available options...
               </p>
             </div>
           )}
 
-          {/* Error */}
+          {/* =================================================
+              ERROR
+          ================================================= */}
+
           {!selectionLoading &&
             selectionError && (
-              <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
-                <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-red-100 text-2xl text-red-600">
+              <div className="flex min-h-0 flex-1 flex-col items-center justify-center overflow-y-auto px-5 text-center">
+                <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-red-100 text-xl text-red-600">
                   !
                 </div>
 
@@ -787,38 +932,58 @@ function App() {
                   Unable to load data
                 </p>
 
-                <p className="mt-2 text-sm leading-relaxed text-slate-500">
+                <p className="mt-2 text-xs leading-relaxed text-slate-500">
                   {selectionError}
                 </p>
 
                 <button
                   type="button"
                   onClick={handleRetry}
-                  className="mt-5 rounded-xl bg-[#1F2A7A] px-5 py-2.5 text-sm font-semibold text-white transition hover:opacity-90"
+                  className="
+                    mt-4
+
+                    rounded-xl
+
+                    bg-[#1F2A7A]
+
+                    px-4
+                    py-2
+
+                    text-xs
+                    font-semibold
+                    text-white
+
+                    transition
+
+                    hover:opacity-90
+                  "
                 >
                   Try again
                 </button>
               </div>
             )}
 
-          {/* Step 1: Division */}
+          {/* =================================================
+              STEP 1 - DIVISION
+          ================================================= */}
+
           {!selectionLoading &&
             !selectionError &&
             !selectedDivision && (
-              <div className="flex-1 overflow-y-auto p-5">
-                <div className="mb-5">
-                  <h3 className="text-lg font-bold text-slate-800">
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                <div className="mb-4">
+                  <h3 className="text-base font-bold text-slate-800">
                     Select a division
                   </h3>
 
-                  <p className="mt-1 text-sm text-slate-500">
+                  <p className="mt-1 text-xs leading-relaxed text-slate-500">
                     Choose the division whose
                     data you want to ask about.
                   </p>
                 </div>
 
                 {divisions.length > 0 ? (
-                  <div className="space-y-3">
+                  <div className="space-y-2.5">
                     {divisions.map(
                       (division) => (
                         <button
@@ -829,27 +994,61 @@ function App() {
                               division
                             )
                           }
-                          className="group w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-left transition hover:border-[#1F2A7A] hover:bg-blue-50 hover:shadow-sm"
+                          className="
+                            group
+
+                            w-full
+
+                            rounded-xl
+
+                            border
+                            border-slate-200
+
+                            bg-white
+
+                            px-3
+                            py-3
+
+                            text-left
+
+                            transition
+
+                            hover:border-[#1F2A7A]
+                            hover:bg-blue-50
+                            hover:shadow-sm
+                          "
                         >
-                          <div className="flex items-center justify-between gap-3">
+                          <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0">
-                              <p className="font-bold text-[#1F2A7A]">
+                              <p className="text-sm font-bold text-[#1F2A7A]">
                                 {division.acronym ||
                                   division.code}
                               </p>
 
-                              <p className="mt-1 text-sm font-semibold text-slate-700">
+                              <p className="mt-1 text-xs font-semibold text-slate-700">
                                 {division.name}
                               </p>
 
-                              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                              <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
                                 {
                                   division.description
                                 }
                               </p>
                             </div>
 
-                            <span className="shrink-0 text-2xl text-slate-400 transition group-hover:translate-x-1 group-hover:text-[#1F2A7A]">
+                            <span
+                              className="
+                                shrink-0
+
+                                text-xl
+                                text-slate-400
+
+                                transition
+
+                                group-hover:translate-x-1
+                                group-hover:text-[#1F2A7A]
+                              "
+                            >
                               ›
                             </span>
                           </div>
@@ -858,12 +1057,12 @@ function App() {
                     )}
                   </div>
                 ) : (
-                  <div className="flex min-h-[280px] flex-col items-center justify-center text-center">
-                    <p className="font-semibold text-slate-800">
+                  <div className="flex min-h-[200px] flex-col items-center justify-center text-center">
+                    <p className="text-sm font-semibold text-slate-800">
                       No divisions available
                     </p>
 
-                    <p className="mt-2 text-sm text-slate-500">
+                    <p className="mt-2 text-xs text-slate-500">
                       No divisions were returned
                       from the database.
                     </p>
@@ -872,18 +1071,21 @@ function App() {
               </div>
             )}
 
-          {/* Step 2: Office / Section */}
+          {/* =================================================
+              STEP 2 - OFFICE / SECTION
+          ================================================= */}
+
           {!selectionLoading &&
             !selectionError &&
             selectedDivision &&
             !selectedOffice && (
-              <div className="flex-1 overflow-y-auto p-5">
-                <div className="mb-5">
-                  <h3 className="text-lg font-bold text-slate-800">
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                <div className="mb-4">
+                  <h3 className="text-base font-bold text-slate-800">
                     Select an office or section
                   </h3>
 
-                  <p className="mt-1 text-sm text-slate-500">
+                  <p className="mt-1 text-xs leading-relaxed text-slate-500">
                     Choose an office or section
                     under{" "}
                     <strong>
@@ -894,7 +1096,7 @@ function App() {
                 </div>
 
                 {offices.length > 0 ? (
-                  <div className="space-y-3">
+                  <div className="space-y-2.5">
                     {offices.map((office) => (
                       <button
                         key={office.id}
@@ -904,24 +1106,46 @@ function App() {
                             office
                           )
                         }
-                        className="group w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-left transition hover:border-[#1F2A7A] hover:bg-blue-50 hover:shadow-sm"
+                        className="
+                          group
+
+                          w-full
+
+                          rounded-xl
+
+                          border
+                          border-slate-200
+
+                          bg-white
+
+                          px-3
+                          py-3
+
+                          text-left
+
+                          transition
+
+                          hover:border-[#1F2A7A]
+                          hover:bg-blue-50
+                          hover:shadow-sm
+                        "
                       >
-                        <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
                             {office.acronym && (
-                              <p className="font-bold text-[#1F2A7A]">
+                              <p className="text-sm font-bold text-[#1F2A7A]">
                                 {
                                   office.acronym
                                 }
                               </p>
                             )}
 
-                            <p className="mt-1 text-sm font-semibold text-slate-700">
+                            <p className="mt-1 text-xs font-semibold text-slate-700">
                               {office.name}
                             </p>
                           </div>
 
-                          <span className="shrink-0 text-2xl text-slate-400 transition group-hover:translate-x-1 group-hover:text-[#1F2A7A]">
+                          <span className="shrink-0 text-xl text-slate-400 transition group-hover:translate-x-1 group-hover:text-[#1F2A7A]">
                             ›
                           </span>
                         </div>
@@ -929,12 +1153,12 @@ function App() {
                     ))}
                   </div>
                 ) : (
-                  <div className="flex min-h-[280px] flex-col items-center justify-center text-center">
-                    <p className="font-semibold text-slate-800">
+                  <div className="flex min-h-[200px] flex-col items-center justify-center text-center">
+                    <p className="text-sm font-semibold text-slate-800">
                       No offices or sections
                     </p>
 
-                    <p className="mt-2 text-sm text-slate-500">
+                    <p className="mt-2 text-xs text-slate-500">
                       This division currently has
                       no offices or sections.
                     </p>
@@ -943,18 +1167,21 @@ function App() {
               </div>
             )}
 
-          {/* Step 3: Report */}
+          {/* =================================================
+              STEP 3 - REPORT
+          ================================================= */}
+
           {!selectionLoading &&
             !selectionError &&
             selectedOffice &&
             !selectedReport && (
-              <div className="flex-1 overflow-y-auto p-5">
-                <div className="mb-5">
-                  <h3 className="text-lg font-bold text-slate-800">
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                <div className="mb-4">
+                  <h3 className="text-base font-bold text-slate-800">
                     Select a report
                   </h3>
 
-                  <p className="mt-1 text-sm text-slate-500">
+                  <p className="mt-1 text-xs leading-relaxed text-slate-500">
                     Choose a report under{" "}
                     <strong>
                       {selectedOffice.name}
@@ -964,7 +1191,7 @@ function App() {
                 </div>
 
                 {reports.length > 0 ? (
-                  <div className="space-y-3">
+                  <div className="space-y-2.5">
                     {reports.map((report) => (
                       <button
                         key={report.id}
@@ -974,20 +1201,20 @@ function App() {
                             report
                           )
                         }
-                        className={`group w-full rounded-2xl border px-4 py-4 text-left transition ${
+                        className={`group w-full rounded-xl border px-3 py-3 text-left transition ${
                           report.hasSheet
                             ? "border-slate-200 bg-white hover:border-[#1F2A7A] hover:bg-blue-50 hover:shadow-sm"
                             : "border-amber-200 bg-amber-50"
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
-                            <p className="font-bold text-slate-800">
+                            <p className="text-sm font-bold text-slate-800">
                               {report.title}
                             </p>
 
                             {report.description && (
-                              <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                              <p className="mt-1 text-[11px] leading-relaxed text-slate-500">
                                 {
                                   report.description
                                 }
@@ -995,7 +1222,7 @@ function App() {
                             )}
 
                             <p
-                              className={`mt-2 text-xs font-semibold ${
+                              className={`mt-2 text-[11px] font-semibold ${
                                 report.hasSheet
                                   ? "text-green-600"
                                   : "text-amber-600"
@@ -1007,7 +1234,7 @@ function App() {
                             </p>
                           </div>
 
-                          <span className="shrink-0 text-2xl text-slate-400 transition group-hover:translate-x-1 group-hover:text-[#1F2A7A]">
+                          <span className="shrink-0 text-xl text-slate-400 transition group-hover:translate-x-1 group-hover:text-[#1F2A7A]">
                             ›
                           </span>
                         </div>
@@ -1015,12 +1242,12 @@ function App() {
                     ))}
                   </div>
                 ) : (
-                  <div className="flex min-h-[280px] flex-col items-center justify-center text-center">
-                    <p className="font-semibold text-slate-800">
+                  <div className="flex min-h-[200px] flex-col items-center justify-center text-center">
+                    <p className="text-sm font-semibold text-slate-800">
                       No reports available
                     </p>
 
-                    <p className="mt-2 text-sm text-slate-500">
+                    <p className="mt-2 text-xs text-slate-500">
                       This office or section
                       currently has no reports.
                     </p>
@@ -1029,18 +1256,23 @@ function App() {
               </div>
             )}
 
-          {/* Step 4: Chat */}
+          {/* =================================================
+              STEP 4 - CHAT
+          ================================================= */}
+
           {!selectionLoading &&
             !selectionError &&
             selectedReport && (
-              <div className="flex flex-1 flex-col overflow-hidden">
-                <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
-                  <p className="truncate text-sm font-bold text-slate-800">
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                {/* Selected report */}
+
+                <div className="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
+                  <p className="truncate text-xs font-bold text-slate-800">
                     {selectedReport.title}
                   </p>
 
                   <p
-                    className={`mt-1 text-xs ${
+                    className={`mt-1 text-[10px] ${
                       selectedReport.hasSheet
                         ? "text-green-600"
                         : "text-amber-600"
@@ -1052,7 +1284,9 @@ function App() {
                   </p>
                 </div>
 
-                <div className="flex-1 space-y-3 overflow-y-auto bg-slate-50 p-4">
+                {/* Messages */}
+
+                <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto bg-slate-50 p-3">
                   {messages.map(
                     (message, index) => (
                       <div
@@ -1065,7 +1299,7 @@ function App() {
                         }`}
                       >
                         <div
-                          className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                          className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2.5 text-xs leading-relaxed ${
                             message.role ===
                             "user"
                               ? "rounded-br-md bg-[#1F2A7A] text-white"
@@ -1080,7 +1314,7 @@ function App() {
 
                   {chatLoading && (
                     <div className="flex justify-start">
-                      <div className="rounded-2xl rounded-tl-md bg-white px-4 py-3 text-sm text-slate-500 shadow-sm">
+                      <div className="rounded-2xl rounded-tl-md bg-white px-3 py-2.5 text-xs text-slate-500 shadow-sm">
                         Checking the Google
                         Sheet...
                       </div>
@@ -1088,7 +1322,9 @@ function App() {
                   )}
                 </div>
 
-                <div className="border-t border-slate-200 bg-white p-4">
+                {/* Input */}
+
+                <div className="shrink-0 border-t border-slate-200 bg-white p-3">
                   <div className="flex items-end gap-2">
                     <textarea
                       rows={1}
@@ -1107,10 +1343,37 @@ function App() {
                       }
                       placeholder={
                         selectedReport.hasSheet
-                          ? "Ask a question about the report..."
-                          : "This report has no Google Sheet..."
+                          ? "Ask about the report..."
+                          : "No Google Sheet..."
                       }
-                      className="max-h-28 min-h-[46px] flex-1 resize-none rounded-2xl border border-slate-300 px-4 py-3 text-sm outline-none transition focus:border-[#1F2A7A] focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100"
+                      className="
+                        min-h-[42px]
+                        max-h-24
+                        min-w-0
+                        flex-1
+                        resize-none
+
+                        rounded-xl
+
+                        border
+                        border-slate-300
+
+                        px-3
+                        py-2.5
+
+                        text-xs
+
+                        outline-none
+
+                        transition
+
+                        focus:border-[#1F2A7A]
+                        focus:ring-2
+                        focus:ring-blue-100
+
+                        disabled:cursor-not-allowed
+                        disabled:bg-slate-100
+                      "
                     />
 
                     <button
@@ -1121,7 +1384,27 @@ function App() {
                         !question.trim() ||
                         !selectedReport.hasSheet
                       }
-                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#1F2A7A] text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:bg-slate-300"
+                      className="
+                        flex
+                        h-10
+                        w-10
+                        shrink-0
+                        items-center
+                        justify-center
+
+                        rounded-full
+
+                        bg-[#1F2A7A]
+
+                        text-white
+
+                        transition
+
+                        hover:opacity-90
+
+                        disabled:cursor-not-allowed
+                        disabled:bg-slate-300
+                      "
                       aria-label="Send message"
                     >
                       ➤
@@ -1132,6 +1415,8 @@ function App() {
             )}
         </div>
       )}
+
+      {/* FLOATING CHATBOT BUTTON */}
 
       <FloatingChatbotButton
         onClick={handleToggleChatbot}
