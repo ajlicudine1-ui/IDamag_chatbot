@@ -9,21 +9,26 @@ const FloatingChatbotButton = ({ onClick }) => {
         bottom-2
         right-2
         z-[9999]
-        flex
-        items-center
-        gap-3
         group
       "
     >
       {/* Hover Text */}
       <div
         className="
+          absolute
+          right-full
+          top-1/2
+          -translate-y-1/2
+          mr-3
+
           opacity-0
           invisible
           translate-x-3
+
           group-hover:opacity-100
           group-hover:visible
           group-hover:translate-x-0
+
           bg-white
           text-[#176B3A]
           font-bold
@@ -34,8 +39,10 @@ const FloatingChatbotButton = ({ onClick }) => {
           shadow-lg
           border
           border-slate-200
+
           whitespace-nowrap
           pointer-events-none
+
           transition-all
           duration-300
         "
@@ -43,13 +50,13 @@ const FloatingChatbotButton = ({ onClick }) => {
         Ask iDamag
       </div>
 
-      {/* Chatbot Logo */}
+      {/* Chatbot */}
       <button
         onClick={onClick}
         aria-label="Open iDamag Chatbot"
         className="
-          w-35
-          h-35
+          w-50
+          h-50
           rounded-full
           bg-transparent
           border-0
