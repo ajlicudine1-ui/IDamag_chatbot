@@ -854,7 +854,7 @@ function App() {
 
               <div className="min-w-0">
                 <h2 className="truncate text-base font-bold text-white">
-                  iDamag Assistant
+                  I-DAmag Chatbot 
                 </h2>
 
                 <p className="truncate text-xs text-[#EAF4E8]">

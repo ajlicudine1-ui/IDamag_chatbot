@@ -169,114 +169,256 @@ function getRequestedOutputColumns(datasets, plan) {
   return results;
 }
 
+function getRequestedColumnNames(plan) {
+  const requested = [];
+
+  if (Array.isArray(plan.selectColumns)) {
+    requested.push(...plan.selectColumns);
+  }
+
+  if (plan.column) requested.push(plan.column);
+
+  const seen = new Set();
+  return requested
+    .map((item) => String(item || "").trim())
+    .filter((item) => {
+      if (!item) return false;
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function buildJoinIndex(rows, column) {
+  const index = new Map();
+
+  for (const row of rows || []) {
+    const key = normalizeJoinValue(row?.[column]);
+    if (!key) continue;
+
+    if (!index.has(key)) {
+      index.set(key, []);
+    }
+
+    index.get(key).push(row);
+  }
+
+  return index;
+}
+
+function findBestTargetForColumn({
+  datasets,
+  sourceDataset,
+  requestedColumn,
+}) {
+  const sourceRows = datasets[sourceDataset];
+
+  if (!Array.isArray(sourceRows) || !sourceRows.length) {
+    return null;
+  }
+
+  return findDatasetsContainingColumn(datasets, requestedColumn)
+    .filter((match) => match.dataset !== sourceDataset)
+    .map((match) => {
+      const targetRows = datasets[match.dataset];
+
+      if (!Array.isArray(targetRows) || !targetRows.length) {
+        return null;
+      }
+
+      const join = chooseJoin(sourceRows, targetRows);
+      if (!join) return null;
+
+      return {
+        ...match,
+        join,
+        targetRows,
+        score: join.score || 0,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score)[0] || null;
+}
+
 /**
- * Generic cross-worksheet lookup.
- *
- * Example without hardcoding:
- *   worksheet A: Person + SharedKey
- *   worksheet B: SharedKey + RequestedField
- *
- * The identifying value is found from the live question, a shared column
- * is detected dynamically, and matching keys are used to reach worksheet B.
+ * Generic cross-worksheet lookup that MERGES requested fields
+ * from multiple worksheets into one result object.
  */
 function tryCrossDatasetLookup({
   datasets,
   plan,
   question,
+  preferredDataset = null,
+  preferredRows = null,
+  preferredFilters = [],
 }) {
-  const outputMatches = getRequestedOutputColumns(datasets, plan);
+  const requestedColumns = getRequestedColumnNames(plan);
 
-  if (!outputMatches.length) return null;
+  if (!requestedColumns.length) return null;
+
+  const sourceCandidates = [];
+
+  if (
+    preferredDataset &&
+    Array.isArray(datasets[preferredDataset]) &&
+    datasets[preferredDataset].length
+  ) {
+    const matches = Array.isArray(preferredRows)
+      ? preferredRows
+      : datasets[preferredDataset];
+
+    if (matches.length) {
+      sourceCandidates.push({
+        dataset: preferredDataset,
+        rows: datasets[preferredDataset],
+        matches,
+        filters: preferredFilters,
+      });
+    }
+  }
 
   const valueMatches = inferDatasetValueFilters(datasets, question);
 
-  if (!valueMatches.length) return null;
+  for (const valueMatch of valueMatches) {
+    const sourceRows = datasets[valueMatch.dataset];
+    if (!Array.isArray(sourceRows) || !sourceRows.length) continue;
 
-  for (const output of outputMatches) {
-    const targetRows = datasets[output.dataset];
-    if (!Array.isArray(targetRows) || !targetRows.length) continue;
+    const sourceFilter = {
+      column: valueMatch.column,
+      operator: valueMatch.operator || "equals",
+      value: valueMatch.value,
+    };
 
-    for (const valueMatch of valueMatches) {
-      if (valueMatch.dataset === output.dataset) continue;
+    const sourceMatches = applyFilters(sourceRows, [sourceFilter]);
+    if (!sourceMatches.length) continue;
 
-      const sourceRows = datasets[valueMatch.dataset];
-      if (!Array.isArray(sourceRows) || !sourceRows.length) continue;
+    if (!sourceCandidates.some((item) => item.dataset === valueMatch.dataset)) {
+      sourceCandidates.push({
+        dataset: valueMatch.dataset,
+        rows: sourceRows,
+        matches: sourceMatches,
+        filters: [sourceFilter],
+      });
+    }
+  }
 
-      const sourceFilter = {
-        column: valueMatch.column,
-        operator: valueMatch.operator || "equals",
-        value: valueMatch.value,
-      };
+  for (const source of sourceCandidates) {
+    const resolvers = [];
+    let hasCrossDatasetColumn = false;
+    let failed = false;
 
-      const sourceMatches = applyFilters(sourceRows, [sourceFilter]);
-      if (!sourceMatches.length) continue;
+    for (const requested of requestedColumns) {
+      const localColumn = findColumn(source.rows, requested);
 
-      const join = chooseJoin(sourceRows, targetRows);
-      if (!join) continue;
+      if (localColumn) {
+        resolvers.push({
+          dataset: source.dataset,
+          column: localColumn,
+          local: true,
+        });
+        continue;
+      }
 
-      const keys = new Set(
-        sourceMatches
-          .map((row) => normalizeJoinValue(row?.[join.leftColumn]))
-          .filter(Boolean)
-      );
-
-      if (!keys.size) continue;
-
-      const targetMatches = targetRows.filter((row) =>
-        keys.has(normalizeJoinValue(row?.[join.rightColumn]))
-      );
-
-      if (!targetMatches.length) continue;
-
-      const requestedColumns =
-        Array.isArray(plan.selectColumns) && plan.selectColumns.length
-          ? plan.selectColumns
-              .map((item) => findColumn(targetRows, item))
-              .filter(Boolean)
-          : [output.column];
-
-      if (!requestedColumns.length) continue;
-
-      const limit = getLimit(plan);
-      const shown = plan.showAll
-        ? targetMatches
-        : targetMatches.slice(0, limit);
-
-      const results = shown.map((row) => {
-        const projected = {};
-
-        for (const column of requestedColumns) {
-          projected[column] = transformLookupValue(
-            row?.[column],
-            plan.transform
-          );
-        }
-
-        return projected;
+      const target = findBestTargetForColumn({
+        datasets,
+        sourceDataset: source.dataset,
+        requestedColumn: requested,
       });
 
-      return {
-        success: true,
-        source: "dataset",
-        dataset: output.dataset,
-        sourceDataset: valueMatch.dataset,
-        operation: "lookup",
-        crossDataset: true,
-        join: {
-          sourceColumn: join.leftColumn,
-          targetColumn: join.rightColumn,
-        },
-        filters: [sourceFilter],
-        count: targetMatches.length,
-        results,
-        answer: formatLookupAnswer({
-          results,
-          selectedColumns: requestedColumns,
-          count: targetMatches.length,
-          subject: valueMatch.value,
-        }),
-      };
+      if (!target) {
+        failed = true;
+        break;
+      }
+
+      hasCrossDatasetColumn = true;
+
+      resolvers.push({
+        dataset: target.dataset,
+        column: target.column,
+        local: false,
+        join: target.join,
+        index: buildJoinIndex(
+          target.targetRows,
+          target.join.rightColumn
+        ),
+      });
     }
+
+    if (failed || !hasCrossDatasetColumn) continue;
+
+    const limit = getLimit(plan);
+    const sourceRowsToShow = plan.showAll
+      ? source.matches
+      : source.matches.slice(0, limit);
+
+    const results = [];
+
+    for (const sourceRow of sourceRowsToShow) {
+      const projected = {};
+      let complete = true;
+
+      for (const resolver of resolvers) {
+        if (resolver.local) {
+          projected[resolver.column] = transformLookupValue(
+            sourceRow?.[resolver.column],
+            plan.transform
+          );
+          continue;
+        }
+
+        const joinKey = normalizeJoinValue(
+          sourceRow?.[resolver.join.leftColumn]
+        );
+
+        const relatedRows = joinKey
+          ? resolver.index.get(joinKey) || []
+          : [];
+
+        if (!relatedRows.length) {
+          complete = false;
+          break;
+        }
+
+        projected[resolver.column] = transformLookupValue(
+          relatedRows[0]?.[resolver.column],
+          plan.transform
+        );
+      }
+
+      if (complete) {
+        results.push(projected);
+      }
+    }
+
+    if (!results.length) continue;
+
+    const selectedColumns = resolvers.map((item) => item.column);
+
+    return {
+      success: true,
+      source: "dataset",
+      dataset: source.dataset,
+      operation: "lookup",
+      crossDataset: true,
+      joins: resolvers
+        .filter((item) => !item.local)
+        .map((item) => ({
+          sourceDataset: source.dataset,
+          targetDataset: item.dataset,
+          sourceColumn: item.join.leftColumn,
+          targetColumn: item.join.rightColumn,
+          outputColumn: item.column,
+        })),
+      filters: source.filters,
+      count: results.length,
+      results,
+      answer: formatLookupAnswer({
+        results,
+        selectedColumns,
+        count: results.length,
+      }),
+    };
   }
 
   return null;
@@ -344,23 +486,26 @@ function executePlan({
   const limit = getLimit(plan);
 
   /*
-   * If this is a lookup and the selected worksheet cannot satisfy both
-   * the identifying value and requested output, try a dynamic join across
-   * worksheets before returning an empty lookup.
+   * Trigger cross-worksheet lookup whenever even ONE requested
+   * output field is missing from the selected worksheet.
    */
   if (operation === "lookup") {
-    const selectedColumnsHere =
-      Array.isArray(plan.selectColumns) && plan.selectColumns.length
-        ? plan.selectColumns
-            .map((item) => findColumn(rows, item))
-            .filter(Boolean)
-        : [];
+    const requestedColumns = getRequestedColumnNames(plan);
+
+    const selectedColumnsHere = requestedColumns
+      .map((item) => findColumn(rows, item))
+      .filter(Boolean);
 
     const hasUsefulLocalFilter =
-      explicitFilters.length > 0 || implicitFilters.length > 0;
+      explicitFilters.length > 0 ||
+      implicitFilters.length > 0;
+
+    const allRequestedColumnsAreLocal =
+      requestedColumns.length === 0 ||
+      selectedColumnsHere.length === requestedColumns.length;
 
     const needsCrossDataset =
-      (plan.outputRequested && selectedColumnsHere.length === 0) ||
+      !allRequestedColumnsAreLocal ||
       !hasUsefulLocalFilter ||
       filteredRows.length === 0;
 
@@ -369,6 +514,9 @@ function executePlan({
         datasets,
         plan,
         question,
+        preferredDataset: datasetName,
+        preferredRows: filteredRows,
+        preferredFilters: filters,
       });
 
       if (crossResult) return crossResult;
