@@ -18,6 +18,7 @@ import Help from "./pages/Help";
 import ProtectedRoute from "./components/auth/ProtectedRoute";
 import PublicRoute from "./components/auth/PublicRoute";
 import FloatingChatbotButton from "./components/public/FloatingChatbotButton";
+import UserGuide from "./components/public/UserGuide";
 
 /*
  * Supports either:
@@ -717,6 +718,7 @@ function App() {
             </ProtectedRoute>
           }
         />
+        <Route path="/user-guide" element={<UserGuide />} />
 
         <Route
           path="*"
