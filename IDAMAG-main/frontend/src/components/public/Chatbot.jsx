@@ -119,9 +119,7 @@ const Chatbot = () => {
       setSelectedOffice("");
       setSelectedReport("");
 
-      if (!selectedDivision) {
-        return;
-      }
+      if (!selectedDivision) return;
 
       try {
         setSelectionLoading(true);
@@ -191,9 +189,7 @@ const Chatbot = () => {
       setReports([]);
       setSelectedReport("");
 
-      if (!selectedOffice) {
-        return;
-      }
+      if (!selectedOffice) return;
 
       try {
         setSelectionLoading(true);
@@ -258,7 +254,6 @@ const Chatbot = () => {
   // =========================================================
   const handleDivisionChange = (event) => {
     setSelectedDivision(event.target.value);
-
     setSelectedOffice("");
     setSelectedReport("");
     setSelectionError("");
@@ -276,7 +271,6 @@ const Chatbot = () => {
   // =========================================================
   const handleOfficeChange = (event) => {
     setSelectedOffice(event.target.value);
-
     setSelectedReport("");
     setSelectionError("");
 
@@ -302,9 +296,7 @@ const Chatbot = () => {
         Number(item.id) === Number(reportId)
     );
 
-    if (!report) {
-      return;
-    }
+    if (!report) return;
 
     if (!report.hasSheet) {
       setMessages([
@@ -443,24 +435,20 @@ const Chatbot = () => {
     Boolean(selectedReport) &&
     Boolean(selectedReportData?.hasSheet);
 
-  // =========================================================
-  // UI
-  // =========================================================
   return (
     <div
       className="
         fixed
         z-[9998]
 
-        top-[82px]
-        right-2
-        bottom-2
+        top-[96px]
+        right-3
 
-        w-[30vw]
-        min-w-[310px]
-        max-w-[410px]
+        w-[28vw]
+        min-w-[300px]
+        max-w-[380px]
 
-        max-h-[calc(100dvh-90px)]
+        max-h-[72dvh]
 
         flex
         flex-col
@@ -476,24 +464,22 @@ const Chatbot = () => {
 
         overflow-hidden
 
-        max-sm:left-2
-        max-sm:right-2
+        max-sm:top-[88px]
+        max-sm:left-3
+        max-sm:right-3
         max-sm:w-auto
         max-sm:min-w-0
         max-sm:max-w-none
+        max-sm:max-h-[68dvh]
       "
     >
-      {/* =====================================================
-          CHATBOT HEADER
-      ===================================================== */}
+      {/* CHATBOT HEADER */}
       <div
         className="
           shrink-0
           bg-green-800
           px-4
           py-3
-          sm:px-5
-          sm:py-4
           text-white
         "
       >
@@ -507,22 +493,15 @@ const Chatbot = () => {
         </p>
       </div>
 
-      {/* =====================================================
-          SELECTION AREA
-      ===================================================== */}
+      {/* SELECTION AREA */}
       <div
         className="
           shrink-0
-
           border-b
           border-slate-200
-
           bg-white
-
           p-3
-          sm:p-4
-
-          max-h-[40dvh]
+          max-h-[34dvh]
           overflow-y-auto
         "
       >
@@ -553,30 +532,20 @@ const Chatbot = () => {
               disabled={selectionLoading}
               className="
                 w-full
-
                 rounded-xl
-
                 border
                 border-slate-300
-
                 bg-white
-
                 px-3
                 py-2
-
                 text-xs
                 sm:text-sm
-
                 text-slate-700
-
                 outline-none
-
                 transition
-
                 focus:border-green-700
                 focus:ring-2
                 focus:ring-green-100
-
                 disabled:cursor-not-allowed
                 disabled:bg-slate-100
               "
@@ -626,30 +595,20 @@ const Chatbot = () => {
               }
               className="
                 w-full
-
                 rounded-xl
-
                 border
                 border-slate-300
-
                 bg-white
-
                 px-3
                 py-2
-
                 text-xs
                 sm:text-sm
-
                 text-slate-700
-
                 outline-none
-
                 transition
-
                 focus:border-green-700
                 focus:ring-2
                 focus:ring-green-100
-
                 disabled:cursor-not-allowed
                 disabled:bg-slate-100
               "
@@ -701,30 +660,20 @@ const Chatbot = () => {
               }
               className="
                 w-full
-
                 rounded-xl
-
                 border
                 border-slate-300
-
                 bg-white
-
                 px-3
                 py-2
-
                 text-xs
                 sm:text-sm
-
                 text-slate-700
-
                 outline-none
-
                 transition
-
                 focus:border-green-700
                 focus:ring-2
                 focus:ring-green-100
-
                 disabled:cursor-not-allowed
                 disabled:bg-slate-100
               "
@@ -773,7 +722,6 @@ const Chatbot = () => {
               border
               px-3
               py-2
-
               ${
                 selectedReportData.hasSheet
                   ? "border-green-100 bg-green-50"
@@ -785,7 +733,6 @@ const Chatbot = () => {
               className={`
                 text-xs
                 font-semibold
-
                 ${
                   selectedReportData.hasSheet
                     ? "text-green-800"
@@ -801,7 +748,6 @@ const Chatbot = () => {
               className={`
                 mt-1
                 text-[11px]
-
                 ${
                   selectedReportData.hasSheet
                     ? "text-green-700"
@@ -817,20 +763,14 @@ const Chatbot = () => {
         )}
       </div>
 
-      {/* =====================================================
-          MESSAGES
-      ===================================================== */}
+      {/* MESSAGES */}
       <div
         className="
           min-h-0
           flex-1
-
           space-y-3
-
           overflow-y-auto
-
           bg-slate-50
-
           p-3
         "
       >
@@ -846,19 +786,13 @@ const Chatbot = () => {
             <div
               className={`
                 max-w-[85%]
-
                 whitespace-pre-wrap
-
                 rounded-2xl
-
                 px-3
                 py-2.5
-
                 text-xs
                 sm:text-sm
-
                 leading-relaxed
-
                 ${
                   message.role === "user"
                     ? "bg-green-700 text-white"
@@ -876,42 +810,30 @@ const Chatbot = () => {
             <div
               className="
                 max-w-[85%]
-
                 rounded-2xl
-
                 border
                 border-slate-200
-
                 bg-white
-
                 px-3
                 py-2.5
-
                 text-xs
                 sm:text-sm
-
                 text-slate-500
               "
             >
-              Checking the selected report&apos;s
-              Google Sheet...
+              Checking the selected report&apos;s Google Sheet...
             </div>
           </div>
         )}
       </div>
 
-      {/* =====================================================
-          INPUT AREA
-      ===================================================== */}
+      {/* INPUT AREA */}
       <div
         className="
           shrink-0
-
           border-t
           border-slate-200
-
           bg-white
-
           p-3
         "
       >
@@ -926,8 +848,8 @@ const Chatbot = () => {
               text-amber-600
             "
           >
-            Select a report with a connected Google
-            Sheet to enable the chatbot.
+            Select a report with a connected Google Sheet to enable
+            the chatbot.
           </p>
         )}
 
@@ -936,7 +858,6 @@ const Chatbot = () => {
             flex
             items-end
             gap-2
-
             max-[380px]:flex-col
           "
         >
@@ -956,31 +877,21 @@ const Chatbot = () => {
             className="
               min-h-[44px]
               max-h-24
-
               w-full
               flex-1
-
               resize-none
-
               rounded-xl
-
               border
               border-slate-300
-
               px-3
               py-2
-
               text-xs
               sm:text-sm
-
               outline-none
-
               transition
-
               focus:border-green-700
               focus:ring-2
               focus:ring-green-100
-
               disabled:cursor-not-allowed
               disabled:bg-slate-100
             "
@@ -996,30 +907,20 @@ const Chatbot = () => {
             }
             className="
               shrink-0
-
               rounded-xl
-
               bg-green-700
-
               px-5
               py-2.5
-
               text-xs
               sm:text-sm
-
               font-semibold
               text-white
-
               transition
-
               hover:bg-green-800
-
               active:scale-95
-
               disabled:cursor-not-allowed
               disabled:bg-slate-300
               disabled:active:scale-100
-
               max-[380px]:w-full
             "
           >
