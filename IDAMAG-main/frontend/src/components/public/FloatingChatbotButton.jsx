@@ -56,7 +56,7 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
             pointer-events-none
           "
         >
-          Ask iDamag anything! 🤖
+          Ask I-DAmag Chatbot anything!
 
           {/* Pointed Bottom-Right Edge */}
           <div
