@@ -55,8 +55,8 @@ const FloatingChatbotButton = ({ onClick }) => {
         onClick={onClick}
         aria-label="Open iDamag Chatbot"
         className="
-          w-50
-          h-50
+          w-35
+          h-35
           rounded-full
           bg-transparent
           border-0
