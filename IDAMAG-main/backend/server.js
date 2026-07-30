@@ -10,7 +10,7 @@ const {
   Office,
   Division,
   Report,
-  Worksheet,
+  DashboardWorksheet,
   User,
   ActivityLog,
 } = require("./models/index");
@@ -735,7 +735,7 @@ app.get(
       }
 
       const worksheets =
-        await Worksheet.findAll({
+        await DashboardWorksheet.findAll({
           where,
 
           order: [
@@ -938,7 +938,7 @@ app.post(
         }
 
         const created =
-          await Worksheet.bulkCreate(
+          await DashboardWorksheet.bulkCreate(
             rows,
             {
               transaction,
@@ -1014,7 +1014,7 @@ app.post(
       }
 
       const createdWorksheet =
-        await Worksheet.create(
+        await DashboardWorksheet.create(
           {
             dashboardId:
               Number(
@@ -1125,7 +1125,7 @@ app.put(
       } = req.body;
 
       const worksheet =
-        await Worksheet.findByPk(
+        await DashboardWorksheet.findByPk(
           id
         );
 
@@ -1247,7 +1247,7 @@ app.delete(
         req.params;
 
       const worksheet =
-        await Worksheet.findByPk(
+        await DashboardWorksheet.findByPk(
           id
         );
 
