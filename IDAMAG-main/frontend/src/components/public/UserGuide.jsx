@@ -472,14 +472,6 @@ const UserGuide = () => {
             text-white
           "
         >
-          <h2 className="text-2xl font-black mb-2">
-            Need more assistance?
-          </h2>
-
-          <p className="text-green-100 max-w-2xl">
-            Use the iDamag chatbot for assistance or send us your comments
-            through the Feedback page.
-          </p>
         </div>
       </main>
 
