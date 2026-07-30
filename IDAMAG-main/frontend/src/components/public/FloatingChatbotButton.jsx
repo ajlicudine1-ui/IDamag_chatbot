@@ -4,13 +4,17 @@ import chatbotLogo from "../../assets/botbot.png";
 const FloatingChatbotButton = ({ onClick, isOpen }) => {
   return (
     <div
-      className="
+      className={`
         fixed
         bottom-4
-        right-4
         z-[9999]
         group
-      "
+
+        transition-all
+        duration-300
+
+        ${isOpen ? "right-0" : "right-4"}
+      `}
     >
       {/* Hover Textbox - only when chatbot is closed */}
       {!isOpen && (
@@ -21,6 +25,8 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
             right-2
 
             w-[300px]
+            max-w-[calc(100vw-32px)]
+
             bg-white
 
             border-2
@@ -84,11 +90,7 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
             : "Open iDamag Chatbot"
         }
         className={`
-          w-36
-          h-36
-
           rounded-full
-
           bg-transparent
           border-0
           p-0
@@ -98,7 +100,24 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
           transition-all
           duration-300
 
-          ${!isOpen ? "hover:scale-105" : ""}
+          ${
+            isOpen
+              ? `
+                w-28
+                h-28
+                sm:w-32
+                sm:h-32
+              `
+              : `
+                w-28
+                h-28
+                sm:w-32
+                sm:h-32
+                lg:w-36
+                lg:h-36
+                hover:scale-105
+              `
+          }
         `}
       >
         <img
