@@ -6,62 +6,75 @@ const FloatingChatbotButton = ({ onClick }) => {
     <div
       className="
         fixed
-        bottom-2
-        right-2
+        bottom-4
+        right-4
         z-[9999]
         group
       "
     >
-      {/* Hover Text */}
+      {/* Hover Speech Bubble */}
       <div
         className="
           absolute
-          right-full
-          top-1/2
-          -translate-y-1/2
-          mr-3
+          right-[85%]
+          bottom-[65%]
+          w-64
+          bg-white
+          text-[#1F2A7A]
+          font-bold
+          text-base
+          leading-snug
+          px-5
+          py-4
+          rounded-2xl
+          border-2
+          border-[#1F2A7A]
+          shadow-lg
 
           opacity-0
           invisible
-          translate-x-3
+          translate-y-2
 
           group-hover:opacity-100
           group-hover:visible
-          group-hover:translate-x-0
-
-          bg-white
-          text-[#176B3A]
-          font-bold
-          text-sm
-          px-4
-          py-2.5
-          rounded-xl
-          shadow-lg
-          border
-          border-slate-200
-
-          whitespace-nowrap
-          pointer-events-none
+          group-hover:translate-y-0
 
           transition-all
           duration-300
+          pointer-events-none
         "
       >
-        Ask iDamag
+        Hi! Need help with iDamag? Ask me anything. 🤖
+
+        {/* Speech Bubble Tail */}
+        <div
+          className="
+            absolute
+            -bottom-3
+            right-8
+            w-6
+            h-6
+            bg-white
+            border-r-2
+            border-b-2
+            border-[#1F2A7A]
+            rotate-45
+          "
+        />
       </div>
 
-      {/* Chatbot */}
+      {/* Chatbot Button */}
       <button
         onClick={onClick}
         aria-label="Open iDamag Chatbot"
         className="
-          w-35
-          h-35
+          w-36
+          h-36
           rounded-full
           bg-transparent
           border-0
           p-0
-          hover:scale-110
+          hover:scale-105
           active:scale-95
           transition-all
           duration-300
