@@ -460,19 +460,6 @@ const UserGuide = () => {
             </div>
           )}
         </div>
-
-        {/* Bottom Information */}
-        <div
-          className="
-            mt-12
-            bg-[#235E26]
-            rounded-3xl
-            px-8
-            py-8
-            text-white
-          "
-        >
-        </div>
       </main>
 
       {/* IMAGE MODAL */}
