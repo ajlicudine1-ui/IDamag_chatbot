@@ -45,7 +45,7 @@ const Chatbot = () => {
   const [loading, setLoading] = useState(false);
 
   // =========================================================
-  // STEP 1: LOAD DIVISIONS
+  // LOAD DIVISIONS
   // =========================================================
   useEffect(() => {
     let isMounted = true;
@@ -55,12 +55,15 @@ const Chatbot = () => {
         setSelectionLoading(true);
         setSelectionError("");
 
-        const response = await fetch(`${API_URL}/chatbot/divisions`, {
-          method: "GET",
-          headers: {
-            Accept: "application/json",
-          },
-        });
+        const response = await fetch(
+          `${API_URL}/chatbot/divisions`,
+          {
+            method: "GET",
+            headers: {
+              Accept: "application/json",
+            },
+          }
+        );
 
         const data = await readJsonResponse(response);
 
@@ -74,7 +77,9 @@ const Chatbot = () => {
 
         if (isMounted) {
           setDivisions(
-            Array.isArray(data.divisions) ? data.divisions : []
+            Array.isArray(data.divisions)
+              ? data.divisions
+              : []
           );
         }
       } catch (error) {
@@ -84,7 +89,8 @@ const Chatbot = () => {
           setDivisions([]);
 
           setSelectionError(
-            error.message || "Unable to load divisions."
+            error.message ||
+              "Unable to load divisions."
           );
         }
       } finally {
@@ -102,7 +108,7 @@ const Chatbot = () => {
   }, []);
 
   // =========================================================
-  // STEP 2: LOAD OFFICES / SECTIONS
+  // LOAD OFFICES / SECTIONS
   // =========================================================
   useEffect(() => {
     let isMounted = true;
@@ -110,7 +116,6 @@ const Chatbot = () => {
     const loadOffices = async () => {
       setOffices([]);
       setReports([]);
-
       setSelectedOffice("");
       setSelectedReport("");
 
@@ -146,7 +151,9 @@ const Chatbot = () => {
 
         if (isMounted) {
           setOffices(
-            Array.isArray(data.offices) ? data.offices : []
+            Array.isArray(data.offices)
+              ? data.offices
+              : []
           );
         }
       } catch (error) {
@@ -156,7 +163,8 @@ const Chatbot = () => {
           setOffices([]);
 
           setSelectionError(
-            error.message || "Unable to load offices."
+            error.message ||
+              "Unable to load offices."
           );
         }
       } finally {
@@ -174,7 +182,7 @@ const Chatbot = () => {
   }, [selectedDivision]);
 
   // =========================================================
-  // STEP 3: LOAD REPORTS
+  // LOAD REPORTS
   // =========================================================
   useEffect(() => {
     let isMounted = true;
@@ -215,7 +223,9 @@ const Chatbot = () => {
 
         if (isMounted) {
           setReports(
-            Array.isArray(data.reports) ? data.reports : []
+            Array.isArray(data.reports)
+              ? data.reports
+              : []
           );
         }
       } catch (error) {
@@ -225,7 +235,8 @@ const Chatbot = () => {
           setReports([]);
 
           setSelectionError(
-            error.message || "Unable to load reports."
+            error.message ||
+              "Unable to load reports."
           );
         }
       } finally {
@@ -287,7 +298,8 @@ const Chatbot = () => {
     setSelectionError("");
 
     const report = reports.find(
-      (item) => Number(item.id) === Number(reportId)
+      (item) =>
+        Number(item.id) === Number(reportId)
     );
 
     if (!report) {
@@ -320,10 +332,15 @@ const Chatbot = () => {
     const trimmedQuestion = question.trim();
 
     const report = reports.find(
-      (item) => Number(item.id) === Number(selectedReport)
+      (item) =>
+        Number(item.id) === Number(selectedReport)
     );
 
-    if (!trimmedQuestion || loading || !selectedReport) {
+    if (
+      !trimmedQuestion ||
+      loading ||
+      !selectedReport
+    ) {
       return;
     }
 
@@ -351,19 +368,20 @@ const Chatbot = () => {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/chatbot/chat`, {
-        method: "POST",
-
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-
-        body: JSON.stringify({
-          question: trimmedQuestion,
-          reportId: Number(selectedReport),
-        }),
-      });
+      const response = await fetch(
+        `${API_URL}/chatbot/chat`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            question: trimmedQuestion,
+            reportId: Number(selectedReport),
+          }),
+        }
+      );
 
       const data = await readJsonResponse(response);
 
@@ -405,17 +423,18 @@ const Chatbot = () => {
   // ENTER KEY
   // =========================================================
   const handleKeyDown = (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
+    if (
+      event.key === "Enter" &&
+      !event.shiftKey
+    ) {
       event.preventDefault();
       sendQuestion();
     }
   };
 
-  // =========================================================
-  // SELECTED REPORT
-  // =========================================================
   const selectedReportData = reports.find(
-    (report) => Number(report.id) === Number(selectedReport)
+    (report) =>
+      Number(report.id) === Number(selectedReport)
   );
 
   const canChat =
@@ -437,10 +456,9 @@ const Chatbot = () => {
         right-2
         bottom-2
 
-        w-[calc(100vw-1rem)]
-        sm:w-[400px]
-        md:w-[430px]
-        lg:w-[450px]
+        w-[30vw]
+        min-w-[310px]
+        max-w-[410px]
 
         max-h-[calc(100dvh-90px)]
 
@@ -457,6 +475,12 @@ const Chatbot = () => {
         shadow-2xl
 
         overflow-hidden
+
+        max-sm:left-2
+        max-sm:right-2
+        max-sm:w-auto
+        max-sm:min-w-0
+        max-sm:max-w-none
       "
     >
       {/* =====================================================
@@ -467,16 +491,17 @@ const Chatbot = () => {
           shrink-0
           bg-green-800
           px-4
+          py-3
           sm:px-5
-          py-4
+          sm:py-4
           text-white
         "
       >
-        <h1 className="text-lg sm:text-xl font-bold">
+        <h1 className="text-base sm:text-lg font-bold">
           iDamag Chatbot
         </h1>
 
-        <p className="mt-1 text-xs sm:text-sm text-green-100">
+        <p className="mt-1 text-[11px] sm:text-xs text-green-100">
           Select a division, office or section, and report before
           asking about its data.
         </p>
@@ -488,12 +513,16 @@ const Chatbot = () => {
       <div
         className="
           shrink-0
+
           border-b
           border-slate-200
-          bg-white
-          p-4
 
-          max-h-[42dvh]
+          bg-white
+
+          p-3
+          sm:p-4
+
+          max-h-[40dvh]
           overflow-y-auto
         "
       >
@@ -504,10 +533,10 @@ const Chatbot = () => {
             <label
               htmlFor="division"
               className="
-                mb-1.5
+                mb-1
                 block
-                text-[11px]
-                sm:text-xs
+                text-[10px]
+                sm:text-[11px]
                 font-bold
                 uppercase
                 tracking-wider
@@ -524,13 +553,20 @@ const Chatbot = () => {
               disabled={selectionLoading}
               className="
                 w-full
+
                 rounded-xl
+
                 border
                 border-slate-300
+
                 bg-white
+
                 px-3
-                py-2.5
-                text-sm
+                py-2
+
+                text-xs
+                sm:text-sm
+
                 text-slate-700
 
                 outline-none
@@ -545,7 +581,9 @@ const Chatbot = () => {
                 disabled:bg-slate-100
               "
             >
-              <option value="">Select Division</option>
+              <option value="">
+                Select Division
+              </option>
 
               {divisions.map((division) => (
                 <option
@@ -565,10 +603,10 @@ const Chatbot = () => {
             <label
               htmlFor="office"
               className="
-                mb-1.5
+                mb-1
                 block
-                text-[11px]
-                sm:text-xs
+                text-[10px]
+                sm:text-[11px]
                 font-bold
                 uppercase
                 tracking-wider
@@ -582,16 +620,26 @@ const Chatbot = () => {
               id="office"
               value={selectedOffice}
               onChange={handleOfficeChange}
-              disabled={!selectedDivision || selectionLoading}
+              disabled={
+                !selectedDivision ||
+                selectionLoading
+              }
               className="
                 w-full
+
                 rounded-xl
+
                 border
                 border-slate-300
+
                 bg-white
+
                 px-3
-                py-2.5
-                text-sm
+                py-2
+
+                text-xs
+                sm:text-sm
+
                 text-slate-700
 
                 outline-none
@@ -630,10 +678,10 @@ const Chatbot = () => {
             <label
               htmlFor="report"
               className="
-                mb-1.5
+                mb-1
                 block
-                text-[11px]
-                sm:text-xs
+                text-[10px]
+                sm:text-[11px]
                 font-bold
                 uppercase
                 tracking-wider
@@ -647,16 +695,26 @@ const Chatbot = () => {
               id="report"
               value={selectedReport}
               onChange={handleReportChange}
-              disabled={!selectedOffice || selectionLoading}
+              disabled={
+                !selectedOffice ||
+                selectionLoading
+              }
               className="
                 w-full
+
                 rounded-xl
+
                 border
                 border-slate-300
+
                 bg-white
+
                 px-3
-                py-2.5
-                text-sm
+                py-2
+
+                text-xs
+                sm:text-sm
+
                 text-slate-700
 
                 outline-none
@@ -694,19 +752,19 @@ const Chatbot = () => {
 
         {/* LOADING */}
         {selectionLoading && (
-          <p className="mt-3 text-xs sm:text-sm text-slate-500">
+          <p className="mt-2 text-xs text-slate-500">
             Loading available options...
           </p>
         )}
 
         {/* ERROR */}
         {selectionError && (
-          <p className="mt-3 text-xs sm:text-sm font-semibold text-red-600">
+          <p className="mt-2 text-xs font-semibold text-red-600">
             {selectionError}
           </p>
         )}
 
-        {/* SELECTED REPORT INFORMATION */}
+        {/* SELECTED REPORT */}
         {selectedReportData && (
           <div
             className={`
@@ -714,7 +772,7 @@ const Chatbot = () => {
               rounded-xl
               border
               px-3
-              py-2.5
+              py-2
 
               ${
                 selectedReportData.hasSheet
@@ -726,7 +784,6 @@ const Chatbot = () => {
             <p
               className={`
                 text-xs
-                sm:text-sm
                 font-semibold
 
                 ${
@@ -736,14 +793,14 @@ const Chatbot = () => {
                 }
               `}
             >
-              Selected report: {selectedReportData.title}
+              Selected report:{" "}
+              {selectedReportData.title}
             </p>
 
             <p
               className={`
                 mt-1
                 text-[11px]
-                sm:text-xs
 
                 ${
                   selectedReportData.hasSheet
@@ -775,7 +832,6 @@ const Chatbot = () => {
           bg-slate-50
 
           p-3
-          sm:p-4
         "
       >
         {messages.map((message, index) => (
@@ -789,18 +845,14 @@ const Chatbot = () => {
           >
             <div
               className={`
-                max-w-[88%]
-                sm:max-w-[82%]
+                max-w-[85%]
 
                 whitespace-pre-wrap
 
                 rounded-2xl
 
                 px-3
-                sm:px-4
-
                 py-2.5
-                sm:py-3
 
                 text-xs
                 sm:text-sm
@@ -819,26 +871,30 @@ const Chatbot = () => {
           </div>
         ))}
 
-        {/* CHATBOT LOADING */}
         {loading && (
           <div className="flex justify-start">
             <div
               className="
-                max-w-[88%]
+                max-w-[85%]
+
                 rounded-2xl
+
                 border
                 border-slate-200
+
                 bg-white
+
                 px-3
-                sm:px-4
                 py-2.5
-                sm:py-3
+
                 text-xs
                 sm:text-sm
+
                 text-slate-500
               "
             >
-              Checking the selected report&apos;s Google Sheet...
+              Checking the selected report&apos;s
+              Google Sheet...
             </div>
           </div>
         )}
@@ -857,7 +913,6 @@ const Chatbot = () => {
           bg-white
 
           p-3
-          sm:p-4
         "
       >
         {!canChat && (
@@ -865,24 +920,24 @@ const Chatbot = () => {
             className="
               mb-2
               text-center
-              text-[11px]
+              text-[10px]
               sm:text-xs
               font-medium
               text-amber-600
             "
           >
-            Select a report with a connected Google Sheet to enable
-            the chatbot.
+            Select a report with a connected Google
+            Sheet to enable the chatbot.
           </p>
         )}
 
         <div
           className="
             flex
-            flex-col
-            sm:flex-row
-            sm:items-end
+            items-end
             gap-2
+
+            max-[380px]:flex-col
           "
         >
           <textarea
@@ -893,31 +948,30 @@ const Chatbot = () => {
             onKeyDown={handleKeyDown}
             placeholder={
               canChat
-                ? "Ask a question about the selected report..."
-                : "Complete the selections above first..."
+                ? "Ask about the selected report..."
+                : "Complete the selections first..."
             }
             rows={2}
             disabled={!canChat || loading}
             className="
-              min-h-[48px]
-              max-h-28
+              min-h-[44px]
+              max-h-24
 
+              w-full
               flex-1
 
               resize-none
 
-              rounded-2xl
+              rounded-xl
 
               border
               border-slate-300
 
               px-3
-              sm:px-4
+              py-2
 
-              py-2.5
-              sm:py-3
-
-              text-sm
+              text-xs
+              sm:text-sm
 
               outline-none
 
@@ -941,19 +995,18 @@ const Chatbot = () => {
               !canChat
             }
             className="
-              w-full
-              sm:w-auto
-
               shrink-0
 
-              rounded-2xl
+              rounded-xl
 
               bg-green-700
 
-              px-6
-              py-3
+              px-5
+              py-2.5
 
-              text-sm
+              text-xs
+              sm:text-sm
+
               font-semibold
               text-white
 
@@ -966,6 +1019,8 @@ const Chatbot = () => {
               disabled:cursor-not-allowed
               disabled:bg-slate-300
               disabled:active:scale-100
+
+              max-[380px]:w-full
             "
           >
             {loading ? "Sending..." : "Ask"}
