@@ -1,4 +1,5 @@
 import logo from "../../assets/DA-RFO1_LOGO.png";
+
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, Star, Send, CheckCircle2 } from "lucide-react";
@@ -102,17 +103,31 @@ const Feedback = () => {
         <div className="w-full max-w-7xl mx-auto">
 
           {/* Header */}
-          <div className="flex items-center justify-center gap-4">
-            <img
-              src={logo}
-              alt="Department of Agriculture Logo"
-              className="w-16 h-16 md:w-20 md:h-20 object-contain"
-            />
+            <div className="relative mb-8">
 
-            <h1 className="text-3xl md:text-5xl font-bold text-slate-800">
-              I-DAMAG FEEDBACK FORM
-            </h1>
-          </div>
+              {/* Back to Home - KEEP THIS */}
+              <Link
+                to="/"
+                className="absolute left-0 top-1/2 -translate-y-1/2 inline-flex items-center gap-2 text-slate-500 hover:text-green-700 text-sm font-semibold transition-colors"
+              >
+                <ArrowLeft className="w-5 h-5" />
+                Back to Home
+              </Link>
+
+              {/* Logo + Title */}
+              <div className="flex items-center justify-center gap-4">
+                <img
+                  src={logo}
+                  alt="Department of Agriculture Logo"
+                  className="w-16 h-16 object-contain"
+                />
+
+                <h1 className="text-5xl font-bold text-slate-800">
+                  I-DAMAG FEEDBACK FORM
+                </h1>
+              </div>
+
+            </div>
 
           {/* Description */}
           <p className="text-center text-lg text-slate-600 max-w-3xl mx-auto mb-10">
