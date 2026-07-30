@@ -135,4 +135,5 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
   );
 };
 
+
 export default FloatingChatbotButton;
