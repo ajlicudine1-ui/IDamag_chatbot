@@ -21,14 +21,14 @@ const FloatingChatbotButton = ({ onClick }) => {
           -translate-x-1/2
           mb-2
 
-          w-72
+          w-65
           bg-white
           text-[#1F2A7A]
           font-bold
           text-base
           leading-snug
-          px-5
-          py-4
+          px-3
+          py-2
 
           rounded-2xl
           border-2
@@ -58,8 +58,8 @@ const FloatingChatbotButton = ({ onClick }) => {
             left-1/2
             -translate-x-1/2
 
-            w-4
-            h-4
+            w-3
+            h-3
             bg-white
 
             border-r-2
