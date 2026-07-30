@@ -16,7 +16,7 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
         ${isOpen ? "right-0" : "right-4"}
       `}
     >
-      {/* Hover Textbox - only when chatbot is closed */}
+      {/* Hover Textbox - only when chatbot is CLOSED */}
       {!isOpen && (
         <div
           className="
@@ -56,7 +56,7 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
             pointer-events-none
           "
         >
-          Ask I-DAmag Chatbot anything!
+          Ask iDamag anything! 🤖
 
           {/* Pointed Bottom-Right Edge */}
           <div
@@ -91,6 +91,7 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
         }
         className={`
           rounded-full
+
           bg-transparent
           border-0
           p-0
@@ -134,6 +135,5 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
     </div>
   );
 };
-
 
 export default FloatingChatbotButton;
