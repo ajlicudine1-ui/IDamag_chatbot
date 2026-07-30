@@ -49,9 +49,8 @@ const FloatingChatbotButton = ({ onClick }) => {
           pointer-events-none
         "
       >
-        Need help? Ask iDamag
-        <br />
-        anything! 🤖
+         Ask iDamag anything! 🤖
+       
 
         {/* Pointed / Spiky Bottom-Right Edge */}
         <div
