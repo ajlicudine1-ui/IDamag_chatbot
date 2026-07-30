@@ -1416,10 +1416,9 @@ function App() {
         </div>
       )}
 
-      {/* FLOATING CHATBOT BUTTON */}
-
       <FloatingChatbotButton
         onClick={handleToggleChatbot}
+        isOpen={isChatbotOpen}
       />
     </div>
   );

@@ -1,7 +1,7 @@
 import React from "react";
 import chatbotLogo from "../../assets/botbot.png";
 
-const FloatingChatbotButton = ({ onClick }) => {
+const FloatingChatbotButton = ({ onClick, isOpen }) => {
   return (
     <div
       className="
@@ -12,75 +12,83 @@ const FloatingChatbotButton = ({ onClick }) => {
         group
       "
     >
-      {/* Hover Textbox */}
-      <div
-        className="
-          absolute
-          bottom-[92%]
-          right-2
-
-          w-[300px]
-          bg-white
-
-          border-2
-          border-[#235E26]
-          rounded-[18px]
-
-          px-[18px]
-          py-[14px]
-
-          text-[#235E26]
-          text-[17px]
-          font-bold
-          leading-[1.4]
-          text-left
-
-          shadow-md
-
-          opacity-0
-          invisible
-
-          group-hover:opacity-100
-          group-hover:visible
-
-          transition-all
-          duration-200
-
-          pointer-events-none
-        "
-      >
-         Ask iDamag anything! 🤖
-       
-
-        {/* Pointed / Spiky Bottom-Right Edge */}
+      {/* Hover Textbox - ONLY show when chatbot is CLOSED */}
+      {!isOpen && (
         <div
           className="
             absolute
-            -bottom-[11px]
-            right-[25px]
+            bottom-[92%]
+            right-2
 
-            w-5
-            h-5
-
+            w-[300px]
             bg-white
 
-            border-r-2
-            border-b-2
+            border-2
             border-[#235E26]
+            rounded-[18px]
 
-            rotate-45
+            px-[18px]
+            py-[14px]
+
+            text-[#235E26]
+            text-[17px]
+            font-bold
+            leading-[1.4]
+            text-left
+
+            shadow-md
+
+            opacity-0
+            invisible
+
+            group-hover:opacity-100
+            group-hover:visible
+
+            transition-all
+            duration-200
+
+            pointer-events-none
           "
-        />
-      </div>
+        >
+          Ask iDamag anything! 🤖
+
+          {/* Pointed Bottom-Right Edge */}
+          <div
+            className="
+              absolute
+              -bottom-[11px]
+              right-[25px]
+
+              w-5
+              h-5
+
+              bg-white
+
+              border-r-2
+              border-b-2
+              border-[#235E26]
+
+              rotate-45
+            "
+          />
+        </div>
+      )}
 
       {/* Chatbot Button */}
       <button
+        type="button"
         onClick={onClick}
-        aria-label="Open iDamag Chatbot"
+        aria-label={
+          isOpen
+            ? "Close iDamag Chatbot"
+            : "Open iDamag Chatbot"
+        }
         className="
           w-36
           h-36
+
           rounded-full
+
           bg-transparent
           border-0
           p-0
