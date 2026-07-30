@@ -604,9 +604,49 @@ function executePlan({
       };
     }
 
-    const shown = plan.showAll
+    // --------------------------------------------------------
+    // LIST BEHAVIOR
+    // --------------------------------------------------------
+    // Normal list questions should return the COMPLETE list.
+    //
+    // Examples:
+    // "list names"              -> all names
+    // "list of farmers"         -> all farmers
+    // "what are the provinces"  -> all provinces
+    //
+    // Only apply a limit when the user explicitly asks for one:
+    // "show 5 farmers"          -> 5
+    // "first 10 names"          -> 10
+    // "list 20 municipalities"  -> 20
+    //
+    const explicitListLimitPatterns = [
+      /\b(?:top|first|last|bottom)\s+(\d+)\b/i,
+      /\b(?:show|list|give|display)\s+(?:me\s+)?(?:the\s+)?(?:first\s+)?(\d+)\b/i,
+      /\b(\d+)\s+(?:names?|farmers?|records?|rows?|entries?|items?|provinces?|municipalities?|cities?|values?)\b/i,
+    ];
+
+    let explicitListLimit = null;
+
+    for (const pattern of explicitListLimitPatterns) {
+      const match = String(question || "").match(pattern);
+
+      if (match) {
+        const parsed = Number(match[1]);
+
+        if (Number.isInteger(parsed) && parsed > 0) {
+          explicitListLimit = Math.min(parsed, MAX_LIMIT);
+          break;
+        }
+      }
+    }
+
+    const shouldShowAll =
+      plan.showAll === true ||
+      explicitListLimit === null;
+
+    const shown = shouldShowAll
       ? unique
-      : unique.slice(0, limit);
+      : unique.slice(0, explicitListLimit);
 
     return {
       success: true,

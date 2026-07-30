@@ -321,6 +321,10 @@ GENERAL RULES
 
 - Do NOT collapse a multiple-field request into one field.
 
+- For operation "list", return the complete list by default.
+- A normal list request with no explicit number must set "showAll": true.
+- Only limit a list when the user explicitly asks for a number such as 5, 10, 20, first N, top N, or similar.
+
 - Do NOT remove requested output fields just because they are
   stored in different worksheets.
 
@@ -494,29 +498,62 @@ keep ALL of them.
 LIST RULES
 ============================================================
 
-- "what are the X" usually means operation "list".
+The following normally mean operation "list":
 
-- "list X" usually means "list".
+- "list X"
+- "list of X"
+- "show X"
+- "show me X"
+- "give me X"
+- "what are the X"
+- "what is the list of X"
+- "display X"
 
-- "list all X"
-- "show all X"
-- "every X"
-- "all X"
-
-must set:
+For a normal list request with NO explicit numeric limit,
+ALWAYS set:
 
 "showAll": true
+
+Examples:
+
+"list names"
+→ operation "list", showAll true
+
+"list of farmers"
+→ operation "list", showAll true
+
+"show municipalities"
+→ operation "list", showAll true
+
+"what are the provinces"
+→ operation "list", showAll true
+
+"give me the farmer names"
+→ operation "list", showAll true
+
+Only set:
+
+"showAll": false
+
+when the user EXPLICITLY requests a numeric limit.
+
+Examples:
+
+"list first 10 names"
+→ operation "list", showAll false, limit 10
+
+"show 5 farmers"
+→ operation "list", showAll false, limit 5
+
+"give me 20 municipalities"
+→ operation "list", showAll false, limit 20
+
+Do NOT use the default limit of 10 for an ordinary list request.
 
 If the user asks to list multiple related fields together,
 use lookup rather than list.
 
 Example:
-
-"list farmers"
-
-→ list
-
-But:
 
 "list farmers and their municipality"
 
@@ -815,6 +852,52 @@ No code block.
       parsedLimit <= 0
     ) {
       plan.limit = 10;
+    }
+
+    // ========================================================
+    // LIST BEHAVIOR
+    // ========================================================
+    //
+    // Ordinary list requests should return the COMPLETE list.
+    // Only apply a limit when the user explicitly asks for one.
+    //
+    // Examples:
+    // "list names"              -> showAll = true
+    // "list of farmers"         -> showAll = true
+    // "what are the provinces"  -> showAll = true
+    // "show 5 farmers"          -> showAll = false, limit = 5
+    // "first 10 names"          -> showAll = false, limit = 10
+    //
+    if (
+      String(plan.operation || "")
+        .trim()
+        .toLowerCase() === "list"
+    ) {
+      const cleanQuestion = String(question || "").trim();
+
+      const explicitLimitPatterns = [
+        /\b(?:top|first|last|bottom)\s+(\d+)\b/i,
+        /\b(?:show|list|give|display)\s+(?:me\s+)?(?:the\s+)?(?:first\s+)?(\d+)\b/i,
+        /\b(\d+)\s+(?:names?|farmers?|records?|rows?|entries?|items?|provinces?|municipalities?|cities?|values?)\b/i,
+      ];
+
+      let explicitLimit = null;
+
+      for (const pattern of explicitLimitPatterns) {
+        const match = cleanQuestion.match(pattern);
+
+        if (match && Number.isInteger(Number(match[1]))) {
+          explicitLimit = Number(match[1]);
+          break;
+        }
+      }
+
+      if (explicitLimit !== null && explicitLimit > 0) {
+        plan.showAll = false;
+        plan.limit = explicitLimit;
+      } else {
+        plan.showAll = true;
+      }
     }
   }
 
