@@ -11,13 +11,12 @@ const FloatingChatbotButton = ({ onClick }) => {
         bottom-8
         right-8
         z-[9999]
-        w-30
-        h-30
+        w-50
+        h-50
         rounded-full
         bg-transparent
         border-0
         p-0
-        shadow-xl
         hover:scale-110
         active:scale-95
         transition-all
