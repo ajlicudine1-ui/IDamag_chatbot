@@ -6,7 +6,7 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
     <div
       className={`
         fixed
-        bottom-4
+        bottom-0
         z-[9999]
         group
 
