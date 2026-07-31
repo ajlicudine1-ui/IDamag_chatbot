@@ -117,7 +117,7 @@ const Header = () => {
                 lg:text-[30px]
               "
             >
-              Department of Agriculture - RFO I
+              DEPARTMENT OF AGRICULTURE - RFO1
             </span>
 
             {/* IDAMAG MEANING */}
