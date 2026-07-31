@@ -880,42 +880,26 @@ function detectMultiFieldLookup(question, schema, datasets) {
 
   /*
    * Handles questions like:
-   * - "name of farmer with the farm id 1001 and planting month"
-   * - "farmer name and planting month for farm id 1001"
-   * - "show farmer, municipality and fertilizer used for 1001"
-   *
-   * It finds the identifying value anywhere in the live worksheets,
-   * then keeps ALL requested output columns so calculationEngine.js
-   * can merge fields across worksheets.
+   * "name of farmer with farm id 1001 and planting month"
+   * "farmer name and planting month for farm id 1001"
+   * "show farmer, municipality and fertilizer used for 1001"
    */
 
   const identifierMatches =
-    inferDatasetValueFilters(
-      datasets,
-      text
-    );
+    inferDatasetValueFilters(datasets, text);
 
   if (!identifierMatches.length) {
     return null;
   }
 
-  const identifier =
-    identifierMatches[0];
+  const identifier = identifierMatches[0];
 
-  const normalizedIdentifierValue =
-    normalizeText(
-      identifier.value
-    );
-
-  let outputText = text;
-
-  if (normalizedIdentifierValue) {
-    outputText =
-      outputText.replace(
-        normalizedIdentifierValue,
-        " "
-      );
-  }
+  // Remove the identifying value from the question so column matching
+  // focuses on the requested output fields.
+  let outputText = text.replace(
+    normalizeText(identifier.value),
+    " "
+  );
 
   outputText = outputText
     .replace(
@@ -925,115 +909,75 @@ function detectMultiFieldLookup(question, schema, datasets) {
     .replace(/\s+/g, " ")
     .trim();
 
-  const allColumns =
-    getAllColumns(schema);
+  const allColumns = getAllColumns(schema);
 
-  const requestedCandidates =
-    allColumns
-      .map((item) => ({
-        ...item,
-        score:
-          scoreColumnTarget(
-            outputText,
-            item.name
-          ),
-      }))
-      .filter((item) => {
-        if (item.score < 0.75) {
-          return false;
-        }
+  const requested = allColumns
+    .map((item) => ({
+      ...item,
+      score: scoreColumnTarget(
+        outputText,
+        item.name
+      ),
+    }))
+    .filter(
+      (item) =>
+        item.score >= 0.75 &&
+        !(
+          item.dataset === identifier.dataset &&
+          normalizeText(item.name) ===
+            normalizeText(identifier.column)
+        )
+    )
+    .sort((a, b) => b.score - a.score);
 
-        // Do not return the identifying column unless
-        // the user also clearly asked for it.
-        return !(
-          item.dataset ===
-            identifier.dataset &&
-          normalizeText(
-            item.name
-          ) ===
-            normalizeText(
-              identifier.column
-            ) &&
-          !outputText.includes(
-            normalizeText(
-              item.name
-            )
-          )
-        );
-      })
-      .sort(
-        (a, b) =>
-          b.score - a.score
-      );
-
+  // Keep best unique column names.
   const selectColumns = [];
   const seen = new Set();
 
-  for (
-    const item of
-    requestedCandidates
-  ) {
-    const key =
-      normalizeText(item.name);
+  for (const item of requested) {
+    const key = normalizeText(item.name);
 
     if (!seen.has(key)) {
       seen.add(key);
-      selectColumns.push(
-        item.name
-      );
+      selectColumns.push(item.name);
     }
   }
 
-  if (
-    selectColumns.length < 2
-  ) {
+  if (!selectColumns.length) {
     return null;
   }
 
   return {
     route: "dataset",
 
-    // Start from the worksheet where the real identifying
-    // value was found. The calculation engine already knows
-    // how to merge requested fields from other worksheets.
-    dataset:
-      identifier.dataset,
+    // Start from the worksheet where the identifying value was found.
+    // calculationEngine.js can then merge requested fields from other
+    // worksheets using the existing generic cross-worksheet lookup.
+    dataset: identifier.dataset,
 
     operation: "lookup",
-
     column: null,
     groupBy: null,
 
     filters: [
       {
-        column:
-          identifier.column,
-
+        column: identifier.column,
         operator:
           identifier.operator ||
           "equals",
-
         value:
           identifier.value,
       },
     ],
 
     selectColumns,
-
     transform: null,
-
     outputRequested: true,
-
-    limit:
-      detectLimit(question),
-
-    showAll:
-      detectShowAll(question),
-
+    limit: detectLimit(question),
+    showAll: detectShowAll(question),
     confidence: 0.995,
   };
 }
-
 
 function createLocalPlan({
   question,
@@ -1056,7 +1000,7 @@ function createLocalPlan({
 
   // Resolve multi-field lookups FIRST.
   // Example:
-  // "name of farmer with the farm id 1001 and planting month"
+  // "name of farmer with farm id 1001 and planting month"
   const multiFieldLookup =
     detectMultiFieldLookup(
       question,
