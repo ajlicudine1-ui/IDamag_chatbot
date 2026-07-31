@@ -98,47 +98,6 @@ function normalizeTarget(value) {
     .trim();
 }
 
-const COLUMN_MATCH_STOP_WORDS = new Set([
-  "a",
-  "an",
-  "are",
-  "is",
-  "was",
-  "were",
-  "the",
-  "of",
-  "for",
-  "from",
-  "by",
-  "with",
-  "in",
-  "on",
-  "show",
-  "give",
-  "tell",
-  "me",
-  "get",
-  "find",
-  "lookup",
-  "please",
-  "value",
-  "values",
-]);
-
-function normalizeColumnMatchText(value) {
-  return normalizeText(value)
-    .replace(/[?]+$/g, "")
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(singularizeToken)
-    .filter(
-      (token) =>
-        !COLUMN_MATCH_STOP_WORDS.has(token)
-    )
-    .join(" ")
-    .trim();
-}
-
 function extractTargetPhrase(question) {
   const text = normalizeText(question);
 
@@ -192,127 +151,46 @@ function getAllColumns(schema) {
 }
 
 function scoreColumnTarget(target, columnName) {
-  const cleanTarget =
-    normalizeColumnMatchText(target);
-
-  const cleanColumn =
-    normalizeColumnMatchText(columnName);
+  const cleanTarget = normalizeTarget(target);
+  const cleanColumn = normalizeTarget(columnName);
 
   if (!cleanTarget || !cleanColumn) {
     return 0;
   }
 
-  /*
-   * Exact full-header match wins by a very large margin.
-   *
-   * "total cost"  -> Total Cost
-   * "unit cost"   -> Unit Cost
-   * "unit"        -> Unit
-   */
   if (cleanTarget === cleanColumn) {
-    return 1000;
+    return 2;
   }
 
-  const targetTokens =
-    cleanTarget
-      .split(/\s+/)
-      .filter(Boolean);
+  let score = similarity(cleanTarget, cleanColumn);
 
-  const columnTokens =
-    cleanColumn
-      .split(/\s+/)
-      .filter(Boolean);
+  if (
+    cleanTarget.includes(cleanColumn) ||
+    cleanColumn.includes(cleanTarget)
+  ) {
+    score += 0.8;
+  }
 
-  const targetSet =
-    new Set(targetTokens);
+  const targetTokens = new Set(
+    cleanTarget.split(/\s+/)
+  );
+  const columnTokens = new Set(
+    cleanColumn.split(/\s+/)
+  );
 
   let matched = 0;
 
   for (const token of columnTokens) {
-    if (targetSet.has(token)) {
+    if (targetTokens.has(token)) {
       matched += 1;
     }
   }
 
-  const coverage =
-    matched /
-    Math.max(1, columnTokens.length);
-
-  let score = 0;
-
-  /*
-   * If the complete column name is contained in a longer target,
-   * strongly prefer the more specific column.
-   */
-  if (
-    cleanTarget.includes(cleanColumn)
-  ) {
-    score += 500;
+  if (columnTokens.size) {
+    score += matched / columnTokens.size;
   }
-
-  /*
-   * All header tokens are present in the requested phrase.
-   * Longer/more specific headers receive a larger bonus.
-   */
-  if (coverage === 1) {
-    score += 250;
-    score += columnTokens.length * 40;
-    score += cleanColumn.length;
-  } else {
-    score += coverage * 50;
-  }
-
-  /*
-   * Small fuzzy fallback only.
-   */
-  score += similarity(
-    cleanTarget,
-    cleanColumn
-  );
 
   return score;
-}
-
-
-function extractRequestedFieldPhrase(question) {
-  const text = normalizeText(question);
-
-  /*
-   * Explicit aggregate syntax:
-   * "sum of total cost in Association X"
-   * -> requested field = "total cost"
-   *
-   * The aggregate word "sum" is removed, but "total" is preserved
-   * because it may be part of the actual column header.
-   */
-  let match = text.match(
-    /^(?:sum|average|avg|mean|median|maximum|max|minimum|min)\s+(?:of\s+)?(.+?)\s+(?:in|of|for|from|by|with)\s+.+$/
-  );
-
-  if (match?.[1]) {
-    return normalizeColumnMatchText(
-      match[1]
-    );
-  }
-
-  /*
-   * Normal lookup:
-   * "total cost of Puso ti Kababaihan..."
-   * -> "total cost"
-   */
-  match = text.match(
-    /^(?:what|which|who|show|give|tell me|get|find|lookup)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:of|for|from|by|with|in)\s+.+$/
-  );
-
-  if (match?.[1]) {
-    return normalizeColumnMatchText(
-      match[1]
-    );
-  }
-
-  return normalizeColumnMatchText(
-    text
-  );
 }
 
 function rankDatasets(question, schema) {
@@ -363,8 +241,7 @@ function rankColumns(
   schema,
   datasetName = null
 ) {
-  const cleanTarget =
-    extractRequestedFieldPhrase(target);
+  const cleanTarget = extractTargetPhrase(target);
 
   return getAllColumns(schema)
     .filter(
@@ -447,53 +324,11 @@ function detectOperation(
   ) {
     baseOperation = "minimum";
   } else if (
-    /\b(sum|combined|overall|altogether|in all)\b/.test(
+    /\b(sum|total|combined|overall|altogether|in all)\b/.test(
       text
     )
   ) {
     baseOperation = "sum";
-  } else if (
-    /\btotal\b/.test(text)
-  ) {
-    const selectedColumnName =
-      normalizeText(
-        selectedColumn?.name || ""
-      );
-
-    const requestedField =
-      extractRequestedFieldPhrase(
-        question
-      );
-
-    /*
-     * Generic rule:
-     *
-     * If "total" is part of the selected column's actual header
-     * (example: "Total Cost"), then a question like:
-     *
-     * "total cost of Association X"
-     *
-     * is treated as a LOOKUP of that column.
-     *
-     * Explicit aggregation wording like:
-     * "sum of total cost ..."
-     * still becomes SUM.
-     */
-    if (
-      selectedColumnName &&
-      selectedColumnName.includes("total") &&
-      requestedField &&
-      normalizeColumnMatchText(
-        selectedColumnName
-      ) ===
-        normalizeColumnMatchText(
-          requestedField
-        )
-    ) {
-      baseOperation = "lookup";
-    } else {
-      baseOperation = "sum";
-    }
   } else if (
     /\b(unique|distinct|different)\b/.test(
       text
@@ -1069,7 +904,7 @@ function detectMultiFieldLookup(question, schema, datasets) {
     identifierMatches[0];
 
   const questionTokens = new Set(
-    normalizeColumnMatchText(text)
+    normalizeTarget(text)
       .split(/\s+/)
       .filter(Boolean)
   );
@@ -1088,7 +923,7 @@ function detectMultiFieldLookup(question, schema, datasets) {
 
   for (const item of getAllColumns(schema)) {
     const columnTokens =
-      normalizeColumnMatchText(
+      normalizeTarget(
         item.name
       )
         .split(/\s+/)
