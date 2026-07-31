@@ -47,8 +47,24 @@ const Header = () => {
               Department of Agriculture - RFO I
             </span>
 
-            <span className="text-[10px] text-slate-500 font-medium uppercase tracking-widest mt-1">
-               <b>I</b>locos-<b>D</b>ata and <b>A</b>nalytics <b>M</b>anagement for <b>A</b>gricultural <b>G</b>ateway
+           <span className="text-[10px] text-slate-500 font-medium uppercase tracking-wider mt-1 flex items-baseline flex-wrap">
+              <span className="text-[15px] font-extrabold text-[#235E26]">I</span>
+              <span>locos-</span>
+
+              <span className="text-[15px] font-extrabold text-[#235E26]">D</span>
+              <span>ata and&nbsp;</span>
+
+              <span className="text-[15px] font-extrabold text-[#235E26]">A</span>
+              <span>nalytics&nbsp;</span>
+
+              <span className="text-[15px] font-extrabold text-[#235E26]">M</span>
+              <span>anagement for&nbsp;</span>
+
+              <span className="text-[15px] font-extrabold text-[#235E26]">A</span>
+              <span>gricultural&nbsp;</span>
+
+              <span className="text-[15px] font-extrabold text-[#235E26]">G</span>
+              <span>ateway</span>
             </span>
           </div>
         </Link>
