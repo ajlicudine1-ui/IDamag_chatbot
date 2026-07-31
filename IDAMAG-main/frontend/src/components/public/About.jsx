@@ -322,8 +322,8 @@ const About = () => {
 
                     
 
-                    md:h-56
-                    md:w-56
+                    md:h-70
+                    md:w-70
                   "
                 >
                   <img
