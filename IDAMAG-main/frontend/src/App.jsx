@@ -5,6 +5,7 @@ import Home from "./components/public/Home";
 import OfficeLayout from "./components/public/OfficeLayout";
 import Feedback from "./components/public/Feedback";
 import Chatbot from "./components/public/Chatbot";
+import About from "./components/public/About";
 import NotFound from "./components/public/NotFound";
 
 import Login from "./pages/admin/Login";
@@ -797,6 +798,11 @@ function App() {
         <Route
           path="/feedback"
           element={<Feedback />}
+        />
+
+        <Route
+          path="/about"
+          element={<About />}
         />
 
         <Route
