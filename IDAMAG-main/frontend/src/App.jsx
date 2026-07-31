@@ -64,6 +64,32 @@ function App() {
   const [isChatbotOpen, setIsChatbotOpen] =
     useState(false);
 
+  // Shared chat-head position so both the draggable button
+  // and the chatbot window know where to appear.
+  const [chatbotPosition, setChatbotPosition] =
+    useState(() => ({
+      x:
+        typeof window !== "undefined"
+          ? Math.max(window.innerWidth - 170, 12)
+          : 12,
+      y:
+        typeof window !== "undefined"
+          ? Math.max(window.innerHeight - 170, 12)
+          : 12,
+    }));
+
+  const [viewportSize, setViewportSize] =
+    useState(() => ({
+      width:
+        typeof window !== "undefined"
+          ? window.innerWidth
+          : 1280,
+      height:
+        typeof window !== "undefined"
+          ? window.innerHeight
+          : 720,
+    }));
+
   // Selection data
   const [divisions, setDivisions] = useState([]);
   const [offices, setOffices] = useState([]);
@@ -88,6 +114,41 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [chatLoading, setChatLoading] =
     useState(false);
+
+  // Keep the chat head inside the browser window after resize.
+  useEffect(() => {
+    const handleResize = () => {
+      const width = window.innerWidth;
+      const height = window.innerHeight;
+
+      setViewportSize({
+        width,
+        height,
+      });
+
+      setChatbotPosition((current) => {
+        const buttonSize =
+          width >= 1024 ? 144 : width >= 640 ? 128 : 112;
+
+        return {
+          x: Math.max(
+            0,
+            Math.min(current.x, width - buttonSize)
+          ),
+          y: Math.max(
+            0,
+            Math.min(current.y, height - buttonSize)
+          ),
+        };
+      });
+    };
+
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
 
   const resetChatbot = () => {
     setSelectedDivision(null);
@@ -647,6 +708,77 @@ function App() {
       selectedDivision.name;
   }
 
+  // Position the chatbot beside the chat head.
+  // On small screens, use a normal full-width mobile layout.
+  const isMobileChatbot = viewportSize.width < 640;
+
+  const chatbotWindowWidth = Math.min(
+    380,
+    Math.max(300, viewportSize.width * 0.28)
+  );
+
+  const chatbotWindowHeight = Math.min(
+    620,
+    viewportSize.height - 120
+  );
+
+  const chatHeadSize =
+    viewportSize.width >= 1024
+      ? 144
+      : viewportSize.width >= 640
+        ? 128
+        : 112;
+
+  const popupGap = 14;
+  const viewportPadding = 12;
+
+  const roomOnLeft =
+    chatbotPosition.x -
+    popupGap -
+    chatbotWindowWidth;
+
+  const roomOnRight =
+    viewportSize.width -
+    (chatbotPosition.x + chatHeadSize) -
+    popupGap -
+    chatbotWindowWidth;
+
+  let chatbotPopupLeft;
+
+  if (roomOnLeft >= viewportPadding) {
+    chatbotPopupLeft =
+      chatbotPosition.x -
+      popupGap -
+      chatbotWindowWidth;
+  } else if (roomOnRight >= viewportPadding) {
+    chatbotPopupLeft =
+      chatbotPosition.x +
+      chatHeadSize +
+      popupGap;
+  } else {
+    chatbotPopupLeft = Math.max(
+      viewportPadding,
+      Math.min(
+        chatbotPosition.x,
+        viewportSize.width -
+          chatbotWindowWidth -
+          viewportPadding
+      )
+    );
+  }
+
+  const chatbotPopupTop = Math.max(
+    viewportPadding,
+    Math.min(
+      chatbotPosition.y +
+        chatHeadSize / 2 -
+        chatbotWindowHeight / 2,
+      viewportSize.height -
+        chatbotWindowHeight -
+        viewportPadding
+    )
+  );
+
   return (
     <div className="min-h-screen font-sans selection:bg-[#DCEFD9] selection:text-[#235E26] scroll-smooth text-slate-900">
       <Routes>
@@ -766,18 +898,8 @@ function App() {
             fixed
             z-[9998]
 
-            top-[96px]
-            right-4
-
             flex
             flex-col
-
-            w-[28vw]
-            min-w-[300px]
-            max-w-[380px]
-
-            h-[min(620px,calc(100dvh-120px))]
-            max-h-[72dvh]
 
             overflow-hidden
 
@@ -788,23 +910,27 @@ function App() {
             bg-white
 
             shadow-2xl
-
-            max-lg:w-[34vw]
-            max-lg:max-w-[360px]
-
-            max-md:w-[42vw]
-            max-md:min-w-[290px]
-            max-md:max-w-[340px]
-
-            max-sm:top-[88px]
-            max-sm:left-3
-            max-sm:right-3
-            max-sm:w-auto
-            max-sm:min-w-0
-            max-sm:max-w-none
-            max-sm:h-[calc(100dvh-105px)]
-            max-sm:max-h-[calc(100dvh-105px)]
           "
+          style={
+            isMobileChatbot
+              ? {
+                  top: "88px",
+                  left: "12px",
+                  right: "12px",
+                  width: "auto",
+                  height:
+                    "calc(100dvh - 105px)",
+                  maxHeight:
+                    "calc(100dvh - 105px)",
+                }
+              : {
+                  left: `${chatbotPopupLeft}px`,
+                  top: `${chatbotPopupTop}px`,
+                  width: `${chatbotWindowWidth}px`,
+                  height: `${chatbotWindowHeight}px`,
+                  maxHeight: "72dvh",
+                }
+          }
         >
           {/* =================================================
               CHATBOT HEADER
@@ -1420,6 +1546,8 @@ function App() {
       <FloatingChatbotButton
         onClick={handleToggleChatbot}
         isOpen={isChatbotOpen}
+        position={chatbotPosition}
+        setPosition={setChatbotPosition}
       />
     </div>
   );

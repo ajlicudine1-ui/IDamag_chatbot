@@ -1,23 +1,153 @@
-import React from "react";
+import React, { useRef, useState } from "react";
 import chatbotLogo from "../../assets/botbot.png";
 
-const FloatingChatbotButton = ({ onClick, isOpen }) => {
+const FloatingChatbotButton = ({
+  onClick,
+  isOpen,
+  position,
+  setPosition,
+}) => {
+  const [isDragging, setIsDragging] =
+    useState(false);
+
+  const dragStart = useRef({
+    pointerX: 0,
+    pointerY: 0,
+    startX: 0,
+    startY: 0,
+  });
+
+  const hasDragged = useRef(false);
+
+  const getButtonSize = () => {
+    if (window.innerWidth >= 1024) {
+      return 144;
+    }
+
+    if (window.innerWidth >= 640) {
+      return 128;
+    }
+
+    return 112;
+  };
+
+  const clampPosition = (x, y) => {
+    const buttonSize = getButtonSize();
+
+    const maxX = Math.max(
+      0,
+      window.innerWidth - buttonSize
+    );
+
+    const maxY = Math.max(
+      0,
+      window.innerHeight - buttonSize
+    );
+
+    return {
+      x: Math.max(0, Math.min(x, maxX)),
+      y: Math.max(0, Math.min(y, maxY)),
+    };
+  };
+
+  const handlePointerDown = (event) => {
+    // Only react to the main mouse button.
+    if (
+      event.pointerType === "mouse" &&
+      event.button !== 0
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+
+    hasDragged.current = false;
+
+    dragStart.current = {
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      startX: position.x,
+      startY: position.y,
+    };
+
+    setIsDragging(true);
+
+    event.currentTarget.setPointerCapture(
+      event.pointerId
+    );
+  };
+
+  const handlePointerMove = (event) => {
+    if (!isDragging) {
+      return;
+    }
+
+    const deltaX =
+      event.clientX -
+      dragStart.current.pointerX;
+
+    const deltaY =
+      event.clientY -
+      dragStart.current.pointerY;
+
+    if (
+      Math.abs(deltaX) > 5 ||
+      Math.abs(deltaY) > 5
+    ) {
+      hasDragged.current = true;
+    }
+
+    const nextPosition = clampPosition(
+      dragStart.current.startX + deltaX,
+      dragStart.current.startY + deltaY
+    );
+
+    setPosition(nextPosition);
+  };
+
+  const finishDrag = (event) => {
+    if (!isDragging) {
+      return;
+    }
+
+    setIsDragging(false);
+
+    try {
+      if (
+        event.currentTarget.hasPointerCapture(
+          event.pointerId
+        )
+      ) {
+        event.currentTarget.releasePointerCapture(
+          event.pointerId
+        );
+      }
+    } catch {
+      // Pointer capture may already be released.
+    }
+
+    // A short press/click opens or closes the chatbot.
+    // A real drag only moves the chat head.
+    if (!hasDragged.current) {
+      onClick();
+    }
+  };
+
   return (
     <div
-      className={`
+      className="
         fixed
-        bottom-0
         z-[9999]
         group
-
-        transition-all
-        duration-300
-
-        ${isOpen ? "right-0" : "right-4"}
-      `}
+      "
+      style={{
+        left: `${position.x}px`,
+        top: `${position.y}px`,
+        touchAction: "none",
+      }}
     >
-      {/* Hover Textbox - only when chatbot is CLOSED */}
-      {!isOpen && (
+      {/* Hover textbox - shown only while closed */}
+      {!isOpen && !isDragging && (
         <div
           className="
             absolute
@@ -58,7 +188,6 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
         >
           Ask I-DAmag Chatbot anything!
 
-          {/* Pointed Bottom-Right Edge */}
           <div
             className="
               absolute
@@ -80,15 +209,17 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
         </div>
       )}
 
-      {/* Chatbot Button */}
       <button
         type="button"
-        onClick={onClick}
         aria-label={
           isOpen
             ? "Close iDamag Chatbot"
             : "Open iDamag Chatbot"
         }
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
         className={`
           rounded-full
 
@@ -96,10 +227,16 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
           border-0
           p-0
 
-          active:scale-95
+          select-none
 
-          transition-all
-          duration-300
+          ${
+            isDragging
+              ? "cursor-grabbing scale-105"
+              : "cursor-grab"
+          }
+
+          transition-transform
+          duration-150
 
           ${
             isOpen
@@ -124,11 +261,14 @@ const FloatingChatbotButton = ({ onClick, isOpen }) => {
         <img
           src={chatbotLogo}
           alt="iDamag Chatbot"
+          draggable="false"
           className="
             w-full
             h-full
             object-contain
             rounded-full
+            pointer-events-none
+            select-none
           "
         />
       </button>
