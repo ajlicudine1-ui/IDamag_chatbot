@@ -879,103 +879,175 @@ function detectMultiFieldLookup(question, schema, datasets) {
   const text = normalizeText(question);
 
   /*
-   * Handles questions like:
-   * "name of farmer with farm id 1001 and planting month"
-   * "farmer name and planting month for farm id 1001"
-   * "show farmer, municipality and fertilizer used for 1001"
+   * Deterministic multi-field lookup.
+   *
+   * Examples:
+   * - "municipality with registration number CN201708932 and commodities"
+   * - "name of farmer with farm id 1001 and planting month"
+   *
+   * RULE:
+   * Return ONLY columns explicitly requested by the user.
+   * The identifying column/value is used only as the filter.
    */
 
   const identifierMatches =
-    inferDatasetValueFilters(datasets, text);
+    inferDatasetValueFilters(
+      datasets,
+      text
+    );
 
   if (!identifierMatches.length) {
     return null;
   }
 
-  const identifier = identifierMatches[0];
+  const identifier =
+    identifierMatches[0];
 
-  // Remove the identifying value from the question so column matching
-  // focuses on the requested output fields.
-  let outputText = text.replace(
-    normalizeText(identifier.value),
-    " "
+  const questionTokens = new Set(
+    normalizeTarget(text)
+      .split(/\s+/)
+      .filter(Boolean)
   );
 
-  outputText = outputText
-    .replace(
-      /\b(?:what|which|who|show|give|tell|me|get|find|lookup|is|are|was|were|the|of|for|from|with|by|and|its|their|his|her)\b/g,
-      " "
-    )
-    .replace(/\s+/g, " ")
-    .trim();
+  const identifierColumnTokens =
+    new Set(
+      normalizeTarget(
+        identifier.column
+      )
+        .split(/\s+/)
+        .filter(Boolean)
+    );
 
-  const allColumns = getAllColumns(schema);
-
-  const requested = allColumns
-    .map((item) => ({
-      ...item,
-      score: scoreColumnTarget(
-        outputText,
-        item.name
-      ),
-    }))
-    .filter(
-      (item) =>
-        item.score >= 0.75 &&
-        !(
-          item.dataset === identifier.dataset &&
-          normalizeText(item.name) ===
-            normalizeText(identifier.column)
-        )
-    )
-    .sort((a, b) => b.score - a.score);
-
-  // Keep best unique column names.
   const selectColumns = [];
   const seen = new Set();
 
-  for (const item of requested) {
-    const key = normalizeText(item.name);
+  for (const item of getAllColumns(schema)) {
+    const columnTokens =
+      normalizeTarget(
+        item.name
+      )
+        .split(/\s+/)
+        .filter(Boolean);
+
+    if (!columnTokens.length) {
+      continue;
+    }
+
+    const normalizedColumnName =
+      normalizeText(item.name);
+
+    const normalizedIdentifierColumn =
+      normalizeText(
+        identifier.column
+      );
+
+    /*
+     * Never return the field being used only as the identifier/filter.
+     * Example: Registration Number should not be returned merely because
+     * the user said "with registration number CN201708932".
+     */
+    if (
+      normalizedColumnName ===
+      normalizedIdentifierColumn
+    ) {
+      continue;
+    }
+
+    /*
+     * A requested output column is selected only when ALL meaningful
+     * column tokens are explicitly present in the user's question.
+     *
+     * Examples:
+     * "Farmer Name" -> farmer + name must both be present
+     * "Planting Month" -> planting + month must both be present
+     * "Municipality" -> municipality must be present
+     * "Commodities" -> commodity token matches commodities after singularize
+     *
+     * This prevents unrelated fields like:
+     * - IP
+     * - Date of Registration
+     * - Registration Number
+     */
+    const explicitlyRequested =
+      columnTokens.every(
+        (token) =>
+          questionTokens.has(token)
+      );
+
+    if (!explicitlyRequested) {
+      continue;
+    }
+
+    const key =
+      normalizedColumnName;
 
     if (!seen.has(key)) {
       seen.add(key);
-      selectColumns.push(item.name);
+      selectColumns.push(
+        item.name
+      );
     }
   }
 
-  if (!selectColumns.length) {
+  /*
+   * This helper is specifically for requests containing two or more
+   * requested outputs. Single-field questions continue through the
+   * normal cross-dataset lookup.
+   */
+  if (selectColumns.length < 2) {
     return null;
   }
 
   return {
     route: "dataset",
 
-    // Start from the worksheet where the identifying value was found.
-    // calculationEngine.js can then merge requested fields from other
-    // worksheets using the existing generic cross-worksheet lookup.
-    dataset: identifier.dataset,
+    /*
+     * Start from the worksheet that contains the identifying value.
+     * calculationEngine.js can merge requested fields from other
+     * worksheets through its dynamic shared-column lookup.
+     */
+    dataset:
+      identifier.dataset,
 
-    operation: "lookup",
-    column: null,
-    groupBy: null,
+    operation:
+      "lookup",
+
+    column:
+      null,
+
+    groupBy:
+      null,
 
     filters: [
       {
-        column: identifier.column,
+        column:
+          identifier.column,
+
         operator:
           identifier.operator ||
           "equals",
+
         value:
           identifier.value,
       },
     ],
 
     selectColumns,
-    transform: null,
-    outputRequested: true,
-    limit: detectLimit(question),
-    showAll: detectShowAll(question),
-    confidence: 0.995,
+
+    transform:
+      null,
+
+    outputRequested:
+      true,
+
+    limit:
+      detectLimit(question),
+
+    showAll:
+      detectShowAll(question),
+
+    confidence:
+      0.999,
   };
 }
 
@@ -998,9 +1070,9 @@ function createLocalPlan({
     return generalPlan;
   }
 
-  // Resolve multi-field lookups FIRST.
+  // Resolve true multi-field lookups FIRST.
   // Example:
-  // "name of farmer with farm id 1001 and planting month"
+  // "municipality with registration number CN201708932 and commodities"
   const multiFieldLookup =
     detectMultiFieldLookup(
       question,
