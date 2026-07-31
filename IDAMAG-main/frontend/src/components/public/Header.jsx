@@ -13,15 +13,24 @@ const Header = () => {
   // Close menu when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
-      if (menuRef.current && !menuRef.current.contains(event.target)) {
+      if (
+        menuRef.current &&
+        !menuRef.current.contains(event.target)
+      ) {
         setMenuOpen(false);
       }
     };
 
-    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener(
+      "mousedown",
+      handleClickOutside
+    );
 
     return () => {
-      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener(
+        "mousedown",
+        handleClickOutside
+      );
     };
   }, []);
 
@@ -31,41 +40,196 @@ const Header = () => {
   }, [location.pathname]);
 
   return (
-    <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-md border-b border-slate-200 py-4 px-6 md:px-12 flex items-center justify-between">
-      
-      {/* LEFT SIDE - LOGO */}
-      <div className="flex items-center gap-4">
-        <Link to="/" className="flex items-center gap-4 group">
+    <header
+      className="
+        sticky
+        top-0
+        z-50
+
+        flex
+        items-center
+        justify-between
+
+        border-b
+        border-slate-200
+
+        bg-white/90
+        backdrop-blur-md
+
+        px-5
+        py-4
+
+        md:px-10
+        lg:px-14
+      "
+    >
+      {/* LEFT SIDE */}
+      <div className="flex min-w-0 items-center">
+        <Link
+          to="/"
+          className="
+            group
+            flex
+            min-w-0
+            items-center
+            gap-4
+          "
+        >
+          {/* LOGO */}
           <img
             src={logo}
-            alt="DA Logo"
-            className="w-12 h-12 object-contain transition-transform duration-500 group-hover:rotate-12"
+            alt="Department of Agriculture Logo"
+            className="
+              h-14
+              w-14
+              shrink-0
+              object-contain
+
+              transition-transform
+              duration-500
+
+              group-hover:rotate-6
+
+              sm:h-16
+              sm:w-16
+            "
           />
 
-          <div className="flex flex-col">
-            <span className="text-xl font-bold text-slate-900 tracking-tight leading-none group-hover:text-moss-600 transition-colors">
+          {/* TEXT */}
+          <div className="flex min-w-0 flex-col">
+            {/* MAIN TITLE */}
+            <span
+              className="
+                whitespace-nowrap
+
+                text-[20px]
+                font-extrabold
+                leading-tight
+                tracking-[-0.03em]
+                text-slate-900
+
+                transition-colors
+
+                group-hover:text-[#235E26]
+
+                sm:text-[24px]
+                md:text-[27px]
+                lg:text-[30px]
+              "
+            >
               Department of Agriculture - RFO I
             </span>
 
-           <span className="text-[10px] text-slate-500 font-medium uppercase tracking-wider mt-1 flex items-baseline flex-wrap">
-              <span className="text-[15px] font-extrabold text-[#235E26]">I</span>
+            {/* IDAMAG MEANING */}
+            <div
+              className="
+                mt-1
+
+                flex
+                flex-wrap
+                items-baseline
+
+                text-[9px]
+                font-semibold
+                uppercase
+                leading-none
+                tracking-[0.035em]
+                text-slate-500
+
+                sm:text-[10px]
+                md:text-[11px]
+              "
+            >
+              <span
+                className="
+                  text-[14px]
+                  font-black
+                  text-[#235E26]
+
+                  sm:text-[16px]
+                  md:text-[17px]
+                "
+              >
+                I
+              </span>
+
               <span>locos-</span>
 
-              <span className="text-[15px] font-extrabold text-[#235E26]">D</span>
+              <span
+                className="
+                  text-[14px]
+                  font-black
+                  text-[#235E26]
+
+                  sm:text-[16px]
+                  md:text-[17px]
+                "
+              >
+                D
+              </span>
+
               <span>ata and&nbsp;</span>
 
-              <span className="text-[15px] font-extrabold text-[#235E26]">A</span>
+              <span
+                className="
+                  text-[14px]
+                  font-black
+                  text-[#235E26]
+
+                  sm:text-[16px]
+                  md:text-[17px]
+                "
+              >
+                A
+              </span>
+
               <span>nalytics&nbsp;</span>
 
-              <span className="text-[15px] font-extrabold text-[#235E26]">M</span>
+              <span
+                className="
+                  text-[14px]
+                  font-black
+                  text-[#235E26]
+
+                  sm:text-[16px]
+                  md:text-[17px]
+                "
+              >
+                M
+              </span>
+
               <span>anagement for&nbsp;</span>
 
-              <span className="text-[15px] font-extrabold text-[#235E26]">A</span>
+              <span
+                className="
+                  text-[14px]
+                  font-black
+                  text-[#235E26]
+
+                  sm:text-[16px]
+                  md:text-[17px]
+                "
+              >
+                A
+              </span>
+
               <span>gricultural&nbsp;</span>
 
-              <span className="text-[15px] font-extrabold text-[#235E26]">G</span>
+              <span
+                className="
+                  text-[14px]
+                  font-black
+                  text-[#235E26]
+
+                  sm:text-[16px]
+                  md:text-[17px]
+                "
+              >
+                G
+              </span>
+
               <span>ateway</span>
-            </span>
+            </div>
           </div>
         </Link>
       </div>
@@ -73,31 +237,53 @@ const Header = () => {
       {/* RIGHT SIDE */}
       <div className="flex items-center">
         {isHomePage && (
-          <div ref={menuRef} className="relative">
-
+          <div
+            ref={menuRef}
+            className="relative"
+          >
             {/* HAMBURGER BUTTON */}
             <button
-              onClick={() => setMenuOpen(!menuOpen)}
+              type="button"
+              onClick={() =>
+                setMenuOpen(
+                  (current) => !current
+                )
+              }
               className="
                 flex
+                h-11
+                w-11
                 items-center
                 justify-center
-                w-11
-                h-11
+
                 rounded-xl
+
                 text-slate-700
-                hover:text-moss-600
-                hover:bg-slate-100
+
                 transition-all
                 duration-300
+
+                hover:bg-slate-100
+                hover:text-[#235E26]
+
                 active:scale-95
               "
-              aria-label="Open menu"
+              aria-label={
+                menuOpen
+                  ? "Close menu"
+                  : "Open menu"
+              }
             >
               {menuOpen ? (
-                <X className="w-7 h-7" strokeWidth={2.5} />
+                <X
+                  className="h-7 w-7"
+                  strokeWidth={2.5}
+                />
               ) : (
-                <Menu className="w-8 h-8" strokeWidth={3} />
+                <Menu
+                  className="h-8 w-8"
+                  strokeWidth={3}
+                />
               )}
             </button>
 
@@ -108,14 +294,22 @@ const Header = () => {
                   absolute
                   right-0
                   top-14
+
                   w-52
-                  bg-white
+
+                  overflow-hidden
+
                   rounded-2xl
-                  shadow-xl
+
                   border
                   border-slate-200
-                  overflow-hidden
+
+                  bg-white
+
                   py-2
+
+                  shadow-xl
+
                   animate-in
                   fade-in
                   zoom-in-95
@@ -125,17 +319,23 @@ const Header = () => {
                 {/* FEEDBACK */}
                 <Link
                   to="/feedback"
-                  onClick={() => setMenuOpen(false)}
+                  onClick={() =>
+                    setMenuOpen(false)
+                  }
                   className="
                     block
+
                     px-5
                     py-3
+
                     text-sm
                     font-semibold
                     text-slate-700
-                    hover:bg-moss-600
-                    hover:text-white
+
                     transition-colors
+
+                    hover:bg-[#235E26]
+                    hover:text-white
                   "
                 >
                   Feedback
@@ -144,17 +344,23 @@ const Header = () => {
                 {/* ABOUT US */}
                 <Link
                   to="/about"
-                  onClick={() => setMenuOpen(false)}
+                  onClick={() =>
+                    setMenuOpen(false)
+                  }
                   className="
                     block
+
                     px-5
                     py-3
+
                     text-sm
                     font-semibold
                     text-slate-700
-                    hover:bg-moss-600
-                    hover:text-white
+
                     transition-colors
+
+                    hover:bg-[#235E26]
+                    hover:text-white
                   "
                 >
                   About Us
@@ -163,17 +369,23 @@ const Header = () => {
                 {/* USER GUIDE */}
                 <Link
                   to="/user-guide"
-                  onClick={() => setMenuOpen(false)}
+                  onClick={() =>
+                    setMenuOpen(false)
+                  }
                   className="
                     block
+
                     px-5
                     py-3
+
                     text-sm
                     font-semibold
                     text-slate-700
-                    hover:bg-moss-600
-                    hover:text-white
+
                     transition-colors
+
+                    hover:bg-[#235E26]
+                    hover:text-white
                   "
                 >
                   User Guide
