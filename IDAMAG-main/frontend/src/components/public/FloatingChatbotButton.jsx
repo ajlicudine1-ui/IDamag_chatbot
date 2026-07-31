@@ -338,18 +338,8 @@ const FloatingChatbotButton = ({
 
             pointer-events-none
             select-none
-
-            ${
-              isOpen
-                ? `
-                  w-[68%]
-                  h-[68%]
-                `
-                : `
-                  w-full
-                  h-full
-                `
-            }
+             w-full
+             h-full
           `}
         />
       </button>
