@@ -34,12 +34,9 @@ const About = () => {
         setError("");
 
         // Get all top-level offices/categories
-        const officesResponse =
-          await getOffices();
+        const officesResponse = await getOffices();
 
-        const officeList = Array.isArray(
-          officesResponse
-        )
+        const officeList = Array.isArray(officesResponse)
           ? officesResponse
           : [];
 
@@ -71,9 +68,7 @@ const About = () => {
                   reportsResponse?.data
                 )
                   ? reportsResponse.data
-                  : Array.isArray(
-                        reportsResponse
-                      )
+                  : Array.isArray(reportsResponse)
                     ? reportsResponse
                     : [];
 
@@ -109,7 +104,7 @@ const About = () => {
           }
         }
 
-        // Remove duplicate reports if necessary
+        // Remove duplicate reports
         const uniqueDashboards =
           allDashboards.filter(
             (dashboard, index, array) =>
@@ -160,7 +155,7 @@ const About = () => {
 
           <div className="relative mb-8">
 
-            {/* SAME BACK BUTTON AS FEEDBACK */}
+            {/* BACK TO HOME */}
             <Link
               to="/"
               className="
@@ -179,15 +174,14 @@ const About = () => {
 
                 transition-colors
 
-                hover:text-green-700
+                hover:text-[#235E26]
               "
             >
               <ArrowLeft className="h-5 w-5" />
-
               Back to Home
             </Link>
 
-            {/* TITLE */}
+            {/* PAGE TITLE */}
             <div
               className="
                 flex
@@ -214,7 +208,7 @@ const About = () => {
                   text-2xl
                   font-black
                   tracking-tight
-                  text-slate-800
+                  text-slate-900
 
                   sm:text-3xl
                   md:text-4xl
@@ -240,7 +234,6 @@ const About = () => {
               border
               border-[#D7E7D5]
 
-              bg-gradient-to-br
               bg-white
 
               px-6
@@ -255,7 +248,8 @@ const About = () => {
               lg:py-14
             "
           >
-            {/* Decorative circles */}
+            {/* DECORATIVE CIRCLES */}
+
             <div
               className="
                 pointer-events-none
@@ -268,7 +262,7 @@ const About = () => {
 
                 rounded-full
 
-                bg-white/5
+                bg-[#235E26]/5
               "
             />
 
@@ -284,7 +278,7 @@ const About = () => {
 
                 rounded-full
 
-                bg-[#E6DA00]/10
+                bg-[#235E26]/5
               "
             />
 
@@ -301,7 +295,10 @@ const About = () => {
                 lg:gap-12
               "
             >
-              {/* LOGO SIDE */}
+              {/* =================================================
+                  LOGO SIDE
+              ================================================= */}
+
               <div
                 className="
                   flex
@@ -320,14 +317,13 @@ const About = () => {
                     rounded-[32px]
 
                     border
-                    border-white/20
+                    border-[#D7E7D5]
 
-                    bg-white/10
+                    bg-white
 
                     p-6
 
-                    shadow-2xl
-                    backdrop-blur-sm
+                    shadow-lg
 
                     md:h-56
                     md:w-56
@@ -345,15 +341,20 @@ const About = () => {
                 </div>
               </div>
 
-              {/* CONTENT SIDE */}
+              {/* =================================================
+                  CONTENT SIDE
+              ================================================= */}
+
               <div>
+
+                {/* DA RFO I LABEL */}
                 <span
                   className="
                     inline-flex
 
                     rounded-full
 
-                    bg-white/10
+                    bg-[#EAF4E8]
 
                     px-4
                     py-2
@@ -362,13 +363,15 @@ const About = () => {
                     font-bold
                     uppercase
                     tracking-[0.14em]
-                    text-[#F2E75B]
+
+                    text-[#235E26]
                   "
                 >
                   Department of Agriculture -
                   Regional Field Office I
                 </span>
 
+                {/* I-DAMAG TITLE */}
                 <h2
                   className="
                     mt-5
@@ -376,7 +379,8 @@ const About = () => {
                     text-4xl
                     font-black
                     tracking-tight
-                    text-white
+
+                    text-[#235E26]
 
                     md:text-5xl
                     lg:text-6xl
@@ -385,7 +389,10 @@ const About = () => {
                   I-DAMAG
                 </h2>
 
-                {/* FULL MEANING */}
+                {/* =================================================
+                    FULL MEANING
+                ================================================= */}
+
                 <div
                   className="
                     mt-2
@@ -398,43 +405,83 @@ const About = () => {
                     font-semibold
                     uppercase
                     tracking-wide
-                    text-white/80
+
+                    text-slate-800
 
                     md:text-base
                   "
                 >
-                  <span className="text-xl font-black text-[#F2E75B]">
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
                     I
                   </span>
                   <span>locos-</span>
 
-                  <span className="text-xl font-black text-[#F2E75B]">
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
                     D
                   </span>
                   <span>ata and&nbsp;</span>
 
-                  <span className="text-xl font-black text-[#F2E75B]">
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
                     A
                   </span>
                   <span>nalytics&nbsp;</span>
 
-                  <span className="text-xl font-black text-[#F2E75B]">
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
                     M
                   </span>
                   <span>anagement for&nbsp;</span>
 
-                  <span className="text-xl font-black text-[#F2E75B]">
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
                     A
                   </span>
                   <span>gricultural&nbsp;</span>
 
-                  <span className="text-xl font-black text-[#F2E75B]">
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
                     G
                   </span>
                   <span>ateway</span>
                 </div>
 
-                {/* DESCRIPTION */}
+                {/* =================================================
+                    DESCRIPTION
+                ================================================= */}
+
                 <p
                   className="
                     mt-6
@@ -443,7 +490,8 @@ const About = () => {
 
                     text-sm
                     leading-7
-                    text-white/90
+
+                    text-slate-800
 
                     md:text-base
                     md:leading-8
@@ -467,7 +515,8 @@ const About = () => {
 
                     text-sm
                     leading-7
-                    text-white/75
+
+                    text-slate-700
 
                     md:text-base
                   "
@@ -479,7 +528,10 @@ const About = () => {
                   dashboards and data-driven reports.
                 </p>
 
-                {/* FEATURES */}
+                {/* =================================================
+                    FEATURES
+                ================================================= */}
+
                 <div
                   className="
                     mt-8
@@ -490,6 +542,7 @@ const About = () => {
                     sm:grid-cols-3
                   "
                 >
+                  {/* CENTRALIZED DATA */}
                   <div
                     className="
                       flex
@@ -499,9 +552,9 @@ const About = () => {
                       rounded-2xl
 
                       border
-                      border-white/10
+                      border-[#D7E7D5]
 
-                      bg-white/10
+                      bg-[#F7FAF6]
 
                       px-4
                       py-3
@@ -512,7 +565,8 @@ const About = () => {
                         h-5
                         w-5
                         shrink-0
-                        text-[#F2E75B]
+
+                        text-[#235E26]
                       "
                     />
 
@@ -520,13 +574,15 @@ const About = () => {
                       className="
                         text-xs
                         font-semibold
-                        text-white
+
+                        text-slate-800
                       "
                     >
                       Centralized Data
                     </span>
                   </div>
 
+                  {/* DATA ANALYTICS */}
                   <div
                     className="
                       flex
@@ -536,9 +592,9 @@ const About = () => {
                       rounded-2xl
 
                       border
-                      border-white/10
+                      border-[#D7E7D5]
 
-                      bg-white/10
+                      bg-[#F7FAF6]
 
                       px-4
                       py-3
@@ -549,7 +605,8 @@ const About = () => {
                         h-5
                         w-5
                         shrink-0
-                        text-[#F2E75B]
+
+                        text-[#235E26]
                       "
                     />
 
@@ -557,13 +614,15 @@ const About = () => {
                       className="
                         text-xs
                         font-semibold
-                        text-white
+
+                        text-slate-800
                       "
                     >
                       Data Analytics
                     </span>
                   </div>
 
+                  {/* INTERACTIVE DASHBOARDS */}
                   <div
                     className="
                       flex
@@ -573,9 +632,9 @@ const About = () => {
                       rounded-2xl
 
                       border
-                      border-white/10
+                      border-[#D7E7D5]
 
-                      bg-white/10
+                      bg-[#F7FAF6]
 
                       px-4
                       py-3
@@ -586,7 +645,8 @@ const About = () => {
                         h-5
                         w-5
                         shrink-0
-                        text-[#F2E75B]
+
+                        text-[#235E26]
                       "
                     />
 
@@ -594,7 +654,8 @@ const About = () => {
                       className="
                         text-xs
                         font-semibold
-                        text-white
+
+                        text-slate-800
                       "
                     >
                       Interactive Dashboards
@@ -618,6 +679,7 @@ const About = () => {
                   text-2xl
                   font-black
                   tracking-tight
+
                   text-slate-900
 
                   md:text-3xl
@@ -629,11 +691,13 @@ const About = () => {
               <p
                 className="
                   mt-2
+
                   max-w-3xl
 
                   text-sm
                   leading-6
-                  text-slate-500
+
+                  text-slate-600
                 "
               >
                 Explore the dashboards and reports
@@ -643,7 +707,10 @@ const About = () => {
               </p>
             </div>
 
-            {/* LOADING */}
+            {/* =================================================
+                LOADING
+            ================================================= */}
+
             {loading && (
               <div
                 className="
@@ -685,7 +752,10 @@ const About = () => {
               </div>
             )}
 
-            {/* ERROR */}
+            {/* =================================================
+                ERROR
+            ================================================= */}
+
             {!loading && error && (
               <div
                 className="
@@ -708,22 +778,22 @@ const About = () => {
               </div>
             )}
 
-            {/* DASHBOARD CARDS */}
+            {/* =================================================
+                DASHBOARD CARDS
+            ================================================= */}
+
             {!loading &&
               !error &&
               dashboards.length > 0 && (
                 <div
                   className="
                     grid
-
                     grid-cols-1
 
                     gap-4
 
                     sm:grid-cols-2
-
                     lg:grid-cols-3
-
                     xl:grid-cols-4
                   "
                 >
@@ -733,7 +803,6 @@ const About = () => {
                         key={dashboard.id}
                         className="
                           group
-
                           relative
 
                           overflow-hidden
@@ -771,6 +840,7 @@ const About = () => {
                           "
                         />
 
+                        {/* ICON */}
                         <div
                           className="
                             mb-4
@@ -804,18 +874,21 @@ const About = () => {
                           />
                         </div>
 
+                        {/* DASHBOARD TITLE */}
                         <h3
                           className="
                             text-base
                             font-bold
                             leading-snug
-                            text-slate-800
+
+                            text-slate-900
                           "
                         >
                           {dashboard.title ||
                             "Untitled Dashboard"}
                         </h3>
 
+                        {/* DESCRIPTION */}
                         {dashboard.description && (
                           <p
                             className="
@@ -825,15 +898,15 @@ const About = () => {
 
                               text-xs
                               leading-5
-                              text-slate-500
+
+                              text-slate-600
                             "
                           >
-                            {
-                              dashboard.description
-                            }
+                            {dashboard.description}
                           </p>
                         )}
 
+                        {/* OFFICE / DIVISION */}
                         <div
                           className="
                             mt-5
@@ -851,12 +924,11 @@ const About = () => {
                                 font-black
                                 uppercase
                                 tracking-wider
+
                                 text-[#235E26]
                               "
                             >
-                              {
-                                dashboard.officeAcronym
-                              }
+                              {dashboard.officeAcronym}
                             </p>
                           )}
 
@@ -866,12 +938,11 @@ const About = () => {
 
                               text-[11px]
                               leading-4
-                              text-slate-400
+
+                              text-slate-500
                             "
                           >
-                            {
-                              dashboard.divisionName
-                            }
+                            {dashboard.divisionName}
                           </p>
                         </div>
                       </div>
@@ -880,7 +951,10 @@ const About = () => {
                 </div>
               )}
 
-            {/* NO DASHBOARDS */}
+            {/* =================================================
+                NO DASHBOARDS
+            ================================================= */}
+
             {!loading &&
               !error &&
               dashboards.length === 0 && (
@@ -916,7 +990,8 @@ const About = () => {
                       mt-4
 
                       font-bold
-                      text-slate-700
+
+                      text-slate-800
                     "
                   >
                     No dashboards available
@@ -927,7 +1002,8 @@ const About = () => {
                       mt-2
 
                       text-sm
-                      text-slate-400
+
+                      text-slate-500
                     "
                   >
                     Dashboard names will appear here
