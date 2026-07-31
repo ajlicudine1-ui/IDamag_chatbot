@@ -1,4 +1,5 @@
 import React, { useRef, useState } from "react";
+
 import chatbotLogo from "../../assets/botbot.png";
 import chatbotThinkingLogo from "../../assets/BOT_THINKING.png";
 
@@ -20,6 +21,10 @@ const FloatingChatbotButton = ({
 
   const hasDragged = useRef(false);
 
+  // =====================================================
+  // CHAT HEAD SIZE
+  // =====================================================
+
   const getButtonSize = () => {
     if (window.innerWidth >= 1024) {
       return 144;
@@ -31,6 +36,10 @@ const FloatingChatbotButton = ({
 
     return 112;
   };
+
+  // =====================================================
+  // KEEP CHAT HEAD INSIDE SCREEN
+  // =====================================================
 
   const clampPosition = (x, y) => {
     const buttonSize = getButtonSize();
@@ -46,12 +55,24 @@ const FloatingChatbotButton = ({
     );
 
     return {
-      x: Math.max(0, Math.min(x, maxX)),
-      y: Math.max(0, Math.min(y, maxY)),
+      x: Math.max(
+        0,
+        Math.min(x, maxX)
+      ),
+
+      y: Math.max(
+        0,
+        Math.min(y, maxY)
+      ),
     };
   };
 
+  // =====================================================
+  // START DRAGGING
+  // =====================================================
+
   const handlePointerDown = (event) => {
+    // Only allow the main mouse button
     if (
       event.pointerType === "mouse" &&
       event.button !== 0
@@ -77,6 +98,10 @@ const FloatingChatbotButton = ({
     );
   };
 
+  // =====================================================
+  // MOVE CHAT HEAD
+  // =====================================================
+
   const handlePointerMove = (event) => {
     if (!isDragging) {
       return;
@@ -90,6 +115,8 @@ const FloatingChatbotButton = ({
       event.clientY -
       dragStart.current.pointerY;
 
+    // Require a small movement before considering
+    // the action a real drag.
     if (
       Math.abs(deltaX) > 5 ||
       Math.abs(deltaY) > 5
@@ -104,6 +131,10 @@ const FloatingChatbotButton = ({
 
     setPosition(nextPosition);
   };
+
+  // =====================================================
+  // FINISH DRAG / HANDLE CLICK
+  // =====================================================
 
   const finishDrag = (event) => {
     if (!isDragging) {
@@ -126,10 +157,16 @@ const FloatingChatbotButton = ({
       // Pointer capture may already be released.
     }
 
+    // If the user did not drag,
+    // treat it as a normal click.
     if (!hasDragged.current) {
       onClick();
     }
   };
+
+  // =====================================================
+  // RENDER
+  // =====================================================
 
   return (
     <div
@@ -144,11 +181,16 @@ const FloatingChatbotButton = ({
         touchAction: "none",
       }}
     >
-      {/* Hover textbox - shown only while closed */}
+      {/* =================================================
+          HOVER MESSAGE
+          Only visible while chatbot is closed
+      ================================================= */}
+
       {!isOpen && !isDragging && (
         <div
           className="
             absolute
+
             bottom-[92%]
             right-2
 
@@ -159,6 +201,7 @@ const FloatingChatbotButton = ({
 
             border-2
             border-[#235E26]
+
             rounded-[18px]
 
             px-[18px]
@@ -186,9 +229,12 @@ const FloatingChatbotButton = ({
         >
           Ask I-DAmag Chatbot anything!
 
+          {/* Speech bubble arrow */}
+
           <div
             className="
               absolute
+
               -bottom-[11px]
               right-[25px]
 
@@ -206,6 +252,10 @@ const FloatingChatbotButton = ({
           />
         </div>
       )}
+
+      {/* =================================================
+          DRAGGABLE CHAT HEAD
+      ================================================= */}
 
       <button
         type="button"
@@ -225,37 +275,52 @@ const FloatingChatbotButton = ({
           border-0
           p-0
 
+          flex
+          items-center
+          justify-center
+
           select-none
 
           ${
             isDragging
-              ? "cursor-grabbing scale-105"
-              : "cursor-grab"
+              ? `
+                cursor-grabbing
+                scale-105
+              `
+              : `
+                cursor-grab
+              `
           }
 
           transition-transform
           duration-150
 
+          w-28
+          h-28
+
+          sm:w-32
+          sm:h-32
+
+          lg:w-36
+          lg:h-36
+
           ${
-            isOpen
-              ? `
-                w-28
-                h-28
-                sm:w-32
-                sm:h-32
-              `
-              : `
-                w-28
-                h-28
-                sm:w-32
-                sm:h-32
-                lg:w-36
-                lg:h-36
-                hover:scale-105
-              `
+            !isOpen
+              ? "hover:scale-105"
+              : ""
           }
         `}
       >
+        {/* =================================================
+            CHATBOT IMAGE
+
+            CLOSED:
+            botbot.png
+
+            OPEN:
+            BOT_THINKING.png
+        ================================================= */}
+
         <img
           src={
             isOpen
@@ -268,14 +333,24 @@ const FloatingChatbotButton = ({
               : "iDamag Chatbot"
           }
           draggable="false"
-          className="
-            w-full
-            h-full
+          className={`
             object-contain
-            rounded-full
+
             pointer-events-none
             select-none
-          "
+
+            ${
+              isOpen
+                ? `
+                  w-[68%]
+                  h-[68%]
+                `
+                : `
+                  w-full
+                  h-full
+                `
+            }
+          `}
         />
       </button>
     </div>
