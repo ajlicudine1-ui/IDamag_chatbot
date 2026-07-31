@@ -380,10 +380,38 @@ function tryCrossDatasetLookup({
           break;
         }
 
-        projected[resolver.column] = transformLookupValue(
-          relatedRows[0]?.[resolver.column],
-          plan.transform
-        );
+        // Collect ALL unique matching values from the related worksheet.
+        // Example:
+        // CN201708932 -> Rice, Corn, Vegetables, Legumes, Cattle
+        const relatedValues = [];
+        const seenRelatedValues = new Set();
+
+        for (const relatedRow of relatedRows) {
+          const transformedValue = transformLookupValue(
+            relatedRow?.[resolver.column],
+            plan.transform
+          );
+
+          const displayValue = String(
+            transformedValue ?? ""
+          ).trim();
+
+          if (!displayValue) continue;
+
+          const normalizedValue = displayValue.toLowerCase();
+
+          if (!seenRelatedValues.has(normalizedValue)) {
+            seenRelatedValues.add(normalizedValue);
+            relatedValues.push(displayValue);
+          }
+        }
+
+        if (!relatedValues.length) {
+          complete = false;
+          break;
+        }
+
+        projected[resolver.column] = relatedValues.join(", ");
       }
 
       if (complete) {
