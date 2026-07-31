@@ -158,39 +158,99 @@ function scoreColumnTarget(target, columnName) {
     return 0;
   }
 
+  const targetTokens = cleanTarget
+    .split(/\s+/)
+    .filter(Boolean);
+
+  const columnTokens = cleanColumn
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (!targetTokens.length || !columnTokens.length) {
+    return 0;
+  }
+
+  // Strongest possible match: the requested phrase exactly matches
+  // the whole column name.
+  //
+  // Example:
+  // "total cost" -> "Total Cost"
+  // beats:
+  // "Unit Cost"
+  // "Unit"
   if (cleanTarget === cleanColumn) {
-    return 2;
+    return 100;
   }
 
-  let score = similarity(cleanTarget, cleanColumn);
+  const targetTokenSet = new Set(targetTokens);
+  const columnTokenSet = new Set(columnTokens);
 
-  if (
-    cleanTarget.includes(cleanColumn) ||
-    cleanColumn.includes(cleanTarget)
-  ) {
-    score += 0.8;
-  }
-
-  const targetTokens = new Set(
-    cleanTarget.split(/\s+/)
-  );
-  const columnTokens = new Set(
-    cleanColumn.split(/\s+/)
-  );
-
-  let matched = 0;
+  let matchedColumnTokens = 0;
 
   for (const token of columnTokens) {
-    if (targetTokens.has(token)) {
-      matched += 1;
+    if (targetTokenSet.has(token)) {
+      matchedColumnTokens += 1;
     }
   }
 
-  if (columnTokens.size) {
-    score += matched / columnTokens.size;
+  const fullColumnCoverage =
+    matchedColumnTokens / columnTokens.length;
+
+  let score = 0;
+
+  // Prefer a full column phrase occurring inside a longer user target.
+  //
+  // Example:
+  // "total cost puso ti kababaihan association"
+  // should strongly prefer "total cost".
+  if (
+    cleanTarget === cleanColumn ||
+    cleanTarget.includes(cleanColumn)
+  ) {
+    score += 50;
   }
 
+  // If ALL tokens in a column header are explicitly present in the
+  // requested phrase, prefer the more specific (longer) column name.
+  //
+  // This makes:
+  // "Total Cost" beat "Cost"
+  // "Unit Cost" beat "Unit"
+  if (fullColumnCoverage === 1) {
+    score += 30;
+    score += columnTokens.length * 5;
+    score += cleanColumn.length / 100;
+  } else {
+    score += fullColumnCoverage * 8;
+  }
+
+  // Fuzzy similarity is only a secondary signal.
+  score += similarity(
+    cleanTarget,
+    cleanColumn
+  );
+
   return score;
+}
+
+
+function extractRequestedFieldPhrase(question) {
+  const text = normalizeText(question);
+
+  const patterns = [
+    /^(?:what|which|who|show|give|tell me|get|find|lookup)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:of|for|from|by|with)\s+.+$/,
+    /^(?:sum|total|average|avg|mean|median|maximum|max|minimum|min)\s+(?:of\s+)?(.+?)\s+(?:in|of|for|from|by|with)\s+.+$/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+
+    if (match?.[1]) {
+      return normalizeTarget(match[1]);
+    }
+  }
+
+  return extractTargetPhrase(question);
 }
 
 function rankDatasets(question, schema) {
@@ -241,7 +301,7 @@ function rankColumns(
   schema,
   datasetName = null
 ) {
-  const cleanTarget = extractTargetPhrase(target);
+  const cleanTarget = extractRequestedFieldPhrase(target);
 
   return getAllColumns(schema)
     .filter(
@@ -324,11 +384,53 @@ function detectOperation(
   ) {
     baseOperation = "minimum";
   } else if (
-    /\b(sum|total|combined|overall|altogether|in all)\b/.test(
+    /\b(sum|combined|overall|altogether|in all)\b/.test(
       text
     )
   ) {
     baseOperation = "sum";
+  } else if (
+    /\btotal\b/.test(text)
+  ) {
+    const selectedColumnName =
+      normalizeText(
+        selectedColumn?.name || ""
+      );
+
+    const requestedField =
+      extractRequestedFieldPhrase(
+        question
+      );
+
+    /*
+     * Generic rule:
+     *
+     * If "total" is part of the selected column's actual header
+     * (example: "Total Cost"), then a question like:
+     *
+     * "total cost of Association X"
+     *
+     * is treated as a LOOKUP of that column.
+     *
+     * Explicit aggregation wording like:
+     * "sum of total cost ..."
+     * still becomes SUM.
+     */
+    if (
+      selectedColumnName &&
+      selectedColumnName.includes("total") &&
+      requestedField &&
+      normalizeTarget(
+        selectedColumnName
+      ) ===
+        normalizeTarget(
+          requestedField
+        )
+    ) {
+      baseOperation = "lookup";
+    } else {
+      baseOperation = "sum";
+    }
   } else if (
     /\b(unique|distinct|different)\b/.test(
       text
