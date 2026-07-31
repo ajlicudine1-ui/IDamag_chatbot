@@ -428,12 +428,275 @@ function normalizeJoinValue(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
+function executePlannedCrossDatasetLookup({
+  datasets,
+  plan,
+}) {
+  const cross = plan?.crossDatasetFilter;
+
+  if (!cross) {
+    return null;
+  }
+
+  const sourceRows = datasets?.[cross.sourceDataset];
+  const targetRows = datasets?.[plan.dataset];
+
+  if (!Array.isArray(sourceRows) || !sourceRows.length) {
+    throw new Error(
+      `Source worksheet "${cross.sourceDataset}" has no usable rows.`
+    );
+  }
+
+  if (!Array.isArray(targetRows) || !targetRows.length) {
+    throw new Error(
+      `Target worksheet "${plan.dataset}" has no usable rows.`
+    );
+  }
+
+  const sourceFilter = {
+    column: cross.sourceColumn,
+    operator: cross.operator || "equals",
+    value: cross.value,
+  };
+
+  const matchedSourceRows = applyFilters(
+    sourceRows,
+    [sourceFilter]
+  );
+
+  if (!matchedSourceRows.length) {
+    return {
+      success: true,
+      source: "dataset",
+      dataset: plan.dataset,
+      operation: "lookup",
+      crossDataset: true,
+      filters: [sourceFilter],
+      count: 0,
+      results: [],
+      answer:
+        `No matching record was found for "${cross.value}".`,
+    };
+  }
+
+  const joinCandidates = findSharedColumns(
+    sourceRows,
+    targetRows
+  )
+    .map((shared) => ({
+      ...shared,
+      score: scoreJoinColumn(
+        sourceRows,
+        targetRows,
+        shared
+      ),
+    }))
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  let selectedJoin = null;
+
+  for (const candidate of joinCandidates) {
+    const targetIndex = buildJoinIndex(
+      targetRows,
+      candidate.rightColumn
+    );
+
+    const hasMatchedBridge = matchedSourceRows.some(
+      (row) => {
+        const key = normalizeJoinValue(
+          row?.[candidate.leftColumn]
+        );
+
+        return (
+          key &&
+          Array.isArray(
+            targetIndex.get(key)
+          ) &&
+          targetIndex.get(key).length > 0
+        );
+      }
+    );
+
+    if (hasMatchedBridge) {
+      selectedJoin = {
+        ...candidate,
+        targetIndex,
+      };
+      break;
+    }
+  }
+
+  if (!selectedJoin) {
+    return {
+      success: false,
+      source: "dataset",
+      dataset: plan.dataset,
+      operation: "lookup",
+      crossDataset: true,
+      filters: [sourceFilter],
+      count: 0,
+      results: [],
+      answer:
+        `I found "${cross.value}" in ${cross.sourceDataset}, ` +
+        `but I could not find a shared column that connects it to ${plan.dataset}.`,
+    };
+  }
+
+  const requestedColumns =
+    getRequestedColumnNames(plan);
+
+  if (!requestedColumns.length) {
+    throw new Error(
+      "No output column was requested for the cross-worksheet lookup."
+    );
+  }
+
+  const selectedColumns = [];
+
+  for (const requested of requestedColumns) {
+    const exactTargetColumn =
+      findColumn(
+        targetRows,
+        requested
+      );
+
+    if (exactTargetColumn) {
+      selectedColumns.push(
+        exactTargetColumn
+      );
+    }
+  }
+
+  if (!selectedColumns.length) {
+    throw new Error(
+      `The requested output field was not found in ${plan.dataset}.`
+    );
+  }
+
+  const limit = getLimit(plan);
+
+  const results = [];
+  const seenRows = new Set();
+
+  for (const sourceRow of matchedSourceRows) {
+    const joinKey = normalizeJoinValue(
+      sourceRow?.[
+        selectedJoin.leftColumn
+      ]
+    );
+
+    if (!joinKey) {
+      continue;
+    }
+
+    const relatedRows =
+      selectedJoin.targetIndex.get(
+        joinKey
+      ) || [];
+
+    for (const relatedRow of relatedRows) {
+      const projected = {};
+
+      for (const selectedColumn of selectedColumns) {
+        projected[selectedColumn] =
+          transformLookupValue(
+            relatedRow?.[
+              selectedColumn
+            ],
+            plan.transform
+          );
+      }
+
+      const rowKey =
+        JSON.stringify(projected);
+
+      if (!seenRows.has(rowKey)) {
+        seenRows.add(rowKey);
+        results.push(projected);
+      }
+    }
+  }
+
+  const displayedResults =
+    plan.showAll
+      ? results
+      : results.slice(0, limit);
+
+  if (!displayedResults.length) {
+    return {
+      success: true,
+      source: "dataset",
+      dataset: plan.dataset,
+      operation: "lookup",
+      crossDataset: true,
+      filters: [sourceFilter],
+      count: 0,
+      results: [],
+      joins: [
+        {
+          sourceDataset:
+            cross.sourceDataset,
+          targetDataset:
+            plan.dataset,
+          sourceColumn:
+            selectedJoin.leftColumn,
+          targetColumn:
+            selectedJoin.rightColumn,
+        },
+      ],
+      answer:
+        `No ${selectedColumns.join(
+          ", "
+        )} value was found for "${cross.value}".`,
+    };
+  }
+
+  return {
+    success: true,
+    source: "dataset",
+    dataset: plan.dataset,
+    operation: "lookup",
+    crossDataset: true,
+    filters: [sourceFilter],
+    count: displayedResults.length,
+    results: displayedResults,
+    joins: [
+      {
+        sourceDataset:
+          cross.sourceDataset,
+        targetDataset:
+          plan.dataset,
+        sourceColumn:
+          selectedJoin.leftColumn,
+        targetColumn:
+          selectedJoin.rightColumn,
+      },
+    ],
+    answer: formatLookupAnswer({
+      results: displayedResults,
+      selectedColumns,
+      count: displayedResults.length,
+    }),
+  };
+}
+
 
 function executePlan({
   datasets,
   plan,
   question,
 }) {
+  const plannedCrossDatasetResult =
+    executePlannedCrossDatasetLookup({
+      datasets,
+      plan,
+    });
+
+  if (plannedCrossDatasetResult) {
+    return plannedCrossDatasetResult;
+  }
+
   let datasetName = findDatasetName(
     datasets,
     plan.dataset
