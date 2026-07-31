@@ -45,9 +45,33 @@ async function callGroq(messages, options = {}) {
   );
 }
 
+function normalizeHistory(history) {
+  if (!Array.isArray(history)) return [];
+
+  return history
+    .slice(-12)
+    .map((item) => ({
+      role: item?.role === "assistant" || item?.role === "bot"
+        ? "assistant"
+        : "user",
+      content: String(item?.content ?? item?.text ?? "").trim(),
+    }))
+    .filter((item) => item.content);
+}
+
+function historyText(history) {
+  const items = normalizeHistory(history);
+  if (!items.length) return "No previous conversation.";
+  return items
+    .map((item) => `${item.role === "assistant" ? "Assistant" : "User"}: ${item.content}`)
+    .join("\\n");
+}
+
 async function answerGeneralQuestion({
   question,
   schema,
+  history = [],
+  dataProfile = null,
 }) {
   const safeSchema = schema.map((dataset) => ({
     name: dataset.name,
@@ -84,6 +108,16 @@ the dataset engine.
 
 If the user is asking about actual dataset values,
 do not guess them.
+
+You may receive a DATA PROFILE produced by JavaScript from the live worksheets.
+You may use those computed facts for summaries, narratives, comparisons, trends,
+and practical recommendations. Clearly separate observed facts from possible
+causes or recommendations. Never claim a cause is proven unless the supplied
+facts actually establish it.
+
+Use CONVERSATION HISTORY to understand follow-up references such as
+"how about the total cost?", "what about him?", "why is that low?", and
+"what should we do about it?".
 `,
       },
 
@@ -93,6 +127,8 @@ do not guess them.
           `DATASET SCHEMA:\n${JSON.stringify(
             safeSchema
           )}\n\n` +
+          `DATA PROFILE (computed by JavaScript):\n${JSON.stringify(dataProfile || {})}\n\n` +
+          `CONVERSATION HISTORY:\n${historyText(history)}\n\n` +
           `QUESTION:\n${question}`,
       },
     ],
@@ -154,6 +190,7 @@ function extractJsonObject(text) {
 async function createSchemaAwarePlan({
   question,
   schema,
+  history = [],
 }) {
   const compactSchema = schema.map((dataset) => ({
     name: dataset.name,
@@ -190,6 +227,12 @@ You must NOT:
 
 The JavaScript dataset engine will perform all calculations,
 filtering, lookups, joins, and rankings.
+
+Use CONVERSATION HISTORY to resolve omitted subjects, entities, filters,
+metrics, and pronouns from follow-up questions. For example, if the previous
+question was about Aaron and the user asks "how about the total cost?", plan
+it as a total-cost lookup for Aaron. Do not invent a missing subject when the
+history does not make it clear.
 
 Return VALID JSON ONLY.
 
@@ -791,7 +834,7 @@ No code block.
           `SCHEMA:\n${JSON.stringify(
             compactSchema
           )}\n\n` +
-          `QUESTION:\n${question}`,
+          `CONVERSATION HISTORY:\n${historyText(history)}\n\nQUESTION:\n${question}`,
       },
     ],
     {

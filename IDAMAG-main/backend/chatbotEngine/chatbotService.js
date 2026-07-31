@@ -6,41 +6,80 @@ const {
   answerGeneralQuestion,
   createSchemaAwarePlan,
 } = require("./groqService");
-const { normalizeDatasets } = require("./utils");
+const { normalizeDatasets, parseNumber } = require("./utils");
 
-/**
- * Main chatbot entry point.
- *
- * GROQ-FIRST ARCHITECTURE
- * -----------------------
- * 1. Groq interprets the user's natural-language question using only schema.
- * 2. JavaScript reads CURRENT worksheet rows and executes the plan.
- * 3. Groq never calculates dataset totals, rankings, counts, or row answers.
- * 4. If Groq is unavailable or returns an invalid plan, the local parser is
- *    used as a fallback.
- */
-async function answerQuestion(input, question) {
+function normalizeHistory(history) {
+  if (!Array.isArray(history)) return [];
+  return history.slice(-12).map((item) => ({
+    role: item?.role === "assistant" || item?.role === "bot" ? "assistant" : "user",
+    content: String(item?.content ?? item?.text ?? "").trim(),
+  })).filter((item) => item.content);
+}
+
+// Creates a compact, computed profile of the live data. Groq receives this
+// only for explanations/narratives/recommendations; exact Q&A still runs
+// through calculationEngine.js.
+function buildDataProfile(datasets) {
+  const profile = {};
+
+  for (const [name, rows] of Object.entries(datasets)) {
+    if (!Array.isArray(rows) || !rows.length) continue;
+
+    const columns = [...new Set(rows.flatMap((row) => Object.keys(row || {})))];
+    const info = { rowCount: rows.length, columns: {} };
+
+    for (const column of columns) {
+      const raw = rows.map((row) => row?.[column]).filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
+      if (!raw.length) continue;
+
+      const nums = raw.map(parseNumber).filter((v) => v !== null);
+      if (nums.length >= Math.max(2, Math.ceil(raw.length * 0.7))) {
+        const sum = nums.reduce((a, b) => a + b, 0);
+        info.columns[column] = {
+          type: "numeric",
+          populated: raw.length,
+          sum,
+          average: sum / nums.length,
+          minimum: Math.min(...nums),
+          maximum: Math.max(...nums),
+        };
+      } else {
+        const counts = new Map();
+        for (const value of raw) {
+          const text = String(value).trim();
+          counts.set(text, (counts.get(text) || 0) + 1);
+        }
+        info.columns[column] = {
+          type: "text",
+          populated: raw.length,
+          uniqueCount: counts.size,
+          topValues: [...counts.entries()]
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 10)
+            .map(([value, count]) => ({ value, count })),
+        };
+      }
+    }
+    profile[name] = info;
+  }
+
+  return profile;
+}
+
+async function answerQuestion(input, question, history = []) {
   const cleanQuestion = String(question || "").trim();
 
   if (!cleanQuestion) {
-    return {
-      success: false,
-      source: "system",
-      answer: "Please enter a question.",
-    };
+    return { success: false, source: "system", answer: "Please enter a question." };
   }
 
   const datasets = normalizeDatasets(input);
-
   if (!Object.keys(datasets).length) {
-    return {
-      success: false,
-      source: "system",
-      answer: "No usable worksheet data is currently available.",
-    };
+    return { success: false, source: "system", answer: "No usable worksheet data is currently available." };
   }
 
   const schema = buildSchema(datasets);
+  const safeHistory = normalizeHistory(history);
 
   const executeResolvedPlan = async (plan) => {
     if (!plan || typeof plan !== "object") {
@@ -48,27 +87,19 @@ async function answerQuestion(input, question) {
     }
 
     if (plan.route === "schema") {
-      return answerSchemaQuestion({
-        datasets,
-        schema,
-        plan,
-        question: cleanQuestion,
-      });
+      return answerSchemaQuestion({ datasets, schema, plan, question: cleanQuestion });
     }
 
     if (plan.route === "dataset") {
-      return executePlan({
-        datasets,
-        schema,
-        plan,
-        question: cleanQuestion,
-      });
+      return executePlan({ datasets, schema, plan, question: cleanQuestion });
     }
 
     if (plan.route === "general") {
-      return await answerGeneralQuestion({
+      return answerGeneralQuestion({
         question: cleanQuestion,
         schema,
+        history: safeHistory,
+        dataProfile: buildDataProfile(datasets),
       });
     }
 
@@ -77,64 +108,39 @@ async function answerQuestion(input, question) {
         success: false,
         source: "router",
         operation: "clarify",
-        answer:
-          plan.question ||
-          "Please clarify which worksheet, field, or calculation you want.",
+        answer: plan.question || "Please clarify which worksheet, field, or calculation you want.",
       };
     }
 
-    throw new Error(
-      `Unsupported query route: ${String(plan.route || "unknown")}`
-    );
+    throw new Error(`Unsupported query route: ${String(plan.route || "unknown")}`);
   };
 
   try {
-    // PRIMARY: Groq understands the wording and maps it to the live schema.
     const groqPlan = await createSchemaAwarePlan({
       question: cleanQuestion,
       schema,
+      history: safeHistory,
     });
 
-    if (process.env.NODE_ENV !== "production") {
-      console.log("Chatbot Groq plan:", groqPlan);
-    }
-
+    if (process.env.NODE_ENV !== "production") console.log("Chatbot Groq plan:", groqPlan);
     return await executeResolvedPlan(groqPlan);
   } catch (groqError) {
-    console.error(
-      "Groq planning failed; using local parser fallback:",
-      groqError
-    );
+    console.error("Groq planning failed; using local parser fallback:", groqError);
 
     try {
-      // FALLBACK ONLY: keep the local parser for resilience.
-      const localPlan = await createPlan({
-        question: cleanQuestion,
-        schema,
-        datasets,
-      });
-
-      if (process.env.NODE_ENV !== "production") {
-        console.log("Chatbot local fallback plan:", localPlan);
-      }
-
+      const localPlan = await createPlan({ question: cleanQuestion, schema, datasets });
+      if (process.env.NODE_ENV !== "production") console.log("Chatbot local fallback plan:", localPlan);
       return await executeResolvedPlan(localPlan);
     } catch (localError) {
       console.error("Local chatbot fallback failed:", localError);
-
       return {
         success: false,
         source: "system",
         operation: "error",
-        answer:
-          localError.message ||
-          groqError.message ||
-          "The chatbot could not process the question.",
+        answer: localError.message || groqError.message || "The chatbot could not process the question.",
       };
     }
   }
 }
 
-module.exports = {
-  answerQuestion,
-};
+module.exports = { answerQuestion };
