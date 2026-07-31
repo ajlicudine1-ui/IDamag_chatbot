@@ -6,43 +6,51 @@ const Hero = () => {
       className="
         relative
         w-full
-        overflow-hidden
         bg-white
+        overflow-hidden
+
+        aspect-[1920/900]
+
+        max-md:aspect-[16/9]
+        max-sm:aspect-[4/3]
       "
     >
-      {/* BACKGROUND IMAGE */}
+      {/* HERO IMAGE */}
       <img
         src="/i-damag.png"
         alt="I-DAMAG Background"
         className="
-          block
+          absolute
+          inset-0
+
           w-full
-          h-auto
+          h-full
+
           object-contain
           object-center
+
+          select-none
+          pointer-events-none
         "
-        style={{
-          aspectRatio: "auto",
-        }}
       />
 
-      {/* EXPLORE DIVISIONS BUTTON */}
+      {/* EXPLORE BUTTON */}
       <div
         className="
           absolute
           inset-0
+
           flex
           items-center
           justify-center
+
           pointer-events-none
         "
       >
         <div
           className="
-            translate-y-4
-            sm:translate-y-8
-            md:translate-y-12
-            lg:translate-y-16
+            translate-y-[18%]
+
             pointer-events-auto
           "
         >
@@ -60,18 +68,23 @@ const Hero = () => {
               hover:bg-[#0d542c]
 
               text-white
-              text-base
-              md:text-xl
               font-bold
 
-              py-2
+              text-sm
+              sm:text-base
+              md:text-xl
+
               px-4
+              py-2
 
-              md:py-4
+              sm:px-6
+              sm:py-3
+
               md:px-8
+              md:py-4
 
-              lg:py-5
               lg:px-10
+              lg:py-5
 
               rounded-2xl
 
@@ -89,10 +102,11 @@ const Hero = () => {
             <svg
               xmlns="http://www.w3.org/2000/svg"
               className="
-                h-4
                 w-4
-                md:h-6
+                h-4
+
                 md:w-6
+                md:h-6
               "
               viewBox="0 0 20 20"
               fill="currentColor"
