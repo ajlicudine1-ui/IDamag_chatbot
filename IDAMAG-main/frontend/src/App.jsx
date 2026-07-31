@@ -5,7 +5,7 @@ import Home from "./components/public/Home";
 import OfficeLayout from "./components/public/OfficeLayout";
 import Feedback from "./components/public/Feedback";
 import Chatbot from "./components/public/Chatbot";
-import About from "./components/public/About"
+import About from "./components/public/About";
 import NotFound from "./components/public/NotFound";
 
 import Login from "./pages/admin/Login";
@@ -602,13 +602,6 @@ function App() {
       return;
     }
 
-    const conversationHistory = messages
-      .slice(-12)
-      .map((message) => ({
-        role: message.role === "bot" ? "assistant" : "user",
-        content: message.text,
-      }));
-
     setMessages((current) => [
       ...current,
       {
@@ -639,8 +632,6 @@ function App() {
             reportId: Number(
               selectedReport.id
             ),
-
-            history: conversationHistory,
           }),
         }
       );
@@ -809,14 +800,13 @@ function App() {
           element={<Feedback />}
         />
 
+        <Route
+          path="/about"
+          element={<About />}
+        />
 
         <Route
-                  path="/feedback"
-                  element={<Feedback />}
-                />
-
-        <Route
-          path="/About"
+          path="/chatbot"
           element={<Chatbot />}
         />
 
