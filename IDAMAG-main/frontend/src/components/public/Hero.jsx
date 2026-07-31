@@ -6,13 +6,8 @@ const Hero = () => {
       className="
         relative
         w-full
-        bg-white
         overflow-hidden
-
-        aspect-[1920/900]
-
-        max-md:aspect-[16/9]
-        max-sm:aspect-[4/3]
+        bg-white
       "
     >
       {/* HERO IMAGE */}
@@ -20,37 +15,30 @@ const Hero = () => {
         src="/i-damag.png"
         alt="I-DAMAG Background"
         className="
-          absolute
-          inset-0
-
+          block
           w-full
-          h-full
-
+          h-auto
+          max-w-none
           object-contain
-          object-center
-
           select-none
           pointer-events-none
         "
       />
 
-      {/* EXPLORE BUTTON */}
+      {/* EXPLORE DIVISIONS BUTTON */}
       <div
         className="
           absolute
           inset-0
-
           flex
           items-center
           justify-center
-
           pointer-events-none
         "
       >
         <div
           className="
             translate-y-[18%]
-
             pointer-events-auto
           "
         >
@@ -104,7 +92,6 @@ const Hero = () => {
               className="
                 w-4
                 h-4
-
                 md:w-6
                 md:h-6
               "
