@@ -727,7 +727,7 @@ function detectRequestedOutputColumns(
 
   // For "first name" and "last name", match the underlying name/person
   // column, then apply the requested word transformation.
-  const targetText = normalizeTarget(
+  const targetText = normalizeColumnMatchText(
     rawTarget
       .replace(/\bfirst name\b/g, "name")
       .replace(/\blast name\b/g, "name")
@@ -940,7 +940,9 @@ function extractCrossDatasetLookupParts(question) {
   }
 
   return {
-    requestedField: normalizeTarget(match[1]),
+    // Preserve semantic words that may be part of the real column header.
+    // Example: "total cost" must remain "total cost", not just "cost".
+    requestedField: normalizeColumnMatchText(match[1]),
     identifierText: normalizeText(match[2]),
   };
 }
@@ -1076,7 +1078,7 @@ function detectMultiFieldLookup(question, schema, datasets) {
 
   const identifierColumnTokens =
     new Set(
-      normalizeTarget(
+      normalizeColumnMatchText(
         identifier.column
       )
         .split(/\s+/)
