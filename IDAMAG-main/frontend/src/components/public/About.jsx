@@ -231,11 +231,15 @@ const About = () => {
 
               rounded-[32px]
 
+              border
+              border-[#D7E7D5]
 
               bg-white
 
               px-6
               py-8
+
+              shadow-xl
 
               md:px-10
               md:py-12
@@ -312,14 +316,11 @@ const About = () => {
 
                     rounded-[32px]
 
-                    border
-                    border-[#D7E7D5]
-
                     bg-white
 
                     p-6
 
-                    shadow-lg
+                    
 
                     md:h-56
                     md:w-56
