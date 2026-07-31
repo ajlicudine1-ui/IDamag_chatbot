@@ -98,6 +98,47 @@ function normalizeTarget(value) {
     .trim();
 }
 
+const COLUMN_MATCH_STOP_WORDS = new Set([
+  "a",
+  "an",
+  "are",
+  "is",
+  "was",
+  "were",
+  "the",
+  "of",
+  "for",
+  "from",
+  "by",
+  "with",
+  "in",
+  "on",
+  "show",
+  "give",
+  "tell",
+  "me",
+  "get",
+  "find",
+  "lookup",
+  "please",
+  "value",
+  "values",
+]);
+
+function normalizeColumnMatchText(value) {
+  return normalizeText(value)
+    .replace(/[?]+$/g, "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(singularizeToken)
+    .filter(
+      (token) =>
+        !COLUMN_MATCH_STOP_WORDS.has(token)
+    )
+    .join(" ")
+    .trim();
+}
+
 function extractTargetPhrase(question) {
   const text = normalizeText(question);
 
@@ -151,80 +192,79 @@ function getAllColumns(schema) {
 }
 
 function scoreColumnTarget(target, columnName) {
-  const cleanTarget = normalizeTarget(target);
-  const cleanColumn = normalizeTarget(columnName);
+  const cleanTarget =
+    normalizeColumnMatchText(target);
+
+  const cleanColumn =
+    normalizeColumnMatchText(columnName);
 
   if (!cleanTarget || !cleanColumn) {
     return 0;
   }
 
-  const targetTokens = cleanTarget
-    .split(/\s+/)
-    .filter(Boolean);
-
-  const columnTokens = cleanColumn
-    .split(/\s+/)
-    .filter(Boolean);
-
-  if (!targetTokens.length || !columnTokens.length) {
-    return 0;
-  }
-
-  // Strongest possible match: the requested phrase exactly matches
-  // the whole column name.
-  //
-  // Example:
-  // "total cost" -> "Total Cost"
-  // beats:
-  // "Unit Cost"
-  // "Unit"
+  /*
+   * Exact full-header match wins by a very large margin.
+   *
+   * "total cost"  -> Total Cost
+   * "unit cost"   -> Unit Cost
+   * "unit"        -> Unit
+   */
   if (cleanTarget === cleanColumn) {
-    return 100;
+    return 1000;
   }
 
-  const targetTokenSet = new Set(targetTokens);
-  const columnTokenSet = new Set(columnTokens);
+  const targetTokens =
+    cleanTarget
+      .split(/\s+/)
+      .filter(Boolean);
 
-  let matchedColumnTokens = 0;
+  const columnTokens =
+    cleanColumn
+      .split(/\s+/)
+      .filter(Boolean);
+
+  const targetSet =
+    new Set(targetTokens);
+
+  let matched = 0;
 
   for (const token of columnTokens) {
-    if (targetTokenSet.has(token)) {
-      matchedColumnTokens += 1;
+    if (targetSet.has(token)) {
+      matched += 1;
     }
   }
 
-  const fullColumnCoverage =
-    matchedColumnTokens / columnTokens.length;
+  const coverage =
+    matched /
+    Math.max(1, columnTokens.length);
 
   let score = 0;
 
-  // Prefer a full column phrase occurring inside a longer user target.
-  //
-  // Example:
-  // "total cost puso ti kababaihan association"
-  // should strongly prefer "total cost".
+  /*
+   * If the complete column name is contained in a longer target,
+   * strongly prefer the more specific column.
+   */
   if (
-    cleanTarget === cleanColumn ||
     cleanTarget.includes(cleanColumn)
   ) {
-    score += 50;
+    score += 500;
   }
 
-  // If ALL tokens in a column header are explicitly present in the
-  // requested phrase, prefer the more specific (longer) column name.
-  //
-  // This makes:
-  // "Total Cost" beat "Cost"
-  // "Unit Cost" beat "Unit"
-  if (fullColumnCoverage === 1) {
-    score += 30;
-    score += columnTokens.length * 5;
-    score += cleanColumn.length / 100;
+  /*
+   * All header tokens are present in the requested phrase.
+   * Longer/more specific headers receive a larger bonus.
+   */
+  if (coverage === 1) {
+    score += 250;
+    score += columnTokens.length * 40;
+    score += cleanColumn.length;
   } else {
-    score += fullColumnCoverage * 8;
+    score += coverage * 50;
   }
 
-  // Fuzzy similarity is only a secondary signal.
+  /*
+   * Small fuzzy fallback only.
+   */
   score += similarity(
     cleanTarget,
     cleanColumn
@@ -237,20 +277,42 @@ function scoreColumnTarget(target, columnName) {
 function extractRequestedFieldPhrase(question) {
   const text = normalizeText(question);
 
-  const patterns = [
-    /^(?:what|which|who|show|give|tell me|get|find|lookup)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:of|for|from|by|with)\s+.+$/,
-    /^(?:sum|total|average|avg|mean|median|maximum|max|minimum|min)\s+(?:of\s+)?(.+?)\s+(?:in|of|for|from|by|with)\s+.+$/,
-  ];
+  /*
+   * Explicit aggregate syntax:
+   * "sum of total cost in Association X"
+   * -> requested field = "total cost"
+   *
+   * The aggregate word "sum" is removed, but "total" is preserved
+   * because it may be part of the actual column header.
+   */
+  let match = text.match(
+    /^(?:sum|average|avg|mean|median|maximum|max|minimum|min)\s+(?:of\s+)?(.+?)\s+(?:in|of|for|from|by|with)\s+.+$/
+  );
 
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-
-    if (match?.[1]) {
-      return normalizeTarget(match[1]);
-    }
+  if (match?.[1]) {
+    return normalizeColumnMatchText(
+      match[1]
+    );
   }
 
-  return extractTargetPhrase(question);
+  /*
+   * Normal lookup:
+   * "total cost of Puso ti Kababaihan..."
+   * -> "total cost"
+   */
+  match = text.match(
+    /^(?:what|which|who|show|give|tell me|get|find|lookup)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:of|for|from|by|with|in)\s+.+$/
+  );
+
+  if (match?.[1]) {
+    return normalizeColumnMatchText(
+      match[1]
+    );
+  }
+
+  return normalizeColumnMatchText(
+    text
+  );
 }
 
 function rankDatasets(question, schema) {
@@ -301,7 +363,8 @@ function rankColumns(
   schema,
   datasetName = null
 ) {
-  const cleanTarget = extractRequestedFieldPhrase(target);
+  const cleanTarget =
+    extractRequestedFieldPhrase(target);
 
   return getAllColumns(schema)
     .filter(
@@ -420,10 +483,10 @@ function detectOperation(
       selectedColumnName &&
       selectedColumnName.includes("total") &&
       requestedField &&
-      normalizeTarget(
+      normalizeColumnMatchText(
         selectedColumnName
       ) ===
-        normalizeTarget(
+        normalizeColumnMatchText(
           requestedField
         )
     ) {
@@ -1006,7 +1069,7 @@ function detectMultiFieldLookup(question, schema, datasets) {
     identifierMatches[0];
 
   const questionTokens = new Set(
-    normalizeTarget(text)
+    normalizeColumnMatchText(text)
       .split(/\s+/)
       .filter(Boolean)
   );
@@ -1025,7 +1088,7 @@ function detectMultiFieldLookup(question, schema, datasets) {
 
   for (const item of getAllColumns(schema)) {
     const columnTokens =
-      normalizeTarget(
+      normalizeColumnMatchText(
         item.name
       )
         .split(/\s+/)
