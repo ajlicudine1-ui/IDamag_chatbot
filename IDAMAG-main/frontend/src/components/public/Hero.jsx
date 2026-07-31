@@ -12,7 +12,27 @@ const Hero = () => {
         bg-white
       "
     >
-      {/* HERO BACKGROUND */}
+      {/* BACKGROUND FILLER */}
+      <img
+        src="/i-damag.png"
+        alt=""
+        aria-hidden="true"
+        className="
+          absolute
+          inset-0
+          w-full
+          h-full
+          object-cover
+          object-center
+          scale-105
+          blur-sm
+          opacity-35
+          select-none
+          pointer-events-none
+        "
+      />
+
+      {/* MAIN IMAGE - FULLY VISIBLE / NOT CROPPED */}
       <img
         src="/i-damag.png"
         alt="I-DAMAG Background"
