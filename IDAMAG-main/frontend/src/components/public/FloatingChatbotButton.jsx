@@ -115,8 +115,8 @@ const FloatingChatbotButton = ({
       event.clientY -
       dragStart.current.pointerY;
 
-    // Require a small movement before considering
-    // the action a real drag.
+    // Require a small movement before
+    // considering it a real drag
     if (
       Math.abs(deltaX) > 5 ||
       Math.abs(deltaY) > 5
@@ -133,7 +133,7 @@ const FloatingChatbotButton = ({
   };
 
   // =====================================================
-  // FINISH DRAG / HANDLE CLICK
+  // FINISH DRAG / CLICK
   // =====================================================
 
   const finishDrag = (event) => {
@@ -154,19 +154,15 @@ const FloatingChatbotButton = ({
         );
       }
     } catch {
-      // Pointer capture may already be released.
+      // Pointer capture may already be released
     }
 
-    // If the user did not drag,
-    // treat it as a normal click.
+    // If it wasn't dragged,
+    // treat it as a normal click
     if (!hasDragged.current) {
       onClick();
     }
   };
-
-  // =====================================================
-  // RENDER
-  // =====================================================
 
   return (
     <div
@@ -183,7 +179,6 @@ const FloatingChatbotButton = ({
     >
       {/* =================================================
           HOVER MESSAGE
-          Only visible while chatbot is closed
       ================================================= */}
 
       {!isOpen && !isDragging && (
@@ -279,6 +274,8 @@ const FloatingChatbotButton = ({
           items-center
           justify-center
 
+          overflow-visible
+
           select-none
 
           ${
@@ -314,11 +311,12 @@ const FloatingChatbotButton = ({
         {/* =================================================
             CHATBOT IMAGE
 
-            CLOSED:
-            botbot.png
+            CLOSED = botbot.png
+            OPEN   = BOT_THINKING.png
 
-            OPEN:
-            BOT_THINKING.png
+            The BUTTON stays exactly the same size.
+            Only the thinking artwork is slightly scaled
+            to visually match botbot.png.
         ================================================= */}
 
         <img
@@ -338,8 +336,18 @@ const FloatingChatbotButton = ({
 
             pointer-events-none
             select-none
-             w-full
-             h-full
+
+            ${
+              isOpen
+                ? `
+                  w-[82%]
+                  h-[82%]
+                `
+                : `
+                  w-full
+                  h-full
+                `
+            }
           `}
         />
       </button>
