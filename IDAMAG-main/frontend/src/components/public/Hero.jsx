@@ -21,7 +21,7 @@ const Hero = () => {
           inset-0
           w-full
           h-full
-          object-cover
+          object-contain
           object-center
           select-none
           pointer-events-none
