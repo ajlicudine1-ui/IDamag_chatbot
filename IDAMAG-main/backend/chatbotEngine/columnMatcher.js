@@ -35,16 +35,11 @@ function scoreColumnTarget(target, column) {
     if (targetTokens.has(token)) exactMatches += 1;
   }
 
-  const coverage =
-    columnTokens.size > 0 ? exactMatches / columnTokens.size : 0;
-
+  const coverage = columnTokens.size > 0 ? exactMatches / columnTokens.size : 0;
   const directSimilarity = similarity(cleanTarget, cleanColumn);
 
   let phraseBonus = 0;
-  if (
-    cleanTarget.includes(cleanColumn) ||
-    cleanColumn.includes(cleanTarget)
-  ) {
+  if (cleanTarget.includes(cleanColumn) || cleanColumn.includes(cleanTarget)) {
     phraseBonus = 0.75;
   }
 
@@ -53,18 +48,13 @@ function scoreColumnTarget(target, column) {
 
 function findDatasetName(datasets, requestedName) {
   const names = Object.keys(datasets);
-
   if (names.length === 1 && !requestedName) return names[0];
-
   return findBestMatch(requestedName, names, 0.45);
 }
 
 function findColumn(rows, requestedColumn) {
   const ranked = rankColumns(rows, requestedColumn);
-
-  return ranked[0] && ranked[0].score >= 0.75
-    ? ranked[0].column
-    : null;
+  return ranked[0] && ranked[0].score >= 0.75 ? ranked[0].column : null;
 }
 
 function rankColumns(rows, target) {
@@ -108,10 +98,6 @@ function normalizedColumnMap(rows) {
   return map;
 }
 
-/**
- * Finds exact normalized column-name intersections between two worksheets.
- * It does not assume names such as Farm ID, Registration No., etc.
- */
 function findSharedColumns(leftRows, rightRows) {
   const left = normalizedColumnMap(leftRows);
   const right = normalizedColumnMap(rightRows);

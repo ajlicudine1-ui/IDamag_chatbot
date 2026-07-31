@@ -13,25 +13,16 @@ function compare(actual, expected, operator = "equals") {
   const rightNumber = parseNumber(expected);
 
   switch (operator) {
-    case "not_equals":
-      return leftText !== rightText;
-    case "contains":
-      return leftText.includes(rightText);
-    case "starts_with":
-      return leftText.startsWith(rightText);
-    case "ends_with":
-      return leftText.endsWith(rightText);
-    case "greater_than":
-      return leftNumber !== null && rightNumber !== null && leftNumber > rightNumber;
-    case "greater_or_equal":
-      return leftNumber !== null && rightNumber !== null && leftNumber >= rightNumber;
-    case "less_than":
-      return leftNumber !== null && rightNumber !== null && leftNumber < rightNumber;
-    case "less_or_equal":
-      return leftNumber !== null && rightNumber !== null && leftNumber <= rightNumber;
+    case "not_equals": return leftText !== rightText;
+    case "contains": return leftText.includes(rightText);
+    case "starts_with": return leftText.startsWith(rightText);
+    case "ends_with": return leftText.endsWith(rightText);
+    case "greater_than": return leftNumber !== null && rightNumber !== null && leftNumber > rightNumber;
+    case "greater_or_equal": return leftNumber !== null && rightNumber !== null && leftNumber >= rightNumber;
+    case "less_than": return leftNumber !== null && rightNumber !== null && leftNumber < rightNumber;
+    case "less_or_equal": return leftNumber !== null && rightNumber !== null && leftNumber <= rightNumber;
     case "equals":
-    default:
-      return leftText === rightText;
+    default: return leftText === rightText;
   }
 }
 
@@ -51,19 +42,15 @@ function resolveFilters(rows, filters = []) {
 
 function removeControlNumbers(question) {
   let text = normalizeText(question);
-
   text = text.replace(/\b(top|bottom|first|last)\s+\d{1,3}\b/g, "$1");
-
   text = text.replace(
     /\b\d{1,3}\s+(?=[\p{L}][\p{L}\s._%()/+-]*\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\b)/gu,
     ""
   );
-
   text = text.replace(
     /\b(?:show|list|give|display|return|get)\s+\d{1,3}\s+(?=[\p{L}])/g,
     (match) => match.replace(/\d{1,3}/, "")
   );
-
   return text.replace(/\s+/g, " ").trim();
 }
 
@@ -80,18 +67,10 @@ function inferValueFilters(rows, question, excludedColumns = []) {
 
     for (const row of rows) {
       const raw = row?.[column];
-
-      if (
-        raw === null ||
-        raw === undefined ||
-        String(raw).trim() === ""
-      ) {
-        continue;
-      }
+      if (raw === null || raw === undefined || String(raw).trim() === "") continue;
 
       const display = String(raw).trim();
       const normalizedValue = normalizeText(display);
-
       if (!normalizedValue || seen.has(normalizedValue)) continue;
       seen.add(normalizedValue);
 
@@ -140,11 +119,6 @@ function inferValueFilters(rows, question, excludedColumns = []) {
   return selected;
 }
 
-/**
- * Search every worksheet for values explicitly present in the question.
- * Used by the calculation engine when the requested output field and
- * the identifying value live in different worksheets.
- */
 function inferDatasetValueFilters(datasets, question, excluded = {}) {
   const matches = [];
 

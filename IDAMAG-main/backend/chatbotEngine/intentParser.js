@@ -5,8 +5,12 @@ const {
 } = require("./utils");
 const {
   inferValueFilters,
+  inferDatasetValueFilters,
   mergeFilters,
 } = require("./filterEngine");
+const {
+  findDatasetsContainingColumn,
+} = require("./columnMatcher");
 
 const GENERAL_PATTERNS = [
   /\b(translate|translation)\b/,
@@ -758,6 +762,118 @@ function extractRankingRequest(
   };
 }
 
+
+function extractCrossDatasetLookupParts(question) {
+  const text = normalizeText(question);
+
+  const match = text.match(
+    /^(?:what|which|who|show|give|tell me|get|find|lookup)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:of|for|by|from)\s+(.+?)\??$/
+  );
+
+  if (!match?.[1] || !match?.[2]) {
+    return null;
+  }
+
+  return {
+    requestedField: normalizeTarget(match[1]),
+    identifierText: normalizeText(match[2]),
+  };
+}
+
+function detectCrossDatasetLookup(question, schema, datasets) {
+  if (!datasets || Object.keys(datasets).length < 2) {
+    return null;
+  }
+
+  const parts = extractCrossDatasetLookupParts(question);
+
+  if (!parts?.requestedField || !parts?.identifierText) {
+    return null;
+  }
+
+  const outputCandidates = findDatasetsContainingColumn(
+    datasets,
+    parts.requestedField
+  );
+
+  if (!outputCandidates.length) {
+    return null;
+  }
+
+  const identifierMatches = inferDatasetValueFilters(
+    datasets,
+    parts.identifierText
+  );
+
+  if (!identifierMatches.length) {
+    return null;
+  }
+
+  for (const output of outputCandidates) {
+    const identifier =
+      identifierMatches.find(
+        (item) => item.dataset !== output.dataset
+      ) ||
+      identifierMatches.find(
+        (item) => item.dataset === output.dataset
+      );
+
+    if (!identifier) {
+      continue;
+    }
+
+    if (identifier.dataset === output.dataset) {
+      return {
+        route: "dataset",
+        dataset: output.dataset,
+        operation: "lookup",
+        column: output.column,
+        groupBy: null,
+        filters: [
+          {
+            column: identifier.column,
+            operator: identifier.operator || "equals",
+            value: identifier.value,
+          },
+        ],
+        selectColumns: [output.column],
+        transform: null,
+        outputRequested: true,
+        limit: detectLimit(question),
+        showAll: detectShowAll(question),
+        confidence: 0.99,
+      };
+    }
+
+    return {
+      route: "dataset",
+      dataset: output.dataset,
+      operation: "lookup",
+      column: output.column,
+      groupBy: null,
+      filters: [],
+      selectColumns: [output.column],
+      transform: null,
+      outputRequested: true,
+
+      // calculationEngine uses this to locate the identifier in another
+      // worksheet and bridge the worksheets through a shared live column.
+      crossDatasetFilter: {
+        sourceDataset: identifier.dataset,
+        sourceColumn: identifier.column,
+        operator: identifier.operator || "equals",
+        value: identifier.value,
+      },
+
+      limit: detectLimit(question),
+      showAll: detectShowAll(question),
+      confidence: 0.99,
+    };
+  }
+
+  return null;
+}
+
 function createLocalPlan({
   question,
   schema,
@@ -775,6 +891,20 @@ function createLocalPlan({
 
   if (generalPlan) {
     return generalPlan;
+  }
+
+  // Resolve exact cross-worksheet lookups BEFORE choosing one worksheet.
+  // Example: "fertilizer used by Maria Santos" where the name is in one
+  // sheet and Fertilizer Used is in another.
+  const crossDatasetLookup =
+    detectCrossDatasetLookup(
+      question,
+      schema,
+      datasets
+    );
+
+  if (crossDatasetLookup) {
+    return crossDatasetLookup;
   }
 
   const datasetRanking =
@@ -922,7 +1052,6 @@ function createLocalPlan({
         transform: output.transform,
         outputRequested: output.outputRequested,
         limit: detectLimit(question),
-    showAll: detectShowAll(question),
         showAll: detectShowAll(question),
         confidence: 0.9,
       };
@@ -1059,4 +1188,5 @@ module.exports = {
   createLocalPlan,
   extractTargetPhrase,
   extractGroupingPhrase,
+  detectCrossDatasetLookup,
 };
