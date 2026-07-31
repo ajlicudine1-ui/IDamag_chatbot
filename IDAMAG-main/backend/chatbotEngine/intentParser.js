@@ -874,6 +874,167 @@ function detectCrossDatasetLookup(question, schema, datasets) {
   return null;
 }
 
+
+function detectMultiFieldLookup(question, schema, datasets) {
+  const text = normalizeText(question);
+
+  /*
+   * Handles questions like:
+   * - "name of farmer with the farm id 1001 and planting month"
+   * - "farmer name and planting month for farm id 1001"
+   * - "show farmer, municipality and fertilizer used for 1001"
+   *
+   * It finds the identifying value anywhere in the live worksheets,
+   * then keeps ALL requested output columns so calculationEngine.js
+   * can merge fields across worksheets.
+   */
+
+  const identifierMatches =
+    inferDatasetValueFilters(
+      datasets,
+      text
+    );
+
+  if (!identifierMatches.length) {
+    return null;
+  }
+
+  const identifier =
+    identifierMatches[0];
+
+  const normalizedIdentifierValue =
+    normalizeText(
+      identifier.value
+    );
+
+  let outputText = text;
+
+  if (normalizedIdentifierValue) {
+    outputText =
+      outputText.replace(
+        normalizedIdentifierValue,
+        " "
+      );
+  }
+
+  outputText = outputText
+    .replace(
+      /\b(?:what|which|who|show|give|tell|me|get|find|lookup|is|are|was|were|the|of|for|from|with|by|and|its|their|his|her)\b/g,
+      " "
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const allColumns =
+    getAllColumns(schema);
+
+  const requestedCandidates =
+    allColumns
+      .map((item) => ({
+        ...item,
+        score:
+          scoreColumnTarget(
+            outputText,
+            item.name
+          ),
+      }))
+      .filter((item) => {
+        if (item.score < 0.75) {
+          return false;
+        }
+
+        // Do not return the identifying column unless
+        // the user also clearly asked for it.
+        return !(
+          item.dataset ===
+            identifier.dataset &&
+          normalizeText(
+            item.name
+          ) ===
+            normalizeText(
+              identifier.column
+            ) &&
+          !outputText.includes(
+            normalizeText(
+              item.name
+            )
+          )
+        );
+      })
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  const selectColumns = [];
+  const seen = new Set();
+
+  for (
+    const item of
+    requestedCandidates
+  ) {
+    const key =
+      normalizeText(item.name);
+
+    if (!seen.has(key)) {
+      seen.add(key);
+      selectColumns.push(
+        item.name
+      );
+    }
+  }
+
+  if (
+    selectColumns.length < 2
+  ) {
+    return null;
+  }
+
+  return {
+    route: "dataset",
+
+    // Start from the worksheet where the real identifying
+    // value was found. The calculation engine already knows
+    // how to merge requested fields from other worksheets.
+    dataset:
+      identifier.dataset,
+
+    operation: "lookup",
+
+    column: null,
+    groupBy: null,
+
+    filters: [
+      {
+        column:
+          identifier.column,
+
+        operator:
+          identifier.operator ||
+          "equals",
+
+        value:
+          identifier.value,
+      },
+    ],
+
+    selectColumns,
+
+    transform: null,
+
+    outputRequested: true,
+
+    limit:
+      detectLimit(question),
+
+    showAll:
+      detectShowAll(question),
+
+    confidence: 0.995,
+  };
+}
+
+
 function createLocalPlan({
   question,
   schema,
@@ -891,6 +1052,20 @@ function createLocalPlan({
 
   if (generalPlan) {
     return generalPlan;
+  }
+
+  // Resolve multi-field lookups FIRST.
+  // Example:
+  // "name of farmer with the farm id 1001 and planting month"
+  const multiFieldLookup =
+    detectMultiFieldLookup(
+      question,
+      schema,
+      datasets
+    );
+
+  if (multiFieldLookup) {
+    return multiFieldLookup;
   }
 
   // Resolve exact cross-worksheet lookups BEFORE choosing one worksheet.
@@ -1189,4 +1364,5 @@ module.exports = {
   extractTargetPhrase,
   extractGroupingPhrase,
   detectCrossDatasetLookup,
+  detectMultiFieldLookup,
 };
