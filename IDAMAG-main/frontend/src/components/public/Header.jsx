@@ -48,7 +48,7 @@ const Header = () => {
             </span>
 
             <span className="text-[10px] text-slate-500 font-medium uppercase tracking-widest mt-1">
-              ILOCOS DAMAG
+               <b>I</b>locos-<b>D</b>ata and <b>A</b>nalytics <b>M</b>anagement for <b>A</b>gricultural <b>G</b>ateway
             </span>
           </div>
         </Link>
