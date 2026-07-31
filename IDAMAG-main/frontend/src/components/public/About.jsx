@@ -241,9 +241,7 @@ const About = () => {
               border-[#D7E7D5]
 
               bg-gradient-to-br
-              from-[#173F20]
-              via-[#235E26]
-              to-[#327438]
+              bg-white
 
               px-6
               py-8
