@@ -1,5 +1,6 @@
 import React, { useRef, useState } from "react";
 import chatbotLogo from "../../assets/botbot.png";
+import chatbotThinkingLogo from "../../assets/BOT_THINKING.png";
 
 const FloatingChatbotButton = ({
   onClick,
@@ -51,7 +52,6 @@ const FloatingChatbotButton = ({
   };
 
   const handlePointerDown = (event) => {
-    // Only react to the main mouse button.
     if (
       event.pointerType === "mouse" &&
       event.button !== 0
@@ -126,8 +126,6 @@ const FloatingChatbotButton = ({
       // Pointer capture may already be released.
     }
 
-    // A short press/click opens or closes the chatbot.
-    // A real drag only moves the chat head.
     if (!hasDragged.current) {
       onClick();
     }
@@ -259,8 +257,16 @@ const FloatingChatbotButton = ({
         `}
       >
         <img
-          src={chatbotLogo}
-          alt="iDamag Chatbot"
+          src={
+            isOpen
+              ? chatbotThinkingLogo
+              : chatbotLogo
+          }
+          alt={
+            isOpen
+              ? "iDamag Chatbot Thinking"
+              : "iDamag Chatbot"
+          }
           draggable="false"
           className="
             w-full
