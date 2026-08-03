@@ -11,16 +11,17 @@ const { normalizeDatasets } = require("./utils");
 /**
  * Main chatbot entry point.
  *
- * LOCAL-FIRST ARCHITECTURE
- * ------------------------
- * 1. Local parser handles dataset/schema questions first.
- * 2. JavaScript reads CURRENT worksheet rows and executes the plan.
- * 3. Groq is used only when the local parser cannot confidently
- *    resolve the request, or for general-language questions.
- * 4. Exact dataset values are always calculated/read by JavaScript.
+ * GROQ-FIRST, DATA-SAFE ARCHITECTURE
+ * ----------------------------------
+ * 1. Groq interprets flexible natural-language wording using the live schema.
+ * 2. JavaScript validates and executes the structured plan using CURRENT rows.
+ * 3. Groq never calculates, filters, joins, ranks, or invents dataset answers.
+ * 4. If Groq is unavailable or returns a bad plan, the local parser is used.
  */
 async function answerQuestion(input, question) {
-  const cleanQuestion = String(question || "").trim();
+  const cleanQuestion = String(
+    question || ""
+  ).trim();
 
   if (!cleanQuestion) {
     return {
@@ -30,9 +31,12 @@ async function answerQuestion(input, question) {
     };
   }
 
-  const datasets = normalizeDatasets(input);
+  const datasets =
+    normalizeDatasets(input);
 
-  if (!Object.keys(datasets).length) {
+  if (
+    !Object.keys(datasets).length
+  ) {
     return {
       success: false,
       source: "system",
@@ -41,166 +45,104 @@ async function answerQuestion(input, question) {
     };
   }
 
-  const schema = buildSchema(datasets);
+  const schema =
+    buildSchema(datasets);
 
-  // ============================================================
+  // ==========================================================
   // EXECUTE A RESOLVED PLAN
-  // ============================================================
+  // ==========================================================
 
-  const executeResolvedPlan = async (plan) => {
-    if (!plan || typeof plan !== "object") {
+  const executeResolvedPlan =
+    async (plan) => {
+      if (
+        !plan ||
+        typeof plan !==
+          "object"
+      ) {
+        throw new Error(
+          "The query planner returned an invalid plan."
+        );
+      }
+
+      if (
+        plan.route ===
+        "schema"
+      ) {
+        return answerSchemaQuestion({
+          datasets,
+          schema,
+          plan,
+          question:
+            cleanQuestion,
+        });
+      }
+
+      if (
+        plan.route ===
+        "dataset"
+      ) {
+        return executePlan({
+          datasets,
+          schema,
+          plan,
+          question:
+            cleanQuestion,
+        });
+      }
+
+      if (
+        plan.route ===
+        "general"
+      ) {
+        return await answerGeneralQuestion({
+          question:
+            cleanQuestion,
+          schema,
+        });
+      }
+
+      if (
+        plan.route ===
+        "clarify"
+      ) {
+        return {
+          success: false,
+          source: "router",
+          operation:
+            "clarify",
+          answer:
+            plan.question ||
+            "Please clarify which worksheet, field, or calculation you want.",
+        };
+      }
+
       throw new Error(
-        "The query planner returned an invalid plan."
+        `Unsupported query route: ${String(
+          plan.route ||
+            "unknown"
+        )}`
       );
-    }
+    };
 
-    if (plan.route === "schema") {
-      return answerSchemaQuestion({
-        datasets,
-        schema,
-        plan,
-        question: cleanQuestion,
-      });
-    }
-
-    if (plan.route === "dataset") {
-      return executePlan({
-        datasets,
-        schema,
-        plan,
-        question: cleanQuestion,
-      });
-    }
-
-    if (plan.route === "general") {
-      return await answerGeneralQuestion({
-        question: cleanQuestion,
-        schema,
-      });
-    }
-
-    if (plan.route === "clarify") {
-      return {
-        success: false,
-        source: "router",
-        operation: "clarify",
-        answer:
-          plan.question ||
-          "Please clarify which worksheet, field, or calculation you want.",
-      };
-    }
-
-    throw new Error(
-      `Unsupported query route: ${String(
-        plan.route || "unknown"
-      )}`
-    );
-  };
-
-  // ============================================================
-  // 1. LOCAL PARSER FIRST
-  // ============================================================
-
-  let localPlan = null;
+  // ==========================================================
+  // 1. GROQ FIRST — UNDERSTAND FLEXIBLE WORDING
+  // ==========================================================
+  //
+  // Examples that Groq can interpret more naturally:
+  //
+  // "Madupayas commodities"
+  // "commodities Madupayas"
+  // "show crops found in Madupayas"
+  // "how much did this association spend"
+  // "top 5 farmers based on area"
+  //
+  // Groq creates only a PLAN.
+  // JavaScript still reads and calculates the real data.
+  //
+  let groqPlan = null;
 
   try {
-    localPlan = await createPlan({
-      question: cleanQuestion,
-      schema,
-      datasets,
-    });
-
-    if (process.env.NODE_ENV !== "production") {
-      console.log(
-        "Chatbot local plan:",
-        JSON.stringify(
-          localPlan,
-          null,
-          2
-        )
-      );
-    }
-
-    // ----------------------------------------------------------
-    // DATASET QUESTIONS
-    // ----------------------------------------------------------
-    //
-    // IMPORTANT:
-    // Execute dataset requests immediately.
-    //
-    // Examples:
-    //
-    // "planting month of 1001"
-    //
-    // "fertilizer used by Maria Santos"
-    //
-    // "municipality with registration number CN201708932
-    //  and commodities"
-    //
-    // These should NOT go through Groq first.
-    //
-    if (
-      localPlan?.route ===
-      "dataset"
-    ) {
-      return await executeResolvedPlan(
-        localPlan
-      );
-    }
-
-    // ----------------------------------------------------------
-    // SCHEMA QUESTIONS
-    // ----------------------------------------------------------
-
-    if (
-      localPlan?.route ===
-      "schema"
-    ) {
-      return await executeResolvedPlan(
-        localPlan
-      );
-    }
-
-    // ----------------------------------------------------------
-    // CLEAR CLARIFICATION
-    // ----------------------------------------------------------
-
-    if (
-      localPlan?.route ===
-        "clarify" &&
-      Number(
-        localPlan?.confidence ||
-          0
-      ) >= 0.7
-    ) {
-      return await executeResolvedPlan(
-        localPlan
-      );
-    }
-  } catch (localError) {
-    console.error(
-      "Local chatbot planning failed:",
-      localError
-    );
-  }
-
-  // ============================================================
-  // 2. GROQ FALLBACK
-  // ============================================================
-  //
-  // Groq is now used only when the local parser did not
-  // confidently resolve the question.
-  //
-  // Examples:
-  //
-  // - grammar
-  // - translation
-  // - narrative writing
-  // - explanations
-  // - general knowledge
-  //
-  try {
-    const groqPlan =
+    groqPlan =
       await createSchemaAwarePlan({
         question:
           cleanQuestion,
@@ -212,7 +154,7 @@ async function answerQuestion(input, question) {
       "production"
     ) {
       console.log(
-        "Chatbot Groq fallback plan:",
+        "Chatbot Groq plan:",
         JSON.stringify(
           groqPlan,
           null,
@@ -221,72 +163,74 @@ async function answerQuestion(input, question) {
       );
     }
 
+    /*
+     * Execute Groq's structured plan immediately.
+     *
+     * If Groq selected a wrong/nonexistent field or produced a
+     * plan the calculation engine cannot execute, the catch block
+     * below safely falls back to the local parser.
+     */
     return await executeResolvedPlan(
       groqPlan
     );
   } catch (groqError) {
     console.error(
-      "Groq fallback failed:",
+      "Groq planning/execution failed; using local fallback:",
       groqError
     );
+  }
 
-    // ==========================================================
-    // 3. FINAL LOCAL RETRY
-    // ==========================================================
-    //
-    // This allows exact dataset questions to keep working
-    // even if Groq has:
-    //
-    // - invalid API key
-    // - temporary outage
-    // - malformed response
-    //
-    try {
-      const retryPlan =
-        localPlan ||
-        (await createPlan({
-          question:
-            cleanQuestion,
-          schema,
-          datasets,
-        }));
+  // ==========================================================
+  // 2. LOCAL PARSER FALLBACK
+  // ==========================================================
+  //
+  // Keeps the chatbot working when:
+  //
+  // - GROQ_API_KEY is missing
+  // - Groq is temporarily unavailable
+  // - Groq returns malformed JSON
+  // - Groq creates a plan that cannot be executed safely
+  //
+  try {
+    const localPlan =
+      await createPlan({
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+      });
 
-      if (
-        retryPlan?.route ===
-          "dataset" ||
-        retryPlan?.route ===
-          "schema" ||
-        retryPlan?.route ===
-          "clarify"
-      ) {
-        return await executeResolvedPlan(
-          retryPlan
-        );
-      }
-
-      return {
-        success: false,
-        source: "system",
-        operation: "error",
-        answer:
-          "I could not confidently interpret that request using the local dataset engine.",
-      };
-    } catch (localError) {
-      console.error(
-        "Final local chatbot fallback failed:",
-        localError
+    if (
+      process.env.NODE_ENV !==
+      "production"
+    ) {
+      console.log(
+        "Chatbot local fallback plan:",
+        JSON.stringify(
+          localPlan,
+          null,
+          2
+        )
       );
-
-      return {
-        success: false,
-        source: "system",
-        operation: "error",
-        answer:
-          localError.message ||
-          groqError.message ||
-          "The chatbot could not process the question.",
-      };
     }
+
+    return await executeResolvedPlan(
+      localPlan
+    );
+  } catch (localError) {
+    console.error(
+      "Local chatbot fallback failed:",
+      localError
+    );
+
+    return {
+      success: false,
+      source: "system",
+      operation: "error",
+      answer:
+        localError.message ||
+        "The chatbot could not process the question.",
+    };
   }
 }
 
