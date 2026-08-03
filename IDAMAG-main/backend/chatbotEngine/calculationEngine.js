@@ -456,6 +456,281 @@ function normalizeJoinValue(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
+
+function executePlannedCrossDatasetCount({
+  datasets,
+  plan,
+}) {
+  const cross =
+    plan?.crossDatasetFilter;
+
+  const operation = String(
+    plan?.operation || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (
+    !cross ||
+    ![
+      "non_empty_count",
+      "distinct_count",
+    ].includes(operation)
+  ) {
+    return null;
+  }
+
+  const sourceRows =
+    datasets?.[
+      cross.sourceDataset
+    ];
+
+  const targetRows =
+    datasets?.[
+      plan.dataset
+    ];
+
+  if (
+    !Array.isArray(sourceRows) ||
+    !sourceRows.length
+  ) {
+    throw new Error(
+      `Source worksheet "${cross.sourceDataset}" has no usable rows.`
+    );
+  }
+
+  if (
+    !Array.isArray(targetRows) ||
+    !targetRows.length
+  ) {
+    throw new Error(
+      `Target worksheet "${plan.dataset}" has no usable rows.`
+    );
+  }
+
+  const sourceMatches =
+    applyFilters(
+      sourceRows,
+      [
+        {
+          column:
+            cross.sourceColumn,
+          operator:
+            cross.operator ||
+            "equals",
+          value:
+            cross.value,
+        },
+      ]
+    );
+
+  if (!sourceMatches.length) {
+    return {
+      success: true,
+      source: "dataset",
+      dataset: plan.dataset,
+      operation,
+      column: plan.column,
+      value: 0,
+      recordsUsed: 0,
+      answer:
+        `There are 0 ${plan.column} record(s) connected to "${cross.value}".`,
+    };
+  }
+
+  const joinCandidates =
+    findSharedColumns(
+      sourceRows,
+      targetRows
+    )
+      .map((shared) => ({
+        ...shared,
+        score:
+          scoreJoinColumn(
+            sourceRows,
+            targetRows,
+            shared
+          ),
+      }))
+      .filter(
+        (item) =>
+          item.score > 0
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  let selectedJoin = null;
+  let targetIndex = null;
+
+  for (
+    const candidate of
+    joinCandidates
+  ) {
+    const index =
+      buildJoinIndex(
+        targetRows,
+        candidate.rightColumn
+      );
+
+    const connects =
+      sourceMatches.some(
+        (row) => {
+          const key =
+            normalizeJoinValue(
+              row?.[
+                candidate.leftColumn
+              ]
+            );
+
+          return (
+            key &&
+            (index.get(key) || [])
+              .length > 0
+          );
+        }
+      );
+
+    if (connects) {
+      selectedJoin =
+        candidate;
+      targetIndex =
+        index;
+      break;
+    }
+  }
+
+  if (
+    !selectedJoin ||
+    !targetIndex
+  ) {
+    return {
+      success: false,
+      source: "dataset",
+      dataset: plan.dataset,
+      operation,
+      column: plan.column,
+      value: 0,
+      answer:
+        `I found "${cross.value}" in ${cross.sourceDataset}, but I could not connect it to ${plan.dataset}.`,
+    };
+  }
+
+  const requestedColumn =
+    requireColumn(
+      targetRows,
+      plan.column,
+      "Column"
+    );
+
+  const relatedRows = [];
+  const seenRowKeys =
+    new Set();
+
+  for (
+    const sourceRow of
+    sourceMatches
+  ) {
+    const key =
+      normalizeJoinValue(
+        sourceRow?.[
+          selectedJoin.leftColumn
+        ]
+      );
+
+    if (!key) {
+      continue;
+    }
+
+    for (
+      const targetRow of
+      targetIndex.get(key) || []
+    ) {
+      const rowKey =
+        JSON.stringify(
+          targetRow
+        );
+
+      if (
+        !seenRowKeys.has(
+          rowKey
+        )
+      ) {
+        seenRowKeys.add(
+          rowKey
+        );
+        relatedRows.push(
+          targetRow
+        );
+      }
+    }
+  }
+
+  const values =
+    relatedRows
+      .map(
+        (row) =>
+          row?.[
+            requestedColumn
+          ]
+      )
+      .filter(
+        (value) =>
+          value !== null &&
+          value !== undefined &&
+          String(value).trim() !== ""
+      );
+
+  if (
+    operation ===
+    "distinct_count"
+  ) {
+    const unique =
+      new Set(
+        values.map(
+          (value) =>
+            String(value)
+              .trim()
+              .toLowerCase()
+        )
+      );
+
+    return {
+      success: true,
+      source: "dataset",
+      dataset: plan.dataset,
+      operation,
+      column:
+        requestedColumn,
+      value:
+        unique.size,
+      recordsUsed:
+        values.length,
+      crossDataset: true,
+      answer:
+        `There are ${formatNumber(unique.size)} unique ${requestedColumn} value(s) connected to ${cross.value}.`,
+    };
+  }
+
+  return {
+    success: true,
+    source: "dataset",
+    dataset: plan.dataset,
+    operation,
+    column:
+      requestedColumn,
+    value:
+      values.length,
+    recordsUsed:
+      relatedRows.length,
+    crossDataset: true,
+    answer:
+      `There are ${formatNumber(values.length)} ${requestedColumn} record(s) connected to ${cross.value}.`,
+  };
+}
+
+
 function executePlannedCrossDatasetLookup({
   datasets,
   plan,
@@ -710,11 +985,463 @@ function executePlannedCrossDatasetLookup({
 }
 
 
+
+function executeCrossDatasetGroupedAggregation({
+  datasets,
+  plan,
+  question,
+}) {
+  const operation = String(
+    plan?.operation || ""
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+  const supportedOperations = new Set([
+    "group_count",
+    "group_sum",
+    "group_average",
+    "group_minimum",
+    "group_maximum",
+    "rank_groups",
+  ]);
+
+  if (!supportedOperations.has(operation)) {
+    return null;
+  }
+
+  const groupRequest =
+    plan.labelColumn ||
+    plan.groupBy;
+
+  const metricRequest =
+    plan.column;
+
+  if (!groupRequest || !metricRequest) {
+    return null;
+  }
+
+  const groupMatches =
+    findDatasetsContainingColumn(
+      datasets,
+      groupRequest
+    );
+
+  const metricMatches =
+    findDatasetsContainingColumn(
+      datasets,
+      metricRequest
+    );
+
+  if (
+    !groupMatches.length ||
+    !metricMatches.length
+  ) {
+    return null;
+  }
+
+  /*
+   * Existing same-worksheet grouped logic should continue handling
+   * plans where both columns are already in one worksheet.
+   */
+  const sameDatasetMatch =
+    groupMatches.find((group) =>
+      metricMatches.some(
+        (metric) =>
+          metric.dataset ===
+          group.dataset
+      )
+    );
+
+  if (sameDatasetMatch) {
+    return null;
+  }
+
+  let selected = null;
+
+  for (const groupMatch of groupMatches) {
+    const groupRows =
+      datasets[groupMatch.dataset];
+
+    if (
+      !Array.isArray(groupRows) ||
+      !groupRows.length
+    ) {
+      continue;
+    }
+
+    for (const metricMatch of metricMatches) {
+      if (
+        metricMatch.dataset ===
+        groupMatch.dataset
+      ) {
+        continue;
+      }
+
+      const metricRows =
+        datasets[metricMatch.dataset];
+
+      if (
+        !Array.isArray(metricRows) ||
+        !metricRows.length
+      ) {
+        continue;
+      }
+
+      const join =
+        chooseJoin(
+          groupRows,
+          metricRows
+        );
+
+      if (!join) {
+        continue;
+      }
+
+      const score =
+        Number(join.score || 0);
+
+      if (
+        !selected ||
+        score > selected.score
+      ) {
+        selected = {
+          groupDataset:
+            groupMatch.dataset,
+          metricDataset:
+            metricMatch.dataset,
+          groupColumn:
+            groupMatch.column,
+          metricColumn:
+            metricMatch.column,
+          groupRows,
+          metricRows,
+          join,
+          score,
+        };
+      }
+    }
+  }
+
+  if (!selected) {
+    return null;
+  }
+
+  /*
+   * Resolve filters separately in both worksheets.
+   * A filter is applied only where its column exists.
+   */
+  const groupFilters =
+    resolveFilters(
+      selected.groupRows,
+      plan.filters
+    );
+
+  const metricFilters =
+    resolveFilters(
+      selected.metricRows,
+      plan.filters
+    );
+
+  const implicitGroupFilters =
+    inferValueFilters(
+      selected.groupRows,
+      question,
+      [
+        selected.groupColumn,
+        selected.join.leftColumn,
+      ]
+    );
+
+  const implicitMetricFilters =
+    inferValueFilters(
+      selected.metricRows,
+      question,
+      [
+        selected.metricColumn,
+        selected.join.rightColumn,
+      ]
+    );
+
+  const filteredGroupRows =
+    applyFilters(
+      selected.groupRows,
+      mergeFilters(
+        groupFilters,
+        implicitGroupFilters
+      )
+    );
+
+  const filteredMetricRows =
+    applyFilters(
+      selected.metricRows,
+      mergeFilters(
+        metricFilters,
+        implicitMetricFilters
+      )
+    );
+
+  const metricIndex =
+    buildJoinIndex(
+      filteredMetricRows,
+      selected.join.rightColumn
+    );
+
+  const aggregation =
+    operation === "group_count"
+      ? "count"
+      : operation === "group_sum"
+        ? "sum"
+        : operation === "group_average"
+          ? "average"
+          : operation === "group_minimum"
+            ? "minimum"
+            : operation === "group_maximum"
+              ? "maximum"
+              : ["sum", "average", "count"].includes(
+                    String(
+                      plan.aggregation || ""
+                    ).toLowerCase()
+                  )
+                ? String(
+                    plan.aggregation
+                  ).toLowerCase()
+                : "sum";
+
+  const groups = new Map();
+
+  for (const groupRow of filteredGroupRows) {
+    const label = String(
+      groupRow?.[
+        selected.groupColumn
+      ] ?? ""
+    ).trim();
+
+    if (!label) {
+      continue;
+    }
+
+    const joinKey =
+      normalizeJoinValue(
+        groupRow?.[
+          selected.join.leftColumn
+        ]
+      );
+
+    if (!joinKey) {
+      continue;
+    }
+
+    const relatedRows =
+      metricIndex.get(joinKey) ||
+      [];
+
+    if (!relatedRows.length) {
+      continue;
+    }
+
+    if (!groups.has(label)) {
+      groups.set(label, {
+        sum: 0,
+        count: 0,
+        minimum: null,
+        maximum: null,
+      });
+    }
+
+    const group =
+      groups.get(label);
+
+    for (const metricRow of relatedRows) {
+      if (aggregation === "count") {
+        const rawValue =
+          metricRow?.[
+            selected.metricColumn
+          ];
+
+        if (
+          rawValue === null ||
+          rawValue === undefined ||
+          String(rawValue).trim() === ""
+        ) {
+          continue;
+        }
+
+        group.sum += 1;
+        group.count += 1;
+        continue;
+      }
+
+      const numericValue =
+        parseNumber(
+          metricRow?.[
+            selected.metricColumn
+          ]
+        );
+
+      if (numericValue === null) {
+        continue;
+      }
+
+      group.sum += numericValue;
+      group.count += 1;
+
+      group.minimum =
+        group.minimum === null
+          ? numericValue
+          : Math.min(
+              group.minimum,
+              numericValue
+            );
+
+      group.maximum =
+        group.maximum === null
+          ? numericValue
+          : Math.max(
+              group.maximum,
+              numericValue
+            );
+    }
+  }
+
+  const direction =
+    plan.direction === "asc"
+      ? "asc"
+      : "desc";
+
+  const limit =
+    getLimit(plan);
+
+  let results =
+    [...groups.entries()]
+      .map(([label, group]) => {
+        let value = null;
+
+        if (aggregation === "count") {
+          value = group.count;
+        } else if (aggregation === "average") {
+          value =
+            group.count > 0
+              ? group.sum /
+                group.count
+              : null;
+        } else if (aggregation === "minimum") {
+          value = group.minimum;
+        } else if (aggregation === "maximum") {
+          value = group.maximum;
+        } else {
+          value = group.sum;
+        }
+
+        return {
+          label,
+          value,
+          recordsUsed:
+            group.count,
+        };
+      })
+      .filter(
+        (item) =>
+          item.value !== null
+      )
+      .sort((a, b) =>
+        direction === "asc"
+          ? a.value - b.value
+          : b.value - a.value
+      );
+
+  if (
+    operation === "rank_groups" ||
+    plan.showAll !== true
+  ) {
+    results =
+      results.slice(0, limit);
+  }
+
+  if (!results.length) {
+    throw new Error(
+      `No cross-worksheet grouped values were found for "${selected.groupColumn}" by "${selected.metricColumn}".`
+    );
+  }
+
+  const heading =
+    operation === "rank_groups"
+      ? `${
+          direction === "desc"
+            ? "Top"
+            : "Bottom"
+        } ${results.length} ${selected.groupColumn} by ${aggregation} ${selected.metricColumn}`
+      : `${aggregation} ${selected.metricColumn} by ${selected.groupColumn}`;
+
+  return {
+    success: true,
+    source: "dataset",
+    operation,
+    crossDataset: true,
+    dataset:
+      selected.groupDataset,
+    metricDataset:
+      selected.metricDataset,
+    groupBy:
+      selected.groupColumn,
+    labelColumn:
+      selected.groupColumn,
+    column:
+      selected.metricColumn,
+    aggregation,
+    direction,
+    results,
+    joins: [
+      {
+        sourceDataset:
+          selected.groupDataset,
+        targetDataset:
+          selected.metricDataset,
+        sourceColumn:
+          selected.join.leftColumn,
+        targetColumn:
+          selected.join.rightColumn,
+      },
+    ],
+    answer:
+      `${heading}:\n` +
+      results
+        .map(
+          (item, index) =>
+            `${index + 1}. ${item.label}: ${formatNumber(item.value)}`
+        )
+        .join("\n"),
+  };
+}
+
+
 function executePlan({
   datasets,
   plan,
   question,
 }) {
+  const crossDatasetGroupedResult =
+    executeCrossDatasetGroupedAggregation({
+      datasets,
+      plan,
+      question,
+    });
+
+  if (crossDatasetGroupedResult) {
+    return crossDatasetGroupedResult;
+  }
+
+  const plannedCrossDatasetCount =
+    executePlannedCrossDatasetCount({
+      datasets,
+      plan,
+    });
+
+  if (plannedCrossDatasetCount) {
+    return plannedCrossDatasetCount;
+  }
+
   const plannedCrossDatasetResult =
     executePlannedCrossDatasetLookup({
       datasets,
@@ -1009,6 +1736,94 @@ function executePlan({
         selectedColumns,
         count: filteredRows.length,
       }),
+    };
+  }
+
+
+  if (operation === "group_list") {
+    const groupColumn = requireColumn(
+      rows,
+      plan.groupBy,
+      "Group column"
+    );
+
+    const valueColumn = requireColumn(
+      rows,
+      plan.column,
+      "List column"
+    );
+
+    const groups = new Map();
+
+    for (const row of filteredRows) {
+      const groupLabel = String(
+        row?.[groupColumn] ?? ""
+      ).trim();
+
+      const rawValue = String(
+        row?.[valueColumn] ?? ""
+      ).trim();
+
+      if (!groupLabel || !rawValue) {
+        continue;
+      }
+
+      if (!groups.has(groupLabel)) {
+        groups.set(groupLabel, {
+          values: [],
+          seen: new Set(),
+        });
+      }
+
+      const group = groups.get(groupLabel);
+      const key = rawValue.toLowerCase();
+
+      if (!group.seen.has(key)) {
+        group.seen.add(key);
+        group.values.push(rawValue);
+      }
+    }
+
+    const results = [...groups.entries()]
+      .map(([label, group]) => ({
+        label,
+        values: group.values.sort(
+          (a, b) =>
+            a.localeCompare(b)
+        ),
+      }))
+      .sort(
+        (a, b) =>
+          a.label.localeCompare(
+            b.label
+          )
+      );
+
+    return {
+      success: true,
+      source: "dataset",
+      dataset: datasetName,
+      operation,
+      groupBy: groupColumn,
+      column: valueColumn,
+      count: results.length,
+      results,
+      filters,
+      answer:
+        results.length
+          ? results
+              .map(
+                (item) =>
+                  `${item.label}:\n` +
+                  item.values
+                    .map(
+                      (value, index) =>
+                        `${index + 1}. ${value}`
+                    )
+                    .join("\n")
+              )
+              .join("\n\n")
+          : `No ${valueColumn} values were found grouped by ${groupColumn}.`,
     };
   }
 
