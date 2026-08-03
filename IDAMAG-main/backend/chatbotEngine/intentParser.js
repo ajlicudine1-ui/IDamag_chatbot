@@ -362,17 +362,6 @@ function detectOperation(
     if (isNumeric) {
       baseOperation = "sum";
     } else if (selectedColumn) {
-      /*
-       * Text columns are counted by populated rows unless the user
-       * explicitly asks for unique/distinct values.
-       *
-       * Examples:
-       * "how many commodities in Barangay Madupayas"
-       *   -> non_empty_count
-       *
-       * "how many unique commodities in Barangay Madupayas"
-       *   -> distinct_count
-       */
       baseOperation =
         /\b(unique|distinct|different)\b/.test(text)
           ? "distinct_count"
@@ -899,13 +888,6 @@ function detectTextCountWithFilter(
 ) {
   const text = normalizeText(question);
 
-  /*
-   * Handles:
-   * - "how many commodities in Barangay Madupayas"
-   * - "number of farmers in Solsona"
-   * - "count of products in Region 1"
-   * - "how many unique crops in Barangay X"
-   */
   const match = text.match(
     /\b(?:how many|number of|count of)\s+(?:the\s+)?(.+?)\s+(?:in|at|from|for|within)\s+(.+)$/
   );
@@ -924,10 +906,11 @@ function detectTextCountWithFilter(
     getAllColumns(schema)
       .map((item) => ({
         ...item,
-        score: scoreColumnTarget(
-          requestedTarget,
-          item.name
-        ),
+        score:
+          scoreColumnTarget(
+            requestedTarget,
+            item.name
+          ),
       }))
       .filter(
         (item) =>
@@ -953,47 +936,83 @@ function detectTextCountWithFilter(
     return null;
   }
 
+  const operation =
+    /\b(unique|distinct|different)\b/.test(text)
+      ? "distinct_count"
+      : "non_empty_count";
+
   for (const output of outputCandidates) {
     const sameDatasetFilter =
       valueMatches.find(
         (item) =>
-          item.dataset === output.dataset
+          item.dataset ===
+          output.dataset
       );
 
-    if (!sameDatasetFilter) {
-      continue;
+    if (sameDatasetFilter) {
+      return {
+        route: "dataset",
+        dataset: output.dataset,
+        operation,
+        column: output.name,
+        groupBy: null,
+        filters: [
+          {
+            column:
+              sameDatasetFilter.column,
+            operator:
+              sameDatasetFilter.operator ||
+              "equals",
+            value:
+              sameDatasetFilter.value,
+          },
+        ],
+        selectColumns: [],
+        transform: null,
+        outputRequested: false,
+        limit: detectLimit(question),
+        showAll: detectShowAll(question),
+        confidence: 0.999,
+      };
     }
 
-    return {
-      route: "dataset",
-      dataset: output.dataset,
+    const crossDatasetFilter =
+      valueMatches.find(
+        (item) =>
+          item.dataset !==
+          output.dataset
+      );
 
-      operation:
-        /\b(unique|distinct|different)\b/.test(text)
-          ? "distinct_count"
-          : "non_empty_count",
+    if (crossDatasetFilter) {
+      return {
+        route: "dataset",
+        dataset: output.dataset,
+        operation,
+        column: output.name,
+        groupBy: null,
+        filters: [],
+        selectColumns: [],
+        transform: null,
+        outputRequested: false,
 
-      column: output.name,
-      groupBy: null,
-
-      filters: [
-        {
-          column: sameDatasetFilter.column,
+        // Filter value is in another worksheet.
+        crossDatasetFilter: {
+          sourceDataset:
+            crossDatasetFilter.dataset,
+          sourceColumn:
+            crossDatasetFilter.column,
           operator:
-            sameDatasetFilter.operator ||
+            crossDatasetFilter.operator ||
             "equals",
-          value: sameDatasetFilter.value,
+          value:
+            crossDatasetFilter.value,
         },
-      ],
 
-      selectColumns: [],
-      transform: null,
-      outputRequested: false,
-
-      limit: detectLimit(question),
-      showAll: detectShowAll(question),
-      confidence: 0.999,
-    };
+        limit: detectLimit(question),
+        showAll: detectShowAll(question),
+        confidence: 0.999,
+      };
+    }
   }
 
   return null;
@@ -1196,8 +1215,7 @@ function createLocalPlan({
   }
 
   // Resolve filtered text counts first.
-  // Example:
-  // "how many commodities in Barangay Madupayas"
+  // Example: "How many commodities in Madupayas?"
   const textCountWithFilter =
     detectTextCountWithFilter(
       question,
