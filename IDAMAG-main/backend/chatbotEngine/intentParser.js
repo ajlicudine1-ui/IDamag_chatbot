@@ -1166,6 +1166,189 @@ function detectFilteredFieldLookup(
 }
 
 
+
+function detectFilterFirstTextCount(
+  question,
+  schema,
+  datasets
+) {
+  const text = normalizeText(question);
+
+  /*
+   * Generic filter-first text count requests:
+   *
+   * - "count of Madupayas commodities"
+   * - "count Madupayas commodities"
+   * - "number of Solsona farmers"
+   * - "how many Madupayas commodities"
+   *
+   * The function:
+   * 1. Finds a real value mentioned in the question.
+   * 2. Removes that value from the remaining text.
+   * 3. Matches the remaining words to a live text column.
+   * 4. Counts only populated values connected to that filter.
+   *
+   * No column names or dataset names are hardcoded.
+   */
+
+  const match = text.match(
+    /^(?:count(?:\s+of)?|number\s+of|how\s+many)\s+(.+?)\??$/
+  );
+
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const remainder =
+    normalizeText(match[1]);
+
+  const valueMatches =
+    inferDatasetValueFilters(
+      datasets,
+      remainder
+    );
+
+  if (!valueMatches.length) {
+    return null;
+  }
+
+  for (const valueMatch of valueMatches) {
+    const normalizedValue =
+      normalizeText(
+        valueMatch.value
+      );
+
+    let requestedText =
+      remainder;
+
+    if (normalizedValue) {
+      requestedText =
+        requestedText.replace(
+          normalizedValue,
+          " "
+        );
+    }
+
+    requestedText =
+      normalizeTarget(
+        requestedText
+      );
+
+    if (!requestedText) {
+      continue;
+    }
+
+    const outputCandidates =
+      getAllColumns(schema)
+        .map((item) => ({
+          ...item,
+          score:
+            scoreColumnTarget(
+              requestedText,
+              item.name
+            ),
+        }))
+        .filter(
+          (item) =>
+            item.score >= 0.75 &&
+            item.type !== "number"
+        )
+        .sort(
+          (a, b) =>
+            b.score - a.score
+        );
+
+    if (!outputCandidates.length) {
+      continue;
+    }
+
+    const operation =
+      /\b(unique|distinct|different)\b/.test(text)
+        ? "distinct_count"
+        : "non_empty_count";
+
+    /*
+     * Prefer a worksheet containing both:
+     * - the filter value
+     * - the requested output column
+     */
+    const sameDatasetOutput =
+      outputCandidates.find(
+        (item) =>
+          item.dataset ===
+          valueMatch.dataset
+      );
+
+    if (sameDatasetOutput) {
+      return {
+        route: "dataset",
+        dataset:
+          sameDatasetOutput.dataset,
+        operation,
+        column:
+          sameDatasetOutput.name,
+        groupBy: null,
+        filters: [
+          {
+            column:
+              valueMatch.column,
+            operator:
+              valueMatch.operator ||
+              "equals",
+            value:
+              valueMatch.value,
+          },
+        ],
+        selectColumns: [],
+        transform: null,
+        outputRequested: false,
+        limit:
+          detectLimit(question),
+        showAll: false,
+        confidence: 1,
+      };
+    }
+
+    /*
+     * Preserve existing cross-dataset count support.
+     */
+    const output =
+      outputCandidates[0];
+
+    return {
+      route: "dataset",
+      dataset:
+        output.dataset,
+      operation,
+      column:
+        output.name,
+      groupBy: null,
+      filters: [],
+      selectColumns: [],
+      transform: null,
+      outputRequested: false,
+      crossDatasetFilter: {
+        sourceDataset:
+          valueMatch.dataset,
+        sourceColumn:
+          valueMatch.column,
+        operator:
+          valueMatch.operator ||
+          "equals",
+        value:
+          valueMatch.value,
+      },
+      limit:
+        detectLimit(question),
+      showAll: false,
+      confidence: 1,
+    };
+  }
+
+  return null;
+}
+
+
 function detectTextCountWithFilter(
   question,
   schema,
@@ -1497,6 +1680,19 @@ function createLocalPlan({
 
   if (generalPlan) {
     return generalPlan;
+  }
+
+  // Resolve filter-first text counts first.
+  // Example: "Count of Madupayas commodities"
+  const filterFirstTextCount =
+    detectFilterFirstTextCount(
+      question,
+      schema,
+      datasets
+    );
+
+  if (filterFirstTextCount) {
+    return filterFirstTextCount;
   }
 
   // Resolve grouped parent-child lists first.
@@ -1850,5 +2046,6 @@ module.exports = {
   detectMultiFieldLookup,
   detectTextCountWithFilter,
   detectFilteredFieldLookup,
-  detectGroupedListRequest
+  detectGroupedListRequest,
+  detectFilterFirstTextCount
 };
