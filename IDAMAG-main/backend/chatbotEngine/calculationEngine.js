@@ -985,11 +985,453 @@ function executePlannedCrossDatasetLookup({
 }
 
 
+
+function executeCrossDatasetGroupedAggregation({
+  datasets,
+  plan,
+  question,
+}) {
+  const operation = String(
+    plan?.operation || ""
+  )
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+  const supportedOperations = new Set([
+    "group_count",
+    "group_sum",
+    "group_average",
+    "group_minimum",
+    "group_maximum",
+    "rank_groups",
+  ]);
+
+  if (!supportedOperations.has(operation)) {
+    return null;
+  }
+
+  const groupRequest =
+    plan.labelColumn ||
+    plan.groupBy;
+
+  const metricRequest =
+    plan.column;
+
+  if (!groupRequest || !metricRequest) {
+    return null;
+  }
+
+  const groupMatches =
+    findDatasetsContainingColumn(
+      datasets,
+      groupRequest
+    );
+
+  const metricMatches =
+    findDatasetsContainingColumn(
+      datasets,
+      metricRequest
+    );
+
+  if (
+    !groupMatches.length ||
+    !metricMatches.length
+  ) {
+    return null;
+  }
+
+  /*
+   * Existing same-worksheet grouped logic should continue handling
+   * plans where both columns are already in one worksheet.
+   */
+  const sameDatasetMatch =
+    groupMatches.find((group) =>
+      metricMatches.some(
+        (metric) =>
+          metric.dataset ===
+          group.dataset
+      )
+    );
+
+  if (sameDatasetMatch) {
+    return null;
+  }
+
+  let selected = null;
+
+  for (const groupMatch of groupMatches) {
+    const groupRows =
+      datasets[groupMatch.dataset];
+
+    if (
+      !Array.isArray(groupRows) ||
+      !groupRows.length
+    ) {
+      continue;
+    }
+
+    for (const metricMatch of metricMatches) {
+      if (
+        metricMatch.dataset ===
+        groupMatch.dataset
+      ) {
+        continue;
+      }
+
+      const metricRows =
+        datasets[metricMatch.dataset];
+
+      if (
+        !Array.isArray(metricRows) ||
+        !metricRows.length
+      ) {
+        continue;
+      }
+
+      const join =
+        chooseJoin(
+          groupRows,
+          metricRows
+        );
+
+      if (!join) {
+        continue;
+      }
+
+      const score =
+        Number(join.score || 0);
+
+      if (
+        !selected ||
+        score > selected.score
+      ) {
+        selected = {
+          groupDataset:
+            groupMatch.dataset,
+          metricDataset:
+            metricMatch.dataset,
+          groupColumn:
+            groupMatch.column,
+          metricColumn:
+            metricMatch.column,
+          groupRows,
+          metricRows,
+          join,
+          score,
+        };
+      }
+    }
+  }
+
+  if (!selected) {
+    return null;
+  }
+
+  /*
+   * Resolve filters separately in both worksheets.
+   * A filter is applied only where its column exists.
+   */
+  const groupFilters =
+    resolveFilters(
+      selected.groupRows,
+      plan.filters
+    );
+
+  const metricFilters =
+    resolveFilters(
+      selected.metricRows,
+      plan.filters
+    );
+
+  const implicitGroupFilters =
+    inferValueFilters(
+      selected.groupRows,
+      question,
+      [
+        selected.groupColumn,
+        selected.join.leftColumn,
+      ]
+    );
+
+  const implicitMetricFilters =
+    inferValueFilters(
+      selected.metricRows,
+      question,
+      [
+        selected.metricColumn,
+        selected.join.rightColumn,
+      ]
+    );
+
+  const filteredGroupRows =
+    applyFilters(
+      selected.groupRows,
+      mergeFilters(
+        groupFilters,
+        implicitGroupFilters
+      )
+    );
+
+  const filteredMetricRows =
+    applyFilters(
+      selected.metricRows,
+      mergeFilters(
+        metricFilters,
+        implicitMetricFilters
+      )
+    );
+
+  const metricIndex =
+    buildJoinIndex(
+      filteredMetricRows,
+      selected.join.rightColumn
+    );
+
+  const aggregation =
+    operation === "group_count"
+      ? "count"
+      : operation === "group_sum"
+        ? "sum"
+        : operation === "group_average"
+          ? "average"
+          : operation === "group_minimum"
+            ? "minimum"
+            : operation === "group_maximum"
+              ? "maximum"
+              : ["sum", "average", "count"].includes(
+                    String(
+                      plan.aggregation || ""
+                    ).toLowerCase()
+                  )
+                ? String(
+                    plan.aggregation
+                  ).toLowerCase()
+                : "sum";
+
+  const groups = new Map();
+
+  for (const groupRow of filteredGroupRows) {
+    const label = String(
+      groupRow?.[
+        selected.groupColumn
+      ] ?? ""
+    ).trim();
+
+    if (!label) {
+      continue;
+    }
+
+    const joinKey =
+      normalizeJoinValue(
+        groupRow?.[
+          selected.join.leftColumn
+        ]
+      );
+
+    if (!joinKey) {
+      continue;
+    }
+
+    const relatedRows =
+      metricIndex.get(joinKey) ||
+      [];
+
+    if (!relatedRows.length) {
+      continue;
+    }
+
+    if (!groups.has(label)) {
+      groups.set(label, {
+        sum: 0,
+        count: 0,
+        minimum: null,
+        maximum: null,
+      });
+    }
+
+    const group =
+      groups.get(label);
+
+    for (const metricRow of relatedRows) {
+      if (aggregation === "count") {
+        const rawValue =
+          metricRow?.[
+            selected.metricColumn
+          ];
+
+        if (
+          rawValue === null ||
+          rawValue === undefined ||
+          String(rawValue).trim() === ""
+        ) {
+          continue;
+        }
+
+        group.sum += 1;
+        group.count += 1;
+        continue;
+      }
+
+      const numericValue =
+        parseNumber(
+          metricRow?.[
+            selected.metricColumn
+          ]
+        );
+
+      if (numericValue === null) {
+        continue;
+      }
+
+      group.sum += numericValue;
+      group.count += 1;
+
+      group.minimum =
+        group.minimum === null
+          ? numericValue
+          : Math.min(
+              group.minimum,
+              numericValue
+            );
+
+      group.maximum =
+        group.maximum === null
+          ? numericValue
+          : Math.max(
+              group.maximum,
+              numericValue
+            );
+    }
+  }
+
+  const direction =
+    plan.direction === "asc"
+      ? "asc"
+      : "desc";
+
+  const limit =
+    getLimit(plan);
+
+  let results =
+    [...groups.entries()]
+      .map(([label, group]) => {
+        let value = null;
+
+        if (aggregation === "count") {
+          value = group.count;
+        } else if (aggregation === "average") {
+          value =
+            group.count > 0
+              ? group.sum /
+                group.count
+              : null;
+        } else if (aggregation === "minimum") {
+          value = group.minimum;
+        } else if (aggregation === "maximum") {
+          value = group.maximum;
+        } else {
+          value = group.sum;
+        }
+
+        return {
+          label,
+          value,
+          recordsUsed:
+            group.count,
+        };
+      })
+      .filter(
+        (item) =>
+          item.value !== null
+      )
+      .sort((a, b) =>
+        direction === "asc"
+          ? a.value - b.value
+          : b.value - a.value
+      );
+
+  if (
+    operation === "rank_groups" ||
+    plan.showAll !== true
+  ) {
+    results =
+      results.slice(0, limit);
+  }
+
+  if (!results.length) {
+    throw new Error(
+      `No cross-worksheet grouped values were found for "${selected.groupColumn}" by "${selected.metricColumn}".`
+    );
+  }
+
+  const heading =
+    operation === "rank_groups"
+      ? `${
+          direction === "desc"
+            ? "Top"
+            : "Bottom"
+        } ${results.length} ${selected.groupColumn} by ${aggregation} ${selected.metricColumn}`
+      : `${aggregation} ${selected.metricColumn} by ${selected.groupColumn}`;
+
+  return {
+    success: true,
+    source: "dataset",
+    operation,
+    crossDataset: true,
+    dataset:
+      selected.groupDataset,
+    metricDataset:
+      selected.metricDataset,
+    groupBy:
+      selected.groupColumn,
+    labelColumn:
+      selected.groupColumn,
+    column:
+      selected.metricColumn,
+    aggregation,
+    direction,
+    results,
+    joins: [
+      {
+        sourceDataset:
+          selected.groupDataset,
+        targetDataset:
+          selected.metricDataset,
+        sourceColumn:
+          selected.join.leftColumn,
+        targetColumn:
+          selected.join.rightColumn,
+      },
+    ],
+    answer:
+      `${heading}:\n` +
+      results
+        .map(
+          (item, index) =>
+            `${index + 1}. ${item.label}: ${formatNumber(item.value)}`
+        )
+        .join("\n"),
+  };
+}
+
+
 function executePlan({
   datasets,
   plan,
   question,
 }) {
+  const crossDatasetGroupedResult =
+    executeCrossDatasetGroupedAggregation({
+      datasets,
+      plan,
+      question,
+    });
+
+  if (crossDatasetGroupedResult) {
+    return crossDatasetGroupedResult;
+  }
+
   const plannedCrossDatasetCount =
     executePlannedCrossDatasetCount({
       datasets,
