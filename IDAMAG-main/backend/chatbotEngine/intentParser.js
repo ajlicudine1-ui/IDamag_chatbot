@@ -882,11 +882,23 @@ function detectCrossDatasetLookup(question, schema, datasets) {
 
 
 
+
 function detectGroupedListRequest(
   question,
   schema
 ) {
   const text = normalizeText(question);
+
+  /*
+   * Generic grouped-list requests:
+   *
+   * - "province and its municipalities"
+   * - "province with municipalities"
+   * - "list municipalities by province"
+   * - "show crops under each municipality"
+   *
+   * Existing lookup/count logic is untouched.
+   */
 
   const patterns = [
     /^(.+?)\s+and\s+(?:its|their)\s+(.+?)\??$/,
@@ -925,42 +937,57 @@ function detectGroupedListRequest(
 
   const allColumns = getAllColumns(schema);
 
-  const parentCandidates =
-    allColumns
-      .map((item) => ({
-        ...item,
-        score: scoreColumnTarget(
-          parentTarget,
-          item.name
-        ),
-      }))
-      .filter((item) => item.type !== "number")
-      .sort((a, b) => b.score - a.score);
+  const parentCandidates = allColumns
+    .map((item) => ({
+      ...item,
+      score: scoreColumnTarget(
+        parentTarget,
+        item.name
+      ),
+    }))
+    .filter(
+      (item) =>
+        item.type !== "number"
+    )
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    );
 
-  const childCandidates =
-    allColumns
-      .map((item) => ({
-        ...item,
-        score: scoreColumnTarget(
-          childTarget,
-          item.name
-        ),
-      }))
-      .filter((item) => item.type !== "number")
-      .sort((a, b) => b.score - a.score);
+  const childCandidates = allColumns
+    .map((item) => ({
+      ...item,
+      score: scoreColumnTarget(
+        childTarget,
+        item.name
+      ),
+    }))
+    .filter(
+      (item) =>
+        item.type !== "number"
+    )
+    .sort(
+      (a, b) =>
+        b.score - a.score
+    );
 
+  /*
+   * Safe rule:
+   * only create a grouped-list plan when both columns are found
+   * in the same worksheet. This avoids interfering with the
+   * existing cross-dataset fixes.
+   */
   for (const parent of parentCandidates) {
     if (parent.score < 0.75) {
       continue;
     }
 
-    const child =
-      childCandidates.find(
-        (item) =>
-          item.dataset === parent.dataset &&
-          item.score >= 0.75 &&
-          item.name !== parent.name
-      );
+    const child = childCandidates.find(
+      (item) =>
+        item.dataset === parent.dataset &&
+        item.score >= 0.75 &&
+        item.name !== parent.name
+    );
 
     if (!child) {
       continue;
@@ -983,6 +1010,156 @@ function detectGroupedListRequest(
       showAll: true,
       confidence: 0.999,
     };
+  }
+
+  return null;
+}
+
+
+function detectFilteredFieldLookup(
+  question,
+  schema,
+  datasets
+) {
+  const text = normalizeText(question);
+
+  /*
+   * Handles direct field + filter requests generically.
+   *
+   * Examples:
+   * - "commodities under registration number CN201708932"
+   * - "municipality with registration number CN201708932"
+   * - "planting month of farm id 1001"
+   *
+   * No worksheet names or column names are hardcoded.
+   */
+  const match = text.match(
+    /^(?:what|which|who|show|give|tell me|get|find|lookup|list)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:under|using|with|for|of|from|by)\s+(.+?)\??$/
+  );
+
+  if (!match?.[1] || !match?.[2]) {
+    return null;
+  }
+
+  const requestedText =
+    normalizeTarget(match[1]);
+
+  const identifierText =
+    normalizeText(match[2]);
+
+  if (!requestedText || !identifierText) {
+    return null;
+  }
+
+  const outputCandidates =
+    findDatasetsContainingColumn(
+      datasets,
+      requestedText
+    );
+
+  if (!outputCandidates.length) {
+    return null;
+  }
+
+  const identifierMatches =
+    inferDatasetValueFilters(
+      datasets,
+      identifierText
+    );
+
+  if (!identifierMatches.length) {
+    return null;
+  }
+
+  for (const output of outputCandidates) {
+    /*
+     * Prefer the worksheet that already contains both:
+     * - the requested output column
+     * - the identifying value/filter
+     */
+    const sameDatasetIdentifier =
+      identifierMatches.find(
+        (item) =>
+          item.dataset ===
+          output.dataset
+      );
+
+    if (sameDatasetIdentifier) {
+      const asksForList =
+        /\b(list|all|every)\b/.test(text) ||
+        /\bunder\b/.test(text) ||
+        /\bcommodit(?:y|ies)\b/.test(
+          normalizeText(match[1])
+        );
+
+      return {
+        route: "dataset",
+        dataset: output.dataset,
+        operation:
+          asksForList
+            ? "list"
+            : "lookup",
+        column: output.column,
+        groupBy: null,
+        filters: [
+          {
+            column:
+              sameDatasetIdentifier.column,
+            operator:
+              sameDatasetIdentifier.operator ||
+              "equals",
+            value:
+              sameDatasetIdentifier.value,
+          },
+        ],
+        selectColumns:
+          asksForList
+            ? []
+            : [output.column],
+        transform: null,
+        outputRequested: true,
+        limit: detectLimit(question),
+        showAll: true,
+        confidence: 1,
+      };
+    }
+
+    /*
+     * If the requested field and identifier are in different worksheets,
+     * create a cross-dataset lookup plan.
+     */
+    const crossIdentifier =
+      identifierMatches[0];
+
+    if (crossIdentifier) {
+      return {
+        route: "dataset",
+        dataset: output.dataset,
+        operation: "lookup",
+        column: output.column,
+        groupBy: null,
+        filters: [],
+        selectColumns: [
+          output.column,
+        ],
+        transform: null,
+        outputRequested: true,
+        crossDatasetFilter: {
+          sourceDataset:
+            crossIdentifier.dataset,
+          sourceColumn:
+            crossIdentifier.column,
+          operator:
+            crossIdentifier.operator ||
+            "equals",
+          value:
+            crossIdentifier.value,
+        },
+        limit: detectLimit(question),
+        showAll: true,
+        confidence: 1,
+      };
+    }
   }
 
   return null;
@@ -1334,6 +1511,19 @@ function createLocalPlan({
     return groupedListRequest;
   }
 
+  // Resolve direct field + filter requests first.
+  // Example: "commodities under registration number CN201708932"
+  const filteredFieldLookup =
+    detectFilteredFieldLookup(
+      question,
+      schema,
+      datasets
+    );
+
+  if (filteredFieldLookup) {
+    return filteredFieldLookup;
+  }
+
   // Resolve filtered text counts first.
   // Example: "How many commodities in Madupayas?"
   const textCountWithFilter =
@@ -1659,5 +1849,6 @@ module.exports = {
   detectCrossDatasetLookup,
   detectMultiFieldLookup,
   detectTextCountWithFilter,
-  detectGroupedListRequest,
+  detectFilteredFieldLookup,
+  detectGroupedListRequest
 };

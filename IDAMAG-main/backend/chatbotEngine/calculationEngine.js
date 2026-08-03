@@ -456,6 +456,281 @@ function normalizeJoinValue(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
+
+function executePlannedCrossDatasetCount({
+  datasets,
+  plan,
+}) {
+  const cross =
+    plan?.crossDatasetFilter;
+
+  const operation = String(
+    plan?.operation || ""
+  )
+    .trim()
+    .toLowerCase();
+
+  if (
+    !cross ||
+    ![
+      "non_empty_count",
+      "distinct_count",
+    ].includes(operation)
+  ) {
+    return null;
+  }
+
+  const sourceRows =
+    datasets?.[
+      cross.sourceDataset
+    ];
+
+  const targetRows =
+    datasets?.[
+      plan.dataset
+    ];
+
+  if (
+    !Array.isArray(sourceRows) ||
+    !sourceRows.length
+  ) {
+    throw new Error(
+      `Source worksheet "${cross.sourceDataset}" has no usable rows.`
+    );
+  }
+
+  if (
+    !Array.isArray(targetRows) ||
+    !targetRows.length
+  ) {
+    throw new Error(
+      `Target worksheet "${plan.dataset}" has no usable rows.`
+    );
+  }
+
+  const sourceMatches =
+    applyFilters(
+      sourceRows,
+      [
+        {
+          column:
+            cross.sourceColumn,
+          operator:
+            cross.operator ||
+            "equals",
+          value:
+            cross.value,
+        },
+      ]
+    );
+
+  if (!sourceMatches.length) {
+    return {
+      success: true,
+      source: "dataset",
+      dataset: plan.dataset,
+      operation,
+      column: plan.column,
+      value: 0,
+      recordsUsed: 0,
+      answer:
+        `There are 0 ${plan.column} record(s) connected to "${cross.value}".`,
+    };
+  }
+
+  const joinCandidates =
+    findSharedColumns(
+      sourceRows,
+      targetRows
+    )
+      .map((shared) => ({
+        ...shared,
+        score:
+          scoreJoinColumn(
+            sourceRows,
+            targetRows,
+            shared
+          ),
+      }))
+      .filter(
+        (item) =>
+          item.score > 0
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  let selectedJoin = null;
+  let targetIndex = null;
+
+  for (
+    const candidate of
+    joinCandidates
+  ) {
+    const index =
+      buildJoinIndex(
+        targetRows,
+        candidate.rightColumn
+      );
+
+    const connects =
+      sourceMatches.some(
+        (row) => {
+          const key =
+            normalizeJoinValue(
+              row?.[
+                candidate.leftColumn
+              ]
+            );
+
+          return (
+            key &&
+            (index.get(key) || [])
+              .length > 0
+          );
+        }
+      );
+
+    if (connects) {
+      selectedJoin =
+        candidate;
+      targetIndex =
+        index;
+      break;
+    }
+  }
+
+  if (
+    !selectedJoin ||
+    !targetIndex
+  ) {
+    return {
+      success: false,
+      source: "dataset",
+      dataset: plan.dataset,
+      operation,
+      column: plan.column,
+      value: 0,
+      answer:
+        `I found "${cross.value}" in ${cross.sourceDataset}, but I could not connect it to ${plan.dataset}.`,
+    };
+  }
+
+  const requestedColumn =
+    requireColumn(
+      targetRows,
+      plan.column,
+      "Column"
+    );
+
+  const relatedRows = [];
+  const seenRowKeys =
+    new Set();
+
+  for (
+    const sourceRow of
+    sourceMatches
+  ) {
+    const key =
+      normalizeJoinValue(
+        sourceRow?.[
+          selectedJoin.leftColumn
+        ]
+      );
+
+    if (!key) {
+      continue;
+    }
+
+    for (
+      const targetRow of
+      targetIndex.get(key) || []
+    ) {
+      const rowKey =
+        JSON.stringify(
+          targetRow
+        );
+
+      if (
+        !seenRowKeys.has(
+          rowKey
+        )
+      ) {
+        seenRowKeys.add(
+          rowKey
+        );
+        relatedRows.push(
+          targetRow
+        );
+      }
+    }
+  }
+
+  const values =
+    relatedRows
+      .map(
+        (row) =>
+          row?.[
+            requestedColumn
+          ]
+      )
+      .filter(
+        (value) =>
+          value !== null &&
+          value !== undefined &&
+          String(value).trim() !== ""
+      );
+
+  if (
+    operation ===
+    "distinct_count"
+  ) {
+    const unique =
+      new Set(
+        values.map(
+          (value) =>
+            String(value)
+              .trim()
+              .toLowerCase()
+        )
+      );
+
+    return {
+      success: true,
+      source: "dataset",
+      dataset: plan.dataset,
+      operation,
+      column:
+        requestedColumn,
+      value:
+        unique.size,
+      recordsUsed:
+        values.length,
+      crossDataset: true,
+      answer:
+        `There are ${formatNumber(unique.size)} unique ${requestedColumn} value(s) connected to ${cross.value}.`,
+    };
+  }
+
+  return {
+    success: true,
+    source: "dataset",
+    dataset: plan.dataset,
+    operation,
+    column:
+      requestedColumn,
+    value:
+      values.length,
+    recordsUsed:
+      relatedRows.length,
+    crossDataset: true,
+    answer:
+      `There are ${formatNumber(values.length)} ${requestedColumn} record(s) connected to ${cross.value}.`,
+  };
+}
+
+
 function executePlannedCrossDatasetLookup({
   datasets,
   plan,
@@ -715,6 +990,16 @@ function executePlan({
   plan,
   question,
 }) {
+  const plannedCrossDatasetCount =
+    executePlannedCrossDatasetCount({
+      datasets,
+      plan,
+    });
+
+  if (plannedCrossDatasetCount) {
+    return plannedCrossDatasetCount;
+  }
+
   const plannedCrossDatasetResult =
     executePlannedCrossDatasetLookup({
       datasets,
@@ -1061,7 +1346,8 @@ function executePlan({
       .map(([label, group]) => ({
         label,
         values: group.values.sort(
-          (a, b) => a.localeCompare(b)
+          (a, b) =>
+            a.localeCompare(b)
         ),
       }))
       .sort(
