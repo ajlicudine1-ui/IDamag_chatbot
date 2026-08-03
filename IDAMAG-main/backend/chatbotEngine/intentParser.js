@@ -1034,7 +1034,7 @@ function detectFilteredFieldLookup(
    * No worksheet names or column names are hardcoded.
    */
   const match = text.match(
-    /^(?:what|which|who|show|give|tell me|get|find|lookup|list)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:under|using|with|for|of|from|by)\s+(.+?)\??$/
+    /^(?:what|which|who|show|give|tell me|get|find|lookup|list)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:under|in|at|within|inside|using|with|for|of|from|by)\s+(.+?)\??$/
   );
 
   if (!match?.[1] || !match?.[2]) {
@@ -1086,11 +1086,19 @@ function detectFilteredFieldLookup(
 
     if (sameDatasetIdentifier) {
       const asksForList =
-        /\b(list|all|every)\b/.test(text) ||
-        /\bunder\b/.test(text) ||
-        /\bcommodit(?:y|ies)\b/.test(
-          normalizeText(match[1])
-        );
+        /*
+         * Generic list intent:
+         *
+         * "what are the crops in X"
+         * "which farmers are in X"
+         * "list products under X"
+         * "show all municipalities within X"
+         *
+         * No column names are hardcoded.
+         */
+        /\b(list|all|every|enumerate)\b/.test(text) ||
+        /^(?:what|which)\s+are\b/.test(text) ||
+        /\bunder\b/.test(text);
 
       return {
         route: "dataset",
