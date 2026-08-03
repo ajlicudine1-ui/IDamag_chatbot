@@ -6,7 +6,8 @@ const GROQ_MODEL =
   "llama-3.3-70b-versatile";
 
 async function callGroq(messages, options = {}) {
-  const apiKey = process.env.GROQ_API_KEY;
+    const apiKey =
+    String(process.env.GROQ_API_KEY || "").trim();
 
   if (!apiKey) {
     throw new Error(
