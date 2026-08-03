@@ -359,11 +359,27 @@ function detectOperation(
       text
     )
   ) {
-    baseOperation = isNumeric
-      ? "sum"
-      : selectedColumn
-        ? "distinct_count"
-        : "row_count";
+    if (isNumeric) {
+      baseOperation = "sum";
+    } else if (selectedColumn) {
+      /*
+       * Text columns are counted by populated rows unless the user
+       * explicitly asks for unique/distinct values.
+       *
+       * Examples:
+       * "how many commodities in Barangay Madupayas"
+       *   -> non_empty_count
+       *
+       * "how many unique commodities in Barangay Madupayas"
+       *   -> distinct_count
+       */
+      baseOperation =
+        /\b(unique|distinct|different)\b/.test(text)
+          ? "distinct_count"
+          : "non_empty_count";
+    } else {
+      baseOperation = "row_count";
+    }
   }
 
   if (!baseOperation) {
@@ -875,6 +891,115 @@ function detectCrossDatasetLookup(question, schema, datasets) {
 }
 
 
+
+function detectTextCountWithFilter(
+  question,
+  schema,
+  datasets
+) {
+  const text = normalizeText(question);
+
+  /*
+   * Handles:
+   * - "how many commodities in Barangay Madupayas"
+   * - "number of farmers in Solsona"
+   * - "count of products in Region 1"
+   * - "how many unique crops in Barangay X"
+   */
+  const match = text.match(
+    /\b(?:how many|number of|count of)\s+(?:the\s+)?(.+?)\s+(?:in|at|from|for|within)\s+(.+)$/
+  );
+
+  if (!match?.[1] || !match?.[2]) {
+    return null;
+  }
+
+  const requestedTarget =
+    normalizeTarget(match[1]);
+
+  const filterText =
+    normalizeText(match[2]);
+
+  const outputCandidates =
+    getAllColumns(schema)
+      .map((item) => ({
+        ...item,
+        score: scoreColumnTarget(
+          requestedTarget,
+          item.name
+        ),
+      }))
+      .filter(
+        (item) =>
+          item.score >= 0.75 &&
+          item.type !== "number"
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  if (!outputCandidates.length) {
+    return null;
+  }
+
+  const valueMatches =
+    inferDatasetValueFilters(
+      datasets,
+      filterText
+    );
+
+  if (!valueMatches.length) {
+    return null;
+  }
+
+  for (const output of outputCandidates) {
+    const sameDatasetFilter =
+      valueMatches.find(
+        (item) =>
+          item.dataset === output.dataset
+      );
+
+    if (!sameDatasetFilter) {
+      continue;
+    }
+
+    return {
+      route: "dataset",
+      dataset: output.dataset,
+
+      operation:
+        /\b(unique|distinct|different)\b/.test(text)
+          ? "distinct_count"
+          : "non_empty_count",
+
+      column: output.name,
+      groupBy: null,
+
+      filters: [
+        {
+          column: sameDatasetFilter.column,
+          operator:
+            sameDatasetFilter.operator ||
+            "equals",
+          value: sameDatasetFilter.value,
+        },
+      ],
+
+      selectColumns: [],
+      transform: null,
+      outputRequested: false,
+
+      limit: detectLimit(question),
+      showAll: detectShowAll(question),
+      confidence: 0.999,
+    };
+  }
+
+  return null;
+}
+
+
 function detectMultiFieldLookup(question, schema, datasets) {
   const text = normalizeText(question);
 
@@ -1068,6 +1193,20 @@ function createLocalPlan({
 
   if (generalPlan) {
     return generalPlan;
+  }
+
+  // Resolve filtered text counts first.
+  // Example:
+  // "how many commodities in Barangay Madupayas"
+  const textCountWithFilter =
+    detectTextCountWithFilter(
+      question,
+      schema,
+      datasets
+    );
+
+  if (textCountWithFilter) {
+    return textCountWithFilter;
   }
 
   // Resolve true multi-field lookups FIRST.
@@ -1381,4 +1520,5 @@ module.exports = {
   extractGroupingPhrase,
   detectCrossDatasetLookup,
   detectMultiFieldLookup,
+  detectTextCountWithFilter,
 };
