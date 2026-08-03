@@ -6,8 +6,7 @@ const GROQ_MODEL =
   "llama-3.3-70b-versatile";
 
 async function callGroq(messages, options = {}) {
-    const apiKey =
-    String(process.env.GROQ_API_KEY || "").trim();
+  const apiKey = process.env.GROQ_API_KEY;
 
   if (!apiKey) {
     throw new Error(
@@ -109,153 +108,6 @@ do not guess them.
     operation: "general",
     answer,
   };
-}
-
-
-// ============================================================
-// DETERMINISTIC PLAN REPAIR HELPERS
-// ============================================================
-
-function normalizeText(value) {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function sameColumnName(left, right) {
-  return normalizeText(left) === normalizeText(right);
-}
-
-function getAllSchemaColumns(schema) {
-  const columns = [];
-
-  for (const dataset of schema || []) {
-    for (const column of dataset.columns || []) {
-      columns.push({
-        dataset: dataset.name,
-        name: column.name,
-        examples: Array.isArray(column.examples)
-          ? column.examples
-          : [],
-      });
-    }
-  }
-
-  return columns;
-}
-
-function findMentionedColumns(question, schema) {
-  const normalizedQuestion = ` ${normalizeText(question)} `;
-
-  return getAllSchemaColumns(schema)
-    .filter((entry) => {
-      const normalizedColumn = normalizeText(entry.name);
-      return (
-        normalizedColumn &&
-        normalizedQuestion.includes(` ${normalizedColumn} `)
-      );
-    })
-    .sort(
-      (a, b) =>
-        normalizeText(b.name).length -
-        normalizeText(a.name).length
-    );
-}
-
-function findExampleValueMatch(question, schema) {
-  const normalizedQuestion = ` ${normalizeText(question)} `;
-  const matches = [];
-
-  for (const entry of getAllSchemaColumns(schema)) {
-    for (const example of entry.examples) {
-      const normalizedExample = normalizeText(example);
-
-      // Ignore tiny/common values because they create false matches.
-      if (normalizedExample.length < 3) {
-        continue;
-      }
-
-      if (
-        normalizedQuestion.includes(` ${normalizedExample} `)
-      ) {
-        matches.push({
-          dataset: entry.dataset,
-          column: entry.name,
-          value: String(example),
-          score: normalizedExample.length,
-        });
-      }
-    }
-  }
-
-  matches.sort((a, b) => b.score - a.score);
-  return matches[0] || null;
-}
-
-function repairLookupPlan({ plan, question, schema }) {
-  if (
-    plan.route !== "dataset" ||
-    String(plan.operation || "").toLowerCase() !== "lookup"
-  ) {
-    return plan;
-  }
-
-  const mentionedColumns = findMentionedColumns(
-    question,
-    schema
-  );
-
-  const filterColumns = (plan.filters || []).map(
-    (filter) => filter.column
-  );
-
-  // Recover requested output fields when Groq returns an empty
-  // selectColumns array. This is the direct fix for:
-  // "No output column was requested for the cross-worksheet lookup."
-  if (plan.selectColumns.length === 0) {
-    const inferredOutputs = mentionedColumns
-      .map((entry) => entry.name)
-      .filter(
-        (columnName) =>
-          !filterColumns.some((filterColumn) =>
-            sameColumnName(filterColumn, columnName)
-          )
-      );
-
-    if (inferredOutputs.length > 0) {
-      plan.selectColumns = [...new Set(inferredOutputs)];
-    } else if (plan.column) {
-      plan.selectColumns = [plan.column];
-    }
-  }
-
-  // Recover an entity filter from schema examples, such as
-  // "Juan dela Cruz" from the Farmer column, when Groq fails
-  // to create the filter itself.
-  if (plan.filters.length === 0) {
-    const exampleMatch = findExampleValueMatch(
-      question,
-      schema
-    );
-
-    if (exampleMatch) {
-      plan.filters.push({
-        column: exampleMatch.column,
-        operator: "equals",
-        value: exampleMatch.value,
-      });
-
-      if (!plan.dataset) {
-        plan.dataset = exampleMatch.dataset;
-      }
-    }
-  }
-
-  plan.outputRequested = plan.selectColumns.length > 0;
-
-  return plan;
 }
 
 // ============================================================
@@ -1001,13 +853,6 @@ No code block.
     ) {
       plan.limit = 10;
     }
-
-    // Repair incomplete lookup plans before execution.
-    repairLookupPlan({
-      plan,
-      question,
-      schema: compactSchema,
-    });
 
     // ========================================================
     // LIST BEHAVIOR
