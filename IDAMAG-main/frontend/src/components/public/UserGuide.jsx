@@ -90,6 +90,42 @@ const UserGuide = () => {
             <span className="hidden sm:inline">Back to Home</span>
           </Link>
         </div>
+        <div
+                      className="
+                        flex
+                        items-center
+                        justify-center
+                        gap-4
+                      "
+                    >
+                      <img
+                        src={logo}
+                        alt="Department of Agriculture Logo"
+                        className="
+                          h-14
+                          w-14
+                          object-contain
+        
+                          md:h-16
+                          md:w-16
+                        "
+                      />
+        
+                      <h1
+                        className="
+                          text-2xl
+                          font-black
+                          tracking-tight
+                          text-slate-900
+        
+                          sm:text-3xl
+                          md:text-4xl
+                          lg:text-5xl
+                        "
+                      >
+                        User Guide
+                      </h1>
+                    </div>
 
         {/* Header */}
         <div
@@ -151,11 +187,11 @@ const UserGuide = () => {
 
                 <div>
                   <h1 className="text-3xl font-black text-slate-900">
-                    User Guide
+                    ILOCOS DAMAG
                   </h1>
 
                   <p className="text-sm font-semibold text-[#235E26]">
-                    ILOCOS DAMAG
+                    DKO ALAM LALAGAY
                   </p>
                 </div>
               </div>
