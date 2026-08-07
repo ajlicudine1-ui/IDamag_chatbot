@@ -483,54 +483,60 @@ const About = () => {
                 </div>
 
                 {/* =================================================
-                    DESCRIPTION
-                ================================================= */}
+                      DESCRIPTION
+                  ================================================= */}
 
-                <p
-                  className="
-                    mt-6
+                  <p
+                    className="
+                      mt-6
 
-                    max-w-4xl
+                      max-w-4xl
 
-                    text-sm
-                    leading-7
+                      text-justify
 
-                    text-slate-800
+                      text-[15px]
+                      leading-8
 
-                    md:text-base
-                    md:leading-8
-                  "
-                >
-                  I-DAMAG is a centralized data and
-                  analytics platform of the Department
-                  of Agriculture - Regional Field Office
-                  I. It provides a unified gateway for
-                  accessing and visualizing agricultural
-                  data, reports, and interactive
-                  dashboards from the different
-                  divisions and sections of DA-RFO I.
-                </p>
+                      text-slate-800
 
-                <p
-                  className="
-                    mt-4
+                      sm:text-base
+                      sm:leading-8
 
-                    max-w-4xl
+                      md:text-[17px]
+                      md:leading-8
+                    "
+                  >
+                    I-DAMAG is a centralized data and analytics platform of the
+                    Department of Agriculture - Regional Field Office I. It
+                    provides a unified gateway for accessing and visualizing
+                    agricultural data, reports, and interactive dashboards from
+                    the different divisions and sections of DA-RFO I.
+                  </p>
 
-                    text-sm
-                    leading-7
+                  <p
+                    className="
+                      mt-5
 
-                    text-slate-700
+                      max-w-4xl
 
-                    md:text-base
-                  "
-                >
-                  The system is designed to make
-                  agricultural information more
-                  accessible, organized, and easier to
-                  understand through interactive
-                  dashboards and data-driven reports.
-                </p>
+                      text-justify
+
+                      text-[15px]
+                      leading-8
+
+                      text-slate-700
+
+                      sm:text-base
+                      sm:leading-8
+
+                      md:text-[17px]
+                      md:leading-8
+                    "
+                  >
+                    The system is designed to make agricultural information
+                    more accessible, organized, and easier to understand
+                    through interactive dashboards and data-driven reports.
+                  </p>
 
                 {/* =================================================
                     FEATURES
