@@ -156,7 +156,6 @@ const About = () => {
           <div className="relative mb-8">
 
             {/* BACK TO HOME */}
-            
             <Link
               to="/"
               className="
@@ -178,7 +177,8 @@ const About = () => {
                 hover:text-[#235E26]
               "
             >
-              
+              <ArrowLeft className="h-5 w-5" />
+            
             </Link>
 
             {/* PAGE TITLE */}
