@@ -117,7 +117,7 @@ const UserGuide = () => {
                           lg:text-5xl
                         "
                       >
-                         IDAMAG User Guide
+                        User Guide
                       </h1>
                     </div>
                   </div>
@@ -191,7 +191,7 @@ const UserGuide = () => {
                   </h1>
 
                   <p className="text-sm font-semibold text-[#235E26]">
-                    DKO ALAM LALAGAY
+                    Getting Started
                   </p>
                 </div>
               </div>
