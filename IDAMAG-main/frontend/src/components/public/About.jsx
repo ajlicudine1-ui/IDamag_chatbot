@@ -177,8 +177,7 @@ const About = () => {
                 hover:text-[#235E26]
               "
             >
-              <ArrowLeft className="h-5 w-5" />
-              Back to Home
+              
             </Link>
 
             {/* PAGE TITLE */}
