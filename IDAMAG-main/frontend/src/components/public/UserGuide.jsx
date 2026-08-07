@@ -191,7 +191,7 @@ const UserGuide = () => {
                   </h1>
 
                   <p className="text-sm font-semibold text-[#235E26]">
-                    Getting Started
+                    Step-by-Step Navigation
                   </p>
                 </div>
               </div>

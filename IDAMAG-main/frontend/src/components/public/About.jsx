@@ -146,40 +146,54 @@ const About = () => {
 
   return (
     <div className="min-h-screen bg-[#F8FAFC]">
-      <main className="px-4 pb-16 pt-6 md:px-8">
+      <main className="px-3 pb-12 pt-4 sm:px-4 sm:pt-6 md:px-8 md:pb-16">
         <div className="mx-auto w-full max-w-7xl">
 
           {/* =================================================
               PAGE HEADER
           ================================================= */}
 
-           <div className="relative mb-8">
-          
-                    {/* Back to Home - KEEP THIS */}
-                      <Link
-                         to="/"
-                        className="absolute left-0 top-1/2 -translate-y-1/2 inline-flex items-center gap-2 text-slate-500 hover:text-green-700 text-sm font-semibold transition-colors"
-                       >
-                        <ArrowLeft className="w-5 h-5" />
-                        <span className="hidden sm:inline">Back to Home</span>
-                      </Link>
-
-            {/* PAGE TITLE */}
-            <div
+          <div className="mb-5 flex items-center justify-between gap-2 sm:mb-8 sm:gap-4">
+            <Link
+              to="/"
               className="
-                flex
+                inline-flex
+                h-10
+                w-10
+                shrink-0
                 items-center
                 justify-center
-                gap-4
+                rounded-xl
+                text-slate-500
+                transition-colors
+                hover:bg-slate-100
+                hover:text-green-700
+
+                sm:w-auto
+                sm:justify-start
+                sm:gap-2
+                sm:px-2
+                sm:text-sm
+                sm:font-semibold
               "
+              aria-label="Back to Home"
             >
+              <ArrowLeft className="h-5 w-5" />
+              <span className="hidden sm:inline">Back to Home</span>
+            </Link>
+
+            <div className="flex min-w-0 flex-1 items-center justify-center gap-2 sm:gap-4">
               <img
                 src={logo}
                 alt="Department of Agriculture Logo"
                 className="
-                  h-14
-                  w-14
+                  h-10
+                  w-10
+                  shrink-0
                   object-contain
+
+                  sm:h-14
+                  sm:w-14
 
                   md:h-16
                   md:w-16
@@ -188,11 +202,14 @@ const About = () => {
 
               <h1
                 className="
-                  text-2xl
+                  truncate
+                  text-xl
                   font-black
+                  leading-tight
                   tracking-tight
                   text-slate-900
 
+                  min-[360px]:text-2xl
                   sm:text-3xl
                   md:text-4xl
                   lg:text-5xl
@@ -201,6 +218,8 @@ const About = () => {
                 ABOUT I-DAMAG
               </h1>
             </div>
+
+            <div className="h-10 w-10 shrink-0 sm:w-[116px]" aria-hidden="true" />
           </div>
 
           {/* =================================================
@@ -212,15 +231,20 @@ const About = () => {
               relative
               overflow-hidden
 
-              rounded-[32px]
+              rounded-3xl
+
+              sm:rounded-[32px]
 
               border
               border-[#D7E7D5]
 
               bg-white
 
-              px-6
-              py-8
+              px-4
+              py-6
+
+              sm:px-6
+              sm:py-8
 
               shadow-xl
 
@@ -292,8 +316,14 @@ const About = () => {
                 <div
                   className="
                     flex
-                    h-48
-                    w-48
+                    h-32
+                    w-32
+
+                    sm:h-40
+                    sm:w-40
+
+                    md:h-48
+                    md:w-48
                     items-center
                     justify-center
 
@@ -373,90 +403,40 @@ const About = () => {
                     FULL MEANING
                 ================================================= */}
 
-                <div
+                <p
                   className="
-                    mt-2
-
-                    flex
-                    flex-wrap
-                    items-baseline
-
+                    mt-3
+                    max-w-3xl
                     text-sm
                     font-semibold
                     uppercase
+                    leading-6
                     tracking-wide
-
                     text-slate-800
 
-                    md:text-base
+                    sm:text-base
+                    sm:leading-7
                   "
                 >
-                  <span
-                    className="
-                      text-xl
-                      font-black
-                      text-[#235E26]
-                    "
-                  >
-                    I
+                  <span className="inline-block whitespace-nowrap">
+                    <span className="text-lg font-black text-[#235E26] sm:text-xl">I</span>locos-
+                    <span className="text-lg font-black text-[#235E26] sm:text-xl">D</span>ata
+                  </span>{" "}
+                  and{" "}
+                  <span className="inline-block whitespace-nowrap">
+                    <span className="text-lg font-black text-[#235E26] sm:text-xl">A</span>nalytics
+                  </span>{" "}
+                  <span className="inline-block whitespace-nowrap">
+                    <span className="text-lg font-black text-[#235E26] sm:text-xl">M</span>anagement
+                  </span>{" "}
+                  for{" "}
+                  <span className="inline-block whitespace-nowrap">
+                    <span className="text-lg font-black text-[#235E26] sm:text-xl">A</span>gricultural
+                  </span>{" "}
+                  <span className="inline-block whitespace-nowrap">
+                    <span className="text-lg font-black text-[#235E26] sm:text-xl">G</span>ateway
                   </span>
-                  <span>locos-</span>
-
-                  <span
-                    className="
-                      text-xl
-                      font-black
-                      text-[#235E26]
-                    "
-                  >
-                    D
-                  </span>
-                  <span>ata and&nbsp;</span>
-
-                  <span
-                    className="
-                      text-xl
-                      font-black
-                      text-[#235E26]
-                    "
-                  >
-                    A
-                  </span>
-                  <span>nalytics&nbsp;</span>
-
-                  <span
-                    className="
-                      text-xl
-                      font-black
-                      text-[#235E26]
-                    "
-                  >
-                    M
-                  </span>
-                  <span>anagement for&nbsp;</span>
-
-                  <span
-                    className="
-                      text-xl
-                      font-black
-                      text-[#235E26]
-                    "
-                  >
-                    A
-                  </span>
-                  <span>gricultural&nbsp;</span>
-
-                  <span
-                    className="
-                      text-xl
-                      font-black
-                      text-[#235E26]
-                    "
-                  >
-                    G
-                  </span>
-                  <span>ateway</span>
-                </div>
+                </p>
 
                 {/* =================================================
                     DESCRIPTION
@@ -514,10 +494,12 @@ const About = () => {
 
                 <div
                   className="
-                    mt-8
+                    mt-6
 
                     grid
                     gap-3
+
+                    sm:mt-8
 
                     sm:grid-cols-3
                   "
@@ -650,10 +632,10 @@ const About = () => {
               AVAILABLE DASHBOARDS
           ================================================= */}
 
-          <section className="mt-12">
+          <section className="mt-8 sm:mt-12">
 
             {/* SECTION TITLE */}
-            <div className="mb-8">
+            <div className="mb-6 sm:mb-8">
               <h2
                 className="
                   text-2xl
