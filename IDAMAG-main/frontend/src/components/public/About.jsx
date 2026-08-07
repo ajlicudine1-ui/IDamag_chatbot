@@ -146,54 +146,40 @@ const About = () => {
 
   return (
     <div className="min-h-screen bg-[#F8FAFC]">
-      <main className="px-3 pb-12 pt-4 sm:px-4 sm:pt-6 md:px-8 md:pb-16">
+      <main className="px-4 pb-16 pt-6 md:px-8">
         <div className="mx-auto w-full max-w-7xl">
 
           {/* =================================================
               PAGE HEADER
           ================================================= */}
 
-          <div className="mb-5 flex items-center justify-between gap-2 sm:mb-8 sm:gap-4">
-            <Link
-              to="/"
+           <div className="relative mb-8">
+          
+                    {/* Back to Home - KEEP THIS */}
+                      <Link
+                         to="/"
+                        className="absolute left-0 top-1/2 -translate-y-1/2 inline-flex items-center gap-2 text-slate-500 hover:text-green-700 text-sm font-semibold transition-colors"
+                       >
+                        <ArrowLeft className="w-5 h-5" />
+                        <span className="hidden sm:inline">Back to Home</span>
+                      </Link>
+
+            {/* PAGE TITLE */}
+            <div
               className="
-                inline-flex
-                h-10
-                w-10
-                shrink-0
+                flex
                 items-center
                 justify-center
-                rounded-xl
-                text-slate-500
-                transition-colors
-                hover:bg-slate-100
-                hover:text-green-700
-
-                sm:w-auto
-                sm:justify-start
-                sm:gap-2
-                sm:px-2
-                sm:text-sm
-                sm:font-semibold
+                gap-4
               "
-              aria-label="Back to Home"
             >
-              <ArrowLeft className="h-5 w-5" />
-              <span className="hidden sm:inline">Back to Home</span>
-            </Link>
-
-            <div className="flex min-w-0 flex-1 items-center justify-center gap-2 sm:gap-4">
               <img
                 src={logo}
                 alt="Department of Agriculture Logo"
                 className="
-                  h-10
-                  w-10
-                  shrink-0
+                  h-14
+                  w-14
                   object-contain
-
-                  sm:h-14
-                  sm:w-14
 
                   md:h-16
                   md:w-16
@@ -202,14 +188,11 @@ const About = () => {
 
               <h1
                 className="
-                  truncate
-                  text-xl
+                  text-2xl
                   font-black
-                  leading-tight
                   tracking-tight
                   text-slate-900
 
-                  min-[360px]:text-2xl
                   sm:text-3xl
                   md:text-4xl
                   lg:text-5xl
@@ -218,8 +201,6 @@ const About = () => {
                 ABOUT I-DAMAG
               </h1>
             </div>
-
-            <div className="h-10 w-10 shrink-0 sm:w-[116px]" aria-hidden="true" />
           </div>
 
           {/* =================================================
@@ -231,20 +212,15 @@ const About = () => {
               relative
               overflow-hidden
 
-              rounded-3xl
-
-              sm:rounded-[32px]
+              rounded-[32px]
 
               border
               border-[#D7E7D5]
 
               bg-white
 
-              px-4
-              py-6
-
-              sm:px-6
-              sm:py-8
+              px-6
+              py-8
 
               shadow-xl
 
@@ -296,7 +272,9 @@ const About = () => {
 
                 grid
                 items-center
-                gap-8
+                gap-4
+
+                sm:gap-8
 
                 lg:grid-cols-[260px_1fr]
                 lg:gap-12
@@ -308,22 +286,18 @@ const About = () => {
 
               <div
                 className="
-                  flex
+                  hidden
                   items-center
                   justify-center
+
+                  sm:flex
                 "
               >
                 <div
                   className="
                     flex
-                    h-32
-                    w-32
-
-                    sm:h-40
-                    sm:w-40
-
-                    md:h-48
-                    md:w-48
+                    h-48
+                    w-48
                     items-center
                     justify-center
 
@@ -355,30 +329,41 @@ const About = () => {
                   CONTENT SIDE
               ================================================= */}
 
-              <div>
+              <div className="text-center sm:text-left">
 
                 {/* DA RFO I LABEL */}
                 <span
                   className="
-                    inline-flex
+                    mx-auto
+                    flex
+                    w-fit
+                    max-w-full
+                    justify-center
 
                     rounded-full
 
                     bg-[#EAF4E8]
 
-                    px-4
+                    px-3
                     py-2
 
-                    text-[11px]
+                    text-center
+                    text-[9px]
                     font-bold
                     uppercase
-                    tracking-[0.14em]
+                    leading-4
+                    tracking-[0.1em]
 
                     text-[#235E26]
+
+                    sm:mx-0
+                    sm:inline-flex
+                    sm:px-4
+                    sm:text-[11px]
+                    sm:tracking-[0.14em]
                   "
                 >
-                  Department of Agriculture -
-                  Regional Field Office I
+                  Department of Agriculture - Regional Field Office I
                 </span>
 
                 {/* I-DAMAG TITLE */}
@@ -386,12 +371,15 @@ const About = () => {
                   className="
                     mt-5
 
-                    text-4xl
+                    text-center
+                    text-3xl
                     font-black
                     tracking-tight
 
                     text-[#235E26]
 
+                    sm:text-left
+                    sm:text-4xl
                     md:text-5xl
                     lg:text-6xl
                   "
@@ -403,40 +391,90 @@ const About = () => {
                     FULL MEANING
                 ================================================= */}
 
-                <p
+                <div
                   className="
-                    mt-3
-                    max-w-3xl
+                    mt-2
+
+                    flex
+                    flex-wrap
+                    items-baseline
+
                     text-sm
                     font-semibold
                     uppercase
-                    leading-6
                     tracking-wide
+
                     text-slate-800
 
-                    sm:text-base
-                    sm:leading-7
+                    md:text-base
                   "
                 >
-                  <span className="inline-block whitespace-nowrap">
-                    <span className="text-lg font-black text-[#235E26] sm:text-xl">I</span>locos-
-                    <span className="text-lg font-black text-[#235E26] sm:text-xl">D</span>ata
-                  </span>{" "}
-                  and{" "}
-                  <span className="inline-block whitespace-nowrap">
-                    <span className="text-lg font-black text-[#235E26] sm:text-xl">A</span>nalytics
-                  </span>{" "}
-                  <span className="inline-block whitespace-nowrap">
-                    <span className="text-lg font-black text-[#235E26] sm:text-xl">M</span>anagement
-                  </span>{" "}
-                  for{" "}
-                  <span className="inline-block whitespace-nowrap">
-                    <span className="text-lg font-black text-[#235E26] sm:text-xl">A</span>gricultural
-                  </span>{" "}
-                  <span className="inline-block whitespace-nowrap">
-                    <span className="text-lg font-black text-[#235E26] sm:text-xl">G</span>ateway
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
+                    I
                   </span>
-                </p>
+                  <span>locos-</span>
+
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
+                    D
+                  </span>
+                  <span>ata and&nbsp;</span>
+
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
+                    A
+                  </span>
+                  <span>nalytics&nbsp;</span>
+
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
+                    M
+                  </span>
+                  <span>anagement for&nbsp;</span>
+
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
+                    A
+                  </span>
+                  <span>gricultural&nbsp;</span>
+
+                  <span
+                    className="
+                      text-xl
+                      font-black
+                      text-[#235E26]
+                    "
+                  >
+                    G
+                  </span>
+                  <span>ateway</span>
+                </div>
 
                 {/* =================================================
                     DESCRIPTION
@@ -494,12 +532,10 @@ const About = () => {
 
                 <div
                   className="
-                    mt-6
+                    mt-8
 
                     grid
                     gap-3
-
-                    sm:mt-8
 
                     sm:grid-cols-3
                   "
@@ -632,10 +668,10 @@ const About = () => {
               AVAILABLE DASHBOARDS
           ================================================= */}
 
-          <section className="mt-8 sm:mt-12">
+          <section className="mt-12">
 
             {/* SECTION TITLE */}
-            <div className="mb-6 sm:mb-8">
+            <div className="mb-8">
               <h2
                 className="
                   text-2xl
