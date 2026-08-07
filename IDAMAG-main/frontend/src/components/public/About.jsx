@@ -153,33 +153,16 @@ const About = () => {
               PAGE HEADER
           ================================================= */}
 
-          <div className="relative mb-8">
-
-            {/* BACK TO HOME */}
-            <Link
-              to="/"
-              className="
-                absolute
-                left-0
-                top-1/2
-                -translate-y-1/2
-
-                inline-flex
-                items-center
-                gap-2
-
-                text-sm
-                font-semibold
-                text-slate-500
-
-                transition-colors
-
-                hover:text-[#235E26]
-              "
-            >
-              <ArrowLeft className="h-5 w-5" />
-            
-            </Link>
+           <div className="relative mb-8">
+          
+                    {/* Back to Home - KEEP THIS */}
+                      <Link
+                         to="/"
+                        className="absolute left-0 top-1/2 -translate-y-1/2 inline-flex items-center gap-2 text-slate-500 hover:text-green-700 text-sm font-semibold transition-colors"
+                       >
+                        <ArrowLeft className="w-5 h-5" />
+                        <span className="hidden sm:inline">Back to Home</span>
+                      </Link>
 
             {/* PAGE TITLE */}
             <div
