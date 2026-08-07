@@ -111,18 +111,18 @@ const Feedback = () => {
                 className="absolute left-0 top-1/2 -translate-y-1/2 inline-flex items-center gap-2 text-slate-500 hover:text-green-700 text-sm font-semibold transition-colors"
               >
                 <ArrowLeft className="w-5 h-5" />
-                Back to Home
+                <span className="hidden sm:inline">Back to Home</span>
               </Link>
 
               {/* Logo + Title */}
-              <div className="flex items-center justify-center gap-4">
+              <div className="flex items-center justify-center gap-2 sm:gap-4 px-10 sm:px-0">
                 <img
                   src={logo}
                   alt="Department of Agriculture Logo"
-                  className="w-16 h-16 object-contain"
+                  className="w-10 h-10 sm:w-14 sm:h-14 md:w-16 md:h-16 object-contain"
                 />
 
-                <h1 className="text-5xl font-bold text-slate-800">
+                <h1 className="text-xl sm:text-3xl md:text-4xl lg:text-5xl font-bold text-slate-800 text-center leading-tight">
                   I-DAMAG FEEDBACK FORM
                 </h1>
               </div>
@@ -130,7 +130,7 @@ const Feedback = () => {
             </div>
 
           {/* Description */}
-          <p className="text-center text-lg text-slate-600 max-w-3xl mx-auto mb-10">
+          <p className="text-center text-sm sm:text-base md:text-lg text-slate-600 max-w-3xl mx-auto mb-8 px-2">
             Share your comments and suggestions to help us improve the{" "}
             <span className="font-semibold text-green-700">Ilocos DAMAG</span>{" "}
             system.
