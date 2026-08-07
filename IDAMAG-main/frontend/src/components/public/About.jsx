@@ -331,40 +331,6 @@ const About = () => {
 
               <div className="text-center sm:text-left">
 
-                {/* DA RFO I LABEL */}
-                <span
-                  className="
-                    mx-auto
-                    flex
-                    w-fit
-                    max-w-full
-                    justify-center
-
-                    rounded-full
-
-                    bg-[#EAF4E8]
-
-                    px-3
-                    py-2
-
-                    text-center
-                    text-[9px]
-                    font-bold
-                    uppercase
-                    leading-4
-                    tracking-[0.1em]
-
-                    text-[#235E26]
-
-                    sm:mx-0
-                    sm:inline-flex
-                    sm:px-4
-                    sm:text-[11px]
-                    sm:tracking-[0.14em]
-                  "
-                >
-                  Department of Agriculture - Regional Field Office I
-                </span>
 
                 {/* I-DAMAG TITLE */}
                 <h2
@@ -393,27 +359,42 @@ const About = () => {
 
                 <div
                   className="
-                    mt-2
+                    mt-3
 
                     flex
-                    flex-wrap
+                    flex-nowrap
                     items-baseline
+                    justify-center
 
-                    text-sm
+                    overflow-hidden
+
+                    whitespace-nowrap
+
+                    text-[8px]
                     font-semibold
                     uppercase
-                    tracking-wide
+                    tracking-tight
 
                     text-slate-800
 
-                    md:text-base
+                    sm:justify-start
+                    sm:text-[10px]
+
+                    md:text-xs
+                    lg:text-sm
+                    xl:text-base
                   "
                 >
                   <span
                     className="
-                      text-xl
+                      text-[10px]
                       font-black
                       text-[#235E26]
+
+                      sm:text-xs
+                      md:text-sm
+                      lg:text-lg
+                      xl:text-xl
                     "
                   >
                     I
@@ -422,9 +403,14 @@ const About = () => {
 
                   <span
                     className="
-                      text-xl
+                      text-[10px]
                       font-black
                       text-[#235E26]
+
+                      sm:text-xs
+                      md:text-sm
+                      lg:text-lg
+                      xl:text-xl
                     "
                   >
                     D
@@ -433,9 +419,14 @@ const About = () => {
 
                   <span
                     className="
-                      text-xl
+                      text-[10px]
                       font-black
                       text-[#235E26]
+
+                      sm:text-xs
+                      md:text-sm
+                      lg:text-lg
+                      xl:text-xl
                     "
                   >
                     A
@@ -444,9 +435,14 @@ const About = () => {
 
                   <span
                     className="
-                      text-xl
+                      text-[10px]
                       font-black
                       text-[#235E26]
+
+                      sm:text-xs
+                      md:text-sm
+                      lg:text-lg
+                      xl:text-xl
                     "
                   >
                     M
@@ -455,9 +451,14 @@ const About = () => {
 
                   <span
                     className="
-                      text-xl
+                      text-[10px]
                       font-black
                       text-[#235E26]
+
+                      sm:text-xs
+                      md:text-sm
+                      lg:text-lg
+                      xl:text-xl
                     "
                   >
                     A
@@ -466,9 +467,14 @@ const About = () => {
 
                   <span
                     className="
-                      text-xl
+                      text-[10px]
                       font-black
                       text-[#235E26]
+
+                      sm:text-xs
+                      md:text-sm
+                      lg:text-lg
+                      xl:text-xl
                     "
                   >
                     G
