@@ -156,6 +156,7 @@ const About = () => {
           <div className="relative mb-8">
 
             {/* BACK TO HOME */}
+            
             <Link
               to="/"
               className="
