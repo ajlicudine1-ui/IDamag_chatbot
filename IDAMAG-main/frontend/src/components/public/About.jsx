@@ -198,7 +198,7 @@ const About = () => {
                   lg:text-5xl
                 "
               >
-                ABOUT I-DAMAG
+                ABOUT
               </h1>
             </div>
           </div>
