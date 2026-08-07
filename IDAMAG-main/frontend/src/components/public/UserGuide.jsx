@@ -73,14 +73,22 @@ const UserGuide = () => {
         
         {/* Back Button */}
         <div className="mb-6">
-          {/* Back to Home - KEEP THIS */}
-            <Link
-                to="/"
-              className="absolute left-0 top-1/2 -translate-y-1/2 inline-flex items-center gap-2 text-slate-500 hover:text-green-700 text-sm font-semibold transition-colors"
-              >
-              <ArrowLeft className="w-5 h-5" />
-              <span className="hidden sm:inline">Back to Home</span>
-            </Link>
+          <Link
+            to="/"
+            className="
+              inline-flex
+              items-center
+              gap-2
+              text-sm
+              font-bold
+              text-slate-500
+              hover:text-[#235E26]
+              transition-colors
+            "
+          >
+            <ArrowLeft size={19} />
+            <span className="hidden sm:inline">Back to Home</span>
+          </Link>
         </div>
 
         {/* Header */}
