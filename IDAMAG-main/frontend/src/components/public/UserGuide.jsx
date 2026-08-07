@@ -72,8 +72,19 @@ const UserGuide = () => {
       {/* Main Content */}
       <main className="max-w-7xl mx-auto px-3 py-5 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
         
-        {/* Back Button */}
-        <div
+        <div className="relative mb-8">
+                  
+                            {/* Back to Home - KEEP THIS */}
+                              <Link
+                                 to="/"
+                                className="absolute left-0 top-1/2 -translate-y-1/2 inline-flex items-center gap-2 text-slate-500 hover:text-green-700 text-sm font-semibold transition-colors"
+                               >
+                                <ArrowLeft className="w-5 h-5" />
+                                <span className="hidden sm:inline">Back to Home</span>
+                              </Link>
+        
+                    {/* PAGE TITLE */}
+                    <div
                       className="
                         flex
                         items-center
@@ -106,9 +117,10 @@ const UserGuide = () => {
                           lg:text-5xl
                         "
                       >
-                        User Guide
+                         IDAMAG User Guide
                       </h1>
                     </div>
+                  </div>
 
         {/* Header */}
         <div
