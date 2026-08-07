@@ -39,7 +39,7 @@ const OfficeCard = ({ office }) => {
 
       {/* Subtle indicator */}
       <div className="mt-auto pt-6 flex items-center gap-2 text-moss-600 font-bold text-sm opacity-0 group-hover:opacity-100 transition-all duration-300 translate-y-2 group-hover:translate-y-0">
-        <span>Enter Subcategories</span>
+        <span>Enter Category</span>
         <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M14 5l7 7m0 0l-7 7m7-7H3" />
         </svg>
