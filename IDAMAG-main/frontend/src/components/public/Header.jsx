@@ -21,16 +21,10 @@ const Header = () => {
       }
     };
 
-    document.addEventListener(
-      "mousedown",
-      handleClickOutside
-    );
+    document.addEventListener("mousedown", handleClickOutside);
 
     return () => {
-      document.removeEventListener(
-        "mousedown",
-        handleClickOutside
-      );
+      document.removeEventListener("mousedown", handleClickOutside);
     };
   }, []);
 
@@ -47,8 +41,10 @@ const Header = () => {
         z-50
 
         flex
+        w-full
         items-center
         justify-between
+        gap-2
 
         border-b
         border-slate-200
@@ -56,23 +52,31 @@ const Header = () => {
         bg-white/90
         backdrop-blur-md
 
-        px-5
-        py-4
+        px-3
+        py-2
 
-        md:px-10
+        sm:gap-4
+        sm:px-4
+        sm:py-3
+
+        md:px-8
         lg:px-14
       "
     >
       {/* LEFT SIDE */}
-      <div className="flex min-w-0 items-center">
+      <div className="flex min-w-0 flex-1 items-center overflow-hidden">
         <Link
           to="/"
           className="
             group
             flex
             min-w-0
+            flex-1
             items-center
-            gap-4
+            gap-2
+
+            sm:gap-3
+            md:gap-4
           "
         >
           {/* LOGO */}
@@ -80,8 +84,8 @@ const Header = () => {
             src={logo}
             alt="Department of Agriculture Logo"
             className="
-              h-14
-              w-14
+              h-10
+              w-10
               shrink-0
               object-contain
 
@@ -90,31 +94,39 @@ const Header = () => {
 
               group-hover:rotate-6
 
-              sm:h-16
-              sm:w-16
+              sm:h-12
+              sm:w-12
+
+              md:h-14
+              md:w-14
+
+              lg:h-16
+              lg:w-16
             "
           />
 
           {/* TEXT */}
-          <div className="flex min-w-0 flex-col">
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
             {/* MAIN TITLE */}
             <span
               className="
-                whitespace-nowrap
+                max-w-full
 
-                text-[20px]
+                text-[12px]
                 font-extrabold
                 leading-tight
-                tracking-[-0.03em]
+                tracking-[-0.02em]
                 text-slate-900
 
                 transition-colors
 
                 group-hover:text-[#235E26]
 
-                sm:text-[24px]
-                md:text-[27px]
-                lg:text-[30px]
+                min-[360px]:text-[13px]
+                sm:text-[16px]
+                md:text-[22px]
+                lg:text-[28px]
+                xl:text-[30px]
               "
             >
               DEPARTMENT OF AGRICULTURE - RFO1
@@ -123,31 +135,36 @@ const Header = () => {
             {/* IDAMAG MEANING */}
             <div
               className="
-                mt-1
+                mt-0.5
 
                 flex
+                max-w-full
                 flex-wrap
                 items-baseline
 
-                text-[9px]
+                text-[6px]
                 font-semibold
                 uppercase
-                leading-none
-                tracking-[0.035em]
+                leading-tight
+                tracking-[0.02em]
                 text-slate-500
 
-                sm:text-[10px]
-                md:text-[11px]
+                min-[360px]:text-[7px]
+                sm:mt-1
+                sm:text-[8px]
+                md:text-[10px]
+                lg:text-[11px]
               "
             >
               <span
                 className="
-                  text-[14px]
+                  text-[9px]
                   font-black
                   text-[#235E26]
 
-                  sm:text-[16px]
-                  md:text-[17px]
+                  sm:text-[11px]
+                  md:text-[14px]
+                  lg:text-[17px]
                 "
               >
                 I
@@ -157,12 +174,13 @@ const Header = () => {
 
               <span
                 className="
-                  text-[14px]
+                  text-[9px]
                   font-black
                   text-[#235E26]
 
-                  sm:text-[16px]
-                  md:text-[17px]
+                  sm:text-[11px]
+                  md:text-[14px]
+                  lg:text-[17px]
                 "
               >
                 D
@@ -172,12 +190,13 @@ const Header = () => {
 
               <span
                 className="
-                  text-[14px]
+                  text-[9px]
                   font-black
                   text-[#235E26]
 
-                  sm:text-[16px]
-                  md:text-[17px]
+                  sm:text-[11px]
+                  md:text-[14px]
+                  lg:text-[17px]
                 "
               >
                 A
@@ -187,12 +206,13 @@ const Header = () => {
 
               <span
                 className="
-                  text-[14px]
+                  text-[9px]
                   font-black
                   text-[#235E26]
 
-                  sm:text-[16px]
-                  md:text-[17px]
+                  sm:text-[11px]
+                  md:text-[14px]
+                  lg:text-[17px]
                 "
               >
                 M
@@ -202,12 +222,13 @@ const Header = () => {
 
               <span
                 className="
-                  text-[14px]
+                  text-[9px]
                   font-black
                   text-[#235E26]
 
-                  sm:text-[16px]
-                  md:text-[17px]
+                  sm:text-[11px]
+                  md:text-[14px]
+                  lg:text-[17px]
                 "
               >
                 A
@@ -217,12 +238,13 @@ const Header = () => {
 
               <span
                 className="
-                  text-[14px]
+                  text-[9px]
                   font-black
                   text-[#235E26]
 
-                  sm:text-[16px]
-                  md:text-[17px]
+                  sm:text-[11px]
+                  md:text-[14px]
+                  lg:text-[17px]
                 "
               >
                 G
@@ -235,24 +257,17 @@ const Header = () => {
       </div>
 
       {/* RIGHT SIDE */}
-      <div className="flex items-center">
+      <div className="flex shrink-0 items-center">
         {isHomePage && (
-          <div
-            ref={menuRef}
-            className="relative"
-          >
+          <div ref={menuRef} className="relative">
             {/* HAMBURGER BUTTON */}
             <button
               type="button"
-              onClick={() =>
-                setMenuOpen(
-                  (current) => !current
-                )
-              }
+              onClick={() => setMenuOpen((current) => !current)}
               className="
                 flex
-                h-11
-                w-11
+                h-9
+                w-9
                 items-center
                 justify-center
 
@@ -267,21 +282,25 @@ const Header = () => {
                 hover:text-[#235E26]
 
                 active:scale-95
+
+                sm:h-10
+                sm:w-10
+
+                md:h-11
+                md:w-11
               "
-              aria-label={
-                menuOpen
-                  ? "Close menu"
-                  : "Open menu"
-              }
+              aria-label={menuOpen ? "Close menu" : "Open menu"}
+              aria-expanded={menuOpen}
+              aria-haspopup="menu"
             >
               {menuOpen ? (
                 <X
-                  className="h-7 w-7"
+                  className="h-5 w-5 sm:h-6 sm:w-6 md:h-7 md:w-7"
                   strokeWidth={2.5}
                 />
               ) : (
                 <Menu
-                  className="h-8 w-8"
+                  className="h-6 w-6 sm:h-7 sm:w-7 md:h-8 md:w-8"
                   strokeWidth={3}
                 />
               )}
@@ -290,12 +309,13 @@ const Header = () => {
             {/* DROPDOWN MENU */}
             {menuOpen && (
               <div
+                role="menu"
                 className="
                   absolute
                   right-0
-                  top-14
+                  top-11
 
-                  w-52
+                  w-44
 
                   overflow-hidden
 
@@ -314,78 +334,72 @@ const Header = () => {
                   fade-in
                   zoom-in-95
                   duration-200
+
+                  sm:top-12
+                  sm:w-48
+
+                  md:top-14
+                  md:w-52
                 "
               >
-                {/* FEEDBACK */}
                 <Link
                   to="/feedback"
-                  onClick={() =>
-                    setMenuOpen(false)
-                  }
+                  role="menuitem"
+                  onClick={() => setMenuOpen(false)}
                   className="
                     block
-
-                    px-5
+                    px-4
                     py-3
-
                     text-sm
                     font-semibold
                     text-slate-700
-
                     transition-colors
-
                     hover:bg-[#235E26]
                     hover:text-white
+
+                    sm:px-5
                   "
                 >
                   Feedback
                 </Link>
 
-                {/* ABOUT US */}
                 <Link
                   to="/about"
-                  onClick={() =>
-                    setMenuOpen(false)
-                  }
+                  role="menuitem"
+                  onClick={() => setMenuOpen(false)}
                   className="
                     block
-
-                    px-5
+                    px-4
                     py-3
-
                     text-sm
                     font-semibold
                     text-slate-700
-
                     transition-colors
-
                     hover:bg-[#235E26]
                     hover:text-white
+
+                    sm:px-5
                   "
                 >
                   About Us
                 </Link>
 
-                {/* USER GUIDE */}
                 <Link
                   to="/user-guide"
-                  onClick={() =>
-                    setMenuOpen(false)
-                  }
+                  role="menuitem"
+                  onClick={() => setMenuOpen(false)}
                   className="
                     block
-
-                    px-5
+                    px-4
                     py-3
-
                     text-sm
                     font-semibold
                     text-slate-700
-
                     transition-colors
-
                     hover:bg-[#235E26]
                     hover:text-white
+
+                    sm:px-5
                   "
                 >
                   User Guide
