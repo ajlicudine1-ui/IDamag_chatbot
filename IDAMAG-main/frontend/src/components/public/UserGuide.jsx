@@ -1,3 +1,4 @@
+import logo from "../../assets/DA-RFO1_LOGO.png";
 import React, { useState } from "react";
 import { Link } from "react-router-dom";
 import {
@@ -69,43 +70,45 @@ const UserGuide = () => {
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+      <main className="max-w-7xl mx-auto px-3 py-5 sm:px-6 sm:py-8 lg:px-8 lg:py-10">
         
-        {/* Top Bar */}
-        <div className="mb-6 flex items-center justify-between gap-3">
-          <Link
-            to="/"
-            className="
-              inline-flex
-              min-h-10
-              items-center
-              gap-2
-              rounded-xl
-              px-2
-              text-sm
-              font-bold
-              text-slate-500
-              transition-colors
-              hover:text-[#235E26]
-            "
-          >
-            <ArrowLeft size={19} />
-            <span className="hidden sm:inline">Back to Home</span>
-          </Link>
-
-          <div className="flex flex-1 items-center justify-center gap-2 sm:gap-4">
-            <img
-              src={logo}
-              alt="Department of Agriculture Logo"
-              className="h-10 w-10 object-contain sm:h-14 sm:w-14 md:h-16 md:w-16"
-            />
-            <h1 className="text-xl font-black leading-tight text-slate-900 sm:text-3xl md:text-4xl lg:text-5xl">
-              User Guide
-            </h1>
-          </div>
-
-          <div className="w-10 sm:w-28" />
-        </div>
+        {/* Back Button */}
+        <div
+                      className="
+                        flex
+                        items-center
+                        justify-center
+                        gap-4
+                      "
+                    >
+                      <img
+                        src={logo}
+                        alt="Department of Agriculture Logo"
+                        className="
+                          h-14
+                          w-14
+                          object-contain
+        
+                          md:h-16
+                          md:w-16
+                        "
+                      />
+        
+                      <h1
+                        className="
+                          text-2xl
+                          font-black
+                          tracking-tight
+                          text-slate-900
+        
+                          sm:text-3xl
+                          md:text-4xl
+                          lg:text-5xl
+                        "
+                      >
+                        User Guide
+                      </h1>
+                    </div>
 
         {/* Header */}
         <div
@@ -143,15 +146,20 @@ const UserGuide = () => {
               md:flex-row
               md:items-center
               justify-between
-              gap-6
+              gap-4
+
+              sm:gap-6
             "
           >
             <div>
               <div className="flex items-center gap-3 mb-2">
                 <div
                   className="
-                    w-12
-                    h-12
+                    w-10
+                    h-10
+
+                    sm:w-12
+                    sm:h-12
                     rounded-2xl
                     bg-[#235E26]/10
                     flex
@@ -166,7 +174,7 @@ const UserGuide = () => {
                 </div>
 
                 <div>
-                  <h1 className="text-3xl font-black text-slate-900">
+                  <h1 className="text-xl font-black text-slate-900 sm:text-2xl md:text-3xl">
                     ILOCOS DAMAG
                   </h1>
 
@@ -176,7 +184,7 @@ const UserGuide = () => {
                 </div>
               </div>
 
-              <p className="text-slate-500 font-medium mt-4 max-w-2xl">
+              <p className="mt-3 max-w-2xl text-sm font-medium leading-relaxed text-slate-500 sm:mt-4 sm:text-base">
                 Learn how to navigate iDamag and access the dashboards,
                 divisions, reports, and agricultural information available
                 through the system.
@@ -226,11 +234,11 @@ const UserGuide = () => {
 
         {/* Section Title */}
         <div className="mb-6">
-          <h2 className="text-2xl font-black text-slate-900">
+          <h2 className="text-xl font-black text-slate-900 sm:text-2xl">
             How to Use iDamag
           </h2>
 
-          <p className="text-slate-500 mt-1">
+          <p className="mt-1 text-sm text-slate-500 sm:text-base">
             Follow these steps to navigate the public iDamag portal.
           </p>
         </div>
@@ -242,7 +250,9 @@ const UserGuide = () => {
             grid-cols-1
             md:grid-cols-2
             lg:grid-cols-3
-            gap-6
+            gap-4
+
+            sm:gap-6
           "
         >
           {filteredSteps.length > 0 ? (
@@ -270,7 +280,7 @@ const UserGuide = () => {
                   "
                 >
                   {/* Image */}
-                  <div className="relative h-52 bg-slate-100 overflow-hidden">
+                  <div className="relative h-44 overflow-hidden bg-slate-100 sm:h-52">
                     <img
                       src={step.image}
                       alt={step.title}
@@ -356,7 +366,7 @@ const UserGuide = () => {
                   </div>
 
                   {/* Card Content */}
-                  <div className="p-6">
+                  <div className="p-4 sm:p-6">
                     <div
                       className="
                         flex
@@ -426,7 +436,7 @@ const UserGuide = () => {
                 border
                 border-dashed
                 border-slate-200
-                py-16
+                py-10 sm:py-16
 
                 flex
                 flex-col
@@ -588,7 +598,7 @@ const UserGuide = () => {
                     Step {selectedImage.id}
                   </div>
 
-                  <h2 className="text-2xl font-black text-slate-900">
+                  <h2 className="text-xl font-black text-slate-900 sm:text-2xl">
                     {selectedImage.title}
                   </h2>
                 </div>
@@ -615,7 +625,9 @@ const UserGuide = () => {
                 border
                 border-slate-100
                 rounded-2xl
-                p-6
+                p-4
+
+                sm:p-6
               "
             >
               <h3
@@ -631,7 +643,7 @@ const UserGuide = () => {
                 Instructions
               </h3>
 
-              <p className="text-slate-600 leading-relaxed">
+              <p className="text-sm leading-relaxed text-slate-600 sm:text-base">
                 {selectedImage.description}
               </p>
             </div>
