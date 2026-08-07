@@ -1,4 +1,4 @@
-  const GROQ_URL =
+const GROQ_URL =
     "https://api.groq.com/openai/v1/chat/completions";
 
   const GROQ_MODEL =
@@ -45,10 +45,43 @@ async function callGroq(messages, options = {}) {
   );
 }
 
+
+function buildSafeDashboardContext(context = {}) {
+  return {
+    reportId:
+      Number.isInteger(Number(context.reportId))
+        ? Number(context.reportId)
+        : null,
+
+    reportTitle:
+      String(context.reportTitle || "").trim(),
+
+    reportDescription:
+      String(context.reportDescription || "").trim(),
+
+    divisionName:
+      String(context.divisionName || "").trim(),
+
+    officeName:
+      String(context.officeName || "").trim(),
+
+    worksheetNames:
+      Array.isArray(context.worksheetNames)
+        ? context.worksheetNames
+            .map((item) => String(item || "").trim())
+            .filter(Boolean)
+        : [],
+  };
+}
+
 async function answerGeneralQuestion({
   question,
   schema,
+  context = {},
 }) {
+  const dashboardContext =
+    buildSafeDashboardContext(context);
+
   const safeSchema = schema.map((dataset) => ({
     name: dataset.name,
     rowCount: dataset.rowCount,
@@ -90,6 +123,9 @@ do not guess them.
       {
         role: "user",
         content:
+          `CURRENT DASHBOARD:\n${JSON.stringify(
+            dashboardContext
+          )}\n\n` +
           `DATASET SCHEMA:\n${JSON.stringify(
             safeSchema
           )}\n\n` +
@@ -154,7 +190,11 @@ function extractJsonObject(text) {
 async function createSchemaAwarePlan({
   question,
   schema,
+  context = {},
 }) {
+  const dashboardContext =
+    buildSafeDashboardContext(context);
+
   const compactSchema = schema.map((dataset) => ({
     name: dataset.name,
     rowCount: dataset.rowCount,
@@ -330,6 +370,62 @@ GENERAL RULES
 
 - outputRequested should normally be true for lookup questions
   where the user explicitly asks for one or more fields.
+
+
+============================================================
+CURRENT DASHBOARD CONTEXT
+============================================================
+
+The user is asking while viewing ONE selected Power BI dashboard.
+
+The supplied dashboard context contains:
+- report title
+- report description
+- office/division information
+- worksheet names registered for that report
+
+Use this context as a semantic hint to understand the wording used
+on the selected dashboard.
+
+IMPORTANT:
+- The dashboard context does NOT contain actual row values.
+- All calculations and answers must still come from the supplied schema
+  and the JavaScript dataset engine.
+- Use only worksheet and column names that actually exist in the schema.
+- Never invent a column based only on a dashboard title or description.
+- Never use data from another dashboard.
+- The supplied schema contains only worksheets registered to the current
+  selected report.
+
+When the user's wording does not exactly match a column name:
+
+1. Read the current dashboard title and description.
+2. Compare the user's wording with the current worksheet names.
+3. Compare the wording with all valid schema column names.
+4. Consider column types and example values.
+5. Select the strongest valid schema match only when reasonably clear.
+6. If two or more columns are equally plausible, return route "clarify".
+
+Example:
+
+Current dashboard title:
+"AMIA Villages and Interventions"
+
+Available columns:
+- Municipality
+- Province
+- Association
+- Phase
+- Commodity
+
+Question:
+"What are the AMIA villages?"
+
+The planner may choose "Municipality" only when the dashboard context,
+worksheet names, schema, and question together make it the strongest
+valid match.
+
+Do not invent a column named "AMIA Villages" when it is not in the schema.
 
 ============================================================
 CROSS-WORKSHEET RULES
@@ -788,6 +884,9 @@ No code block.
       {
         role: "user",
         content:
+          `CURRENT DASHBOARD:\n${JSON.stringify(
+            dashboardContext
+          )}\n\n` +
           `SCHEMA:\n${JSON.stringify(
             compactSchema
           )}\n\n` +

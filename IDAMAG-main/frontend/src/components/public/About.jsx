@@ -477,7 +477,7 @@ const About = () => {
                       xl:text-xl
                     "
                   >
-                    G
+                    
                   </span>
                   <span>ateway</span>
                 </div>

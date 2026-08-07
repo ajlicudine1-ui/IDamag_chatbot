@@ -842,10 +842,34 @@ router.post("/chat", async (req, res) => {
      * Your chatbotService dynamically builds
      * the schema from this object.
      */
+    const dashboardContext = {
+      reportId: Number(report.id),
+
+      reportTitle:
+        String(report.title || "").trim(),
+
+      reportDescription:
+        String(report.description || "").trim(),
+
+      divisionName:
+        String(
+          report.division?.name || ""
+        ).trim(),
+
+      officeName:
+        String(
+          report.division?.office?.name || ""
+        ).trim(),
+
+      worksheetNames:
+        availableSheets,
+    };
+
     const result =
       await answerQuestion(
         reportData,
-        question
+        question,
+        dashboardContext
       );
 
     return res.json({
@@ -858,6 +882,23 @@ router.post("/chat", async (req, res) => {
           : true,
 
       question,
+
+      dashboardContext: {
+        reportTitle:
+          dashboardContext.reportTitle,
+
+        reportDescription:
+          dashboardContext.reportDescription,
+
+        divisionName:
+          dashboardContext.divisionName,
+
+        officeName:
+          dashboardContext.officeName,
+
+        worksheetNames:
+          dashboardContext.worksheetNames,
+      },
 
       report: {
         id: Number(
