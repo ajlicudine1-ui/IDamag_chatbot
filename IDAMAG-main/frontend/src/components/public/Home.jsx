@@ -36,7 +36,7 @@ function Home() {
    */
 
   const GOOGLE_FORM_ACTION_URL =
-    "https://docs.google.com/forms/d/e/1FAIpQLScTfjWfhn-oIbHgnrOHGRVsDYAEP0AFg3phMzjqzy1agedcaQ/formResponse";
+    "https://docs.google.com/forms/d/e/1FAIpQLSfWsUQEep8NK39vhUnIdxUT1MkGUI7NMi-17t2O96tEpcToIg/formResponse";
 
   const WEBSITE_SUGGESTION_ENTRY_ID = "entry.673085768";
 
