@@ -35,9 +35,9 @@ function Home() {
    */
 
   const GOOGLE_FORM_URL =
-    "https://docs.google.com/forms/d/e/YOUR_FORM_ID/viewform";
+    "https://docs.google.com/forms/d/e/1FAIpQLSfWsUQEep8NK39vhUnIdxUT1MkGUI7NMi-17t2O96tEpcToIg/viewform";
 
-  const COMMENT_ENTRY_ID = "entry.YOUR_COMMENT_ENTRY_ID";
+  const COMMENT_ENTRY_ID = "entry.673085768";
 
   useEffect(() => {
     const loadOffices = async () => {

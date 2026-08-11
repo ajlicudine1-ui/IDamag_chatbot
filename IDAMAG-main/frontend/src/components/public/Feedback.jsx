@@ -18,7 +18,8 @@ const ENTRY_IDS = {
   completeness: "entry.181596178",
   accuracy: "entry.1601095705",
   accessibility: "entry.1847836371",
-  comments: "entry.470097147",
+  dashboardSuggestions: "entry.470097147",
+  websiteSuggestions: "entry.673085768",
 };
 
 const CRITERIA = [
@@ -58,7 +59,8 @@ const Feedback = () => {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [dashboardName, setDashboardName] = useState("");
-  const [comments, setComments] = useState("");
+  const [dashboardSuggestions, setDashboardSuggestions] = useState("");
+  const [websiteSuggestions, setWebsiteSuggestions] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -80,7 +82,14 @@ const Feedback = () => {
     CRITERIA.forEach((c) => {
       formData.append(ENTRY_IDS[c.key], String(ratings[c.key]));
     });
-    formData.append(ENTRY_IDS.comments, comments);
+    formData.append(
+      ENTRY_IDS.dashboardSuggestions,
+      dashboardSuggestions
+    );
+    formData.append(
+      ENTRY_IDS.websiteSuggestions,
+      websiteSuggestions
+    );
 
     try {
       await fetch(FORM_ACTION_URL, {
@@ -190,16 +199,38 @@ const Feedback = () => {
                   ))}
                 </div>
 
-                {/* Comments */}
+                {/* Dashboard Suggestions */}
                 <div className="mb-6">
                   <label className="block font-semibold text-slate-800 text-sm mb-2">
-                    Additional comments
+                    Dashboard Suggestions
                   </label>
+                  <p className="text-xs text-slate-500 mb-2">
+                    Share suggestions about the dashboards, data, visualizations,
+                    or information presented.
+                  </p>
                   <textarea
-                    value={comments}
-                    onChange={(e) => setComments(e.target.value)}
+                    value={dashboardSuggestions}
+                    onChange={(e) => setDashboardSuggestions(e.target.value)}
                     rows={4}
-                    placeholder="What would make this dashboard more useful to you?"
+                    placeholder="What would make the dashboards more useful to you?"
+                    className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-green-600/40 focus:border-green-600 transition-shadow resize-none"
+                  />
+                </div>
+
+                {/* Website Suggestions */}
+                <div className="mb-6">
+                  <label className="block font-semibold text-slate-800 text-sm mb-2">
+                    Website Suggestions
+                  </label>
+                  <p className="text-xs text-slate-500 mb-2">
+                    Share suggestions about the I-DAMAG website, navigation,
+                    features, design, or overall experience.
+                  </p>
+                  <textarea
+                    value={websiteSuggestions}
+                    onChange={(e) => setWebsiteSuggestions(e.target.value)}
+                    rows={4}
+                    placeholder="What can we improve about the I-DAMAG website?"
                     className="w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-green-600/40 focus:border-green-600 transition-shadow resize-none"
                   />
                 </div>
