@@ -13,6 +13,7 @@ const {
   DashboardWorksheet,
   User,
   ActivityLog,
+  DashboardFeedback,
 } = require("./models/index");
 
 const {
@@ -1853,6 +1854,120 @@ app.get(
   }
 );
 
+
+// ============================================================
+// DASHBOARD FEEDBACK
+// ============================================================
+
+// ------------------------------------------------------------
+// GET ALL DASHBOARD FEEDBACK
+// GET /api/dashboard-feedback
+// ------------------------------------------------------------
+
+app.get("/api/dashboard-feedback", async (req, res) => {
+  try {
+    const feedback = await DashboardFeedback.findAll({
+      order: [["created_at", "DESC"]],
+    });
+
+    res.status(200).json(feedback);
+  } catch (error) {
+    console.error("GET DASHBOARD FEEDBACK ERROR:", error);
+
+    res.status(500).json({
+      message: "Unable to load dashboard feedback.",
+      error: error.message,
+    });
+  }
+});
+
+
+// ------------------------------------------------------------
+// CREATE DASHBOARD FEEDBACK
+// POST /api/dashboard-feedback
+// ------------------------------------------------------------
+
+app.post("/api/dashboard-feedback", async (req, res) => {
+  try {
+    const {
+      fullName,
+      email,
+      dashboardName,
+      userInterface,
+      userExperience,
+      dataCompleteness,
+      dataAccuracy,
+      accessibility,
+      additionalComments,
+    } = req.body;
+
+    // Dashboard is required
+    if (!dashboardName || !String(dashboardName).trim()) {
+      return res.status(400).json({
+        message: "Dashboard name is required.",
+      });
+    }
+
+    // Convert ratings to numbers
+    const ratings = {
+      userInterface: Number(userInterface),
+      userExperience: Number(userExperience),
+      dataCompleteness: Number(dataCompleteness),
+      dataAccuracy: Number(dataAccuracy),
+      accessibility: Number(accessibility),
+    };
+
+    // Validate ratings
+    for (const [field, value] of Object.entries(ratings)) {
+      if (
+        !Number.isInteger(value) ||
+        value < 1 ||
+        value > 5
+      ) {
+        return res.status(400).json({
+          message: `${field} must be a rating from 1 to 5.`,
+        });
+      }
+    }
+
+    const feedback = await DashboardFeedback.create({
+      fullName:
+        fullName && String(fullName).trim()
+          ? String(fullName).trim()
+          : null,
+
+      email:
+        email && String(email).trim()
+          ? String(email).trim()
+          : null,
+
+      dashboardName: String(dashboardName).trim(),
+
+      userInterface: ratings.userInterface,
+      userExperience: ratings.userExperience,
+      dataCompleteness: ratings.dataCompleteness,
+      dataAccuracy: ratings.dataAccuracy,
+      accessibility: ratings.accessibility,
+
+      additionalComments:
+        additionalComments && String(additionalComments).trim()
+          ? String(additionalComments).trim()
+          : null,
+    });
+
+    res.status(201).json({
+      message: "Dashboard feedback submitted successfully.",
+      feedback,
+    });
+  } catch (error) {
+    console.error("CREATE DASHBOARD FEEDBACK ERROR:", error);
+
+    res.status(500).json({
+      message: "Unable to submit dashboard feedback.",
+      error: error.message,
+    });
+  }
+});
 // ============================================================
 // ROOT
 // ============================================================
