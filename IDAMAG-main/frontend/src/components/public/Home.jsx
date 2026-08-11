@@ -36,7 +36,7 @@ function Home() {
    */
 
   const GOOGLE_FORM_ACTION_URL =
-   "https://docs.google.com/forms/d/e/1FAIpQLScTfjWfhn-oIbHgnrOHGRVsDYAEP0AFg3phMzjqzy1agedcaQ/viewform";
+    "https://docs.google.com/forms/d/e/1FAIpQLScTfjWfhn-oIbHgnrOHGRVsDYAEP0AFg3phMzjqzy1agedcaQ/formResponse";
 
   const WEBSITE_SUGGESTION_ENTRY_ID = "entry.673085768";
 
@@ -72,10 +72,9 @@ function Home() {
   }, [showNotice]);
 
   /*
-   * Redirect to Google Forms.
-   *
-   * The typed comment is passed into the Google Form
-   * using Google's pre-filled form URL format.
+   * Submit website suggestions directly to Google Forms.
+   * IMPORTANT: form submissions must use /formResponse,
+   * not /viewform.
    */
   const handleSubmitWebsiteSuggestion = async () => {
     const trimmedComment = comment.trim();
