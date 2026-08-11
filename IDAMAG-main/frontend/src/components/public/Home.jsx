@@ -16,11 +16,19 @@ function Home() {
   const [error, setError] = useState("");
 
   // Work-in-progress modal
-  const [showNotice, setShowNotice] = useState(true);
+const NOTICE_SESSION_KEY = "idamag-development-notice-shown";
+
+const [showNotice, setShowNotice] = useState(() => {
+  return sessionStorage.getItem(NOTICE_SESSION_KEY) !== "true";
+});
   const [comment, setComment] = useState("");
   const [submittingComment, setSubmittingComment] = useState(false);
   const [commentSubmitted, setCommentSubmitted] = useState(false);
 
+const closeDevelopmentNotice = () => {
+  sessionStorage.setItem(NOTICE_SESSION_KEY, "true");
+  setShowNotice(false);
+};
   /*
    * =========================================================
    * GOOGLE FORM SETTINGS
@@ -98,6 +106,9 @@ function Home() {
 
       setComment("");
       setCommentSubmitted(true);
+
+      // Do not show the development notice again during this browser session.
+      sessionStorage.setItem(NOTICE_SESSION_KEY, "true");
     } catch (error) {
       console.error(
         "Website suggestion submission failed:",
@@ -530,7 +541,7 @@ function Home() {
                 {/* Continue to website */}
                 <button
                   type="button"
-                  onClick={() => setShowNotice(false)}
+                  onClick={closeDevelopmentNotice}
                   className="
                     inline-flex
                     items-center
