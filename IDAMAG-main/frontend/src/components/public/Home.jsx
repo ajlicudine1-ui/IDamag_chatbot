@@ -6,9 +6,8 @@ import OfficeCard from "./OfficeCard";
 import { getOffices } from "../../constants/offices";
 import {
   AlertTriangle,
-  ExternalLink,
   MessageSquare,
-  X,
+  CheckCircle2,
 } from "lucide-react";
 
 function Home() {
@@ -19,6 +18,8 @@ function Home() {
   // Work-in-progress modal
   const [showNotice, setShowNotice] = useState(true);
   const [comment, setComment] = useState("");
+  const [submittingComment, setSubmittingComment] = useState(false);
+  const [commentSubmitted, setCommentSubmitted] = useState(false);
 
   /*
    * =========================================================
@@ -34,10 +35,10 @@ function Home() {
    * entry.123456789
    */
 
-  const GOOGLE_FORM_URL =
-    "https://docs.google.com/forms/d/e/1FAIpQLSfWsUQEep8NK39vhUnIdxUT1MkGUI7NMi-17t2O96tEpcToIg/viewform";
+  const GOOGLE_FORM_ACTION_URL =
+    "https://docs.google.com/forms/d/e/1FAIpQLSfWsUQEep8NK39vhUnIdxUT1MkGUI7NMi-17t2O96tEpcToIg/formResponse";
 
-  const COMMENT_ENTRY_ID = "entry.673085768";
+  const WEBSITE_SUGGESTION_ENTRY_ID = "entry.673085768";
 
   useEffect(() => {
     const loadOffices = async () => {
@@ -76,18 +77,40 @@ function Home() {
    * The typed comment is passed into the Google Form
    * using Google's pre-filled form URL format.
    */
-  const handleLeaveComment = () => {
+  const handleSubmitWebsiteSuggestion = async () => {
     const trimmedComment = comment.trim();
 
-    let formUrl = GOOGLE_FORM_URL;
+    if (!trimmedComment || submittingComment) return;
 
-    if (trimmedComment) {
-      formUrl +=
-        `?usp=pp_url&${COMMENT_ENTRY_ID}=` +
-        encodeURIComponent(trimmedComment);
+    setSubmittingComment(true);
+
+    const formData = new FormData();
+    formData.append(
+      WEBSITE_SUGGESTION_ENTRY_ID,
+      trimmedComment
+    );
+
+    try {
+      await fetch(GOOGLE_FORM_ACTION_URL, {
+        method: "POST",
+        mode: "no-cors",
+        body: formData,
+      });
+
+      setComment("");
+      setCommentSubmitted(true);
+    } catch (error) {
+      console.error(
+        "Website suggestion submission failed:",
+        error
+      );
+
+      alert(
+        "Unable to submit your suggestion. Please try again."
+      );
+    } finally {
+      setSubmittingComment(false);
     }
-
-    window.location.href = formUrl;
   };
 
   return (
@@ -416,50 +439,78 @@ function Home() {
                     mb-3
                   "
                 >
-                  Write your feedback below. You will be
-                  redirected to our Google Feedback Form to
-                  complete your submission.
+                  Share your comments, suggestions, or issues below.
+                  Your feedback will be submitted directly to our
+                  Website Suggestions form.
                 </p>
 
-                <textarea
-                  id="work-progress-comment"
-                  value={comment}
-                  onChange={(e) =>
-                    setComment(e.target.value)
-                  }
-                  placeholder="Share your comments, suggestions, or issues you encountered..."
-                  rows={4}
-                  className="
-                    w-full
+                {commentSubmitted ? (
+                  <div
+                    className="
+                      flex
+                      items-start
+                      gap-3
+                      rounded-2xl
+                      border
+                      border-green-200
+                      bg-green-50
+                      px-4
+                      py-4
+                    "
+                  >
+                    <CheckCircle2 className="w-5 h-5 text-green-700 mt-0.5 shrink-0" />
 
-                    resize-none
+                    <div>
+                      <p className="text-sm font-bold text-green-800">
+                        Thank you for your suggestion!
+                      </p>
 
-                    rounded-2xl
+                      <p className="mt-1 text-sm leading-6 text-green-700">
+                        Your website feedback has been submitted successfully.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <textarea
+                    id="work-progress-comment"
+                    value={comment}
+                    onChange={(e) =>
+                      setComment(e.target.value)
+                    }
+                    placeholder="Share your comments, suggestions, or issues you encountered..."
+                    rows={4}
+                    className="
+                      w-full
 
-                    border
-                    border-slate-200
+                      resize-none
 
-                    bg-slate-50
+                      rounded-2xl
 
-                    px-4
-                    py-3.5
+                      border
+                      border-slate-200
 
-                    text-sm
+                      bg-slate-50
 
-                    text-slate-800
+                      px-4
+                      py-3.5
 
-                    placeholder:text-slate-400
+                      text-sm
 
-                    outline-none
+                      text-slate-800
 
-                    transition
+                      placeholder:text-slate-400
 
-                    focus:border-[#245844]
-                    focus:bg-white
-                    focus:ring-4
-                    focus:ring-[#245844]/10
-                  "
-                />
+                      outline-none
+
+                      transition
+
+                      focus:border-[#245844]
+                      focus:bg-white
+                      focus:ring-4
+                      focus:ring-[#245844]/10
+                    "
+                  />
+                )}
               </div>
 
 
@@ -513,44 +564,55 @@ function Home() {
                 </button>
 
 
-                {/* Google Form */}
-                <button
-                  type="button"
-                  onClick={handleLeaveComment}
-                  className="
-                    inline-flex
-                    items-center
-                    justify-center
+                {!commentSubmitted && (
+                  <button
+                    type="button"
+                    onClick={handleSubmitWebsiteSuggestion}
+                    disabled={
+                      !comment.trim() ||
+                      submittingComment
+                    }
+                    className="
+                      inline-flex
+                      items-center
+                      justify-center
 
-                    gap-2
+                      gap-2
 
-                    min-h-[46px]
+                      min-h-[46px]
 
-                    px-5
-                    py-3
+                      px-6
+                      py-3
 
-                    rounded-xl
+                      rounded-xl
 
-                    bg-[#173F32]
+                      bg-[#173F32]
 
-                    text-sm
-                    font-bold
+                      text-sm
+                      font-bold
 
-                    text-white
+                      text-white
 
-                    shadow-lg
-                    shadow-[#173F32]/20
+                      shadow-lg
+                      shadow-[#173F32]/20
 
-                    transition
+                      transition
 
-                    hover:bg-[#245844]
-                    hover:-translate-y-0.5
-                  "
-                >
-                  Leave a Comment
+                      hover:bg-[#245844]
+                      hover:-translate-y-0.5
 
-                  <ExternalLink className="w-4 h-4" />
-                </button>
+                      disabled:bg-slate-300
+                      disabled:text-slate-500
+                      disabled:shadow-none
+                      disabled:cursor-not-allowed
+                      disabled:translate-y-0
+                    "
+                  >
+                    {submittingComment
+                      ? "Submitting..."
+                      : "Submit"}
+                  </button>
+                )}
 
               </div>
 
@@ -568,7 +630,7 @@ function Home() {
                 "
               >
                 You may continue using the system without
-                submitting feedback.
+                submitting a suggestion.
               </p>
 
             </div>
