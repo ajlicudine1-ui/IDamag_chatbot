@@ -5,6 +5,7 @@ const DashboardWorksheet = require("./DashboardWorksheet");
 const User = require("./User");
 const ActivityLog = require("./ActivityLog");
 const DashboardFeedback = require("./DashboardFeedback");
+const WebsiteFeedback = require("./WebsiteFeedback");
 
 const sequelize = require("../config/database");
 
@@ -120,4 +121,5 @@ module.exports = {
   User,
   ActivityLog,
   DashboardFeedback,
+  WebsiteFeedback,
 };

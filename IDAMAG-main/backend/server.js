@@ -14,6 +14,7 @@ const {
   User,
   ActivityLog,
   DashboardFeedback,
+  WebsiteFeedback,
 } = require("./models/index");
 
 const {
@@ -1964,6 +1965,62 @@ app.post("/api/dashboard-feedback", async (req, res) => {
 
     res.status(500).json({
       message: "Unable to submit dashboard feedback.",
+      error: error.message,
+    });
+  }
+});
+
+
+// ============================================================
+// WEBSITE FEEDBACK
+// ============================================================
+
+app.get("/api/website-feedback", async (req, res) => {
+  try {
+    const feedback = await WebsiteFeedback.findAll({
+      order: [["created_at", "DESC"]],
+    });
+
+    res.status(200).json(feedback);
+  } catch (error) {
+    console.error("GET WEBSITE FEEDBACK ERROR:", error);
+
+    res.status(500).json({
+      message: "Unable to load website feedback.",
+      error: error.message,
+    });
+  }
+});
+
+app.post("/api/website-feedback", async (req, res) => {
+  try {
+    const { websiteSuggestion } = req.body;
+
+    if (
+      !websiteSuggestion ||
+      !String(websiteSuggestion).trim()
+    ) {
+      return res.status(400).json({
+        message: "Website suggestion is required.",
+      });
+    }
+
+    const feedback = await WebsiteFeedback.create({
+      websiteSuggestion:
+        String(websiteSuggestion).trim(),
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Website feedback submitted successfully.",
+      feedback,
+    });
+  } catch (error) {
+    console.error("WEBSITE FEEDBACK ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to save website feedback.",
       error: error.message,
     });
   }
