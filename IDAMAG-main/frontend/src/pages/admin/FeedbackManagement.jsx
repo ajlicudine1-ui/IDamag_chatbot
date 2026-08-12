@@ -365,7 +365,7 @@ function FeedbackManagement() {
                       0 ? (
                         <tr>
                           <td
-                            colSpan="5"
+                            colSpan="8"
                             className="px-6 py-16 text-center text-sm font-bold text-slate-400"
                           >
                             No dashboard feedback
@@ -376,7 +376,7 @@ function FeedbackManagement() {
                         dashboardFeedback.map(
                           (feedback, index) => (
                             <tr
-                              key={`${feedback.email}-${feedback.created_at}-${index}`}
+                              key={`${feedback.email}-${feedback.createdAt ?? feedback.created_at}-${index}`}
                               className="transition-colors hover:bg-slate-50/50"
                             >
 
@@ -408,15 +408,24 @@ function FeedbackManagement() {
                               </td>
 
                               <td className="px-6 py-5">
-                                {renderRating(feedback.user_interface)}
+                                {renderRating(
+                                  feedback.userInterface ??
+                                    feedback.user_interface
+                                )}
                               </td>
 
                               <td className="px-6 py-5">
-                                {renderRating(feedback.user_experience)}
+                                {renderRating(
+                                  feedback.userExperience ??
+                                    feedback.user_experience
+                                )}
                               </td>
 
                               <td className="px-6 py-5">
-                                {renderRating(feedback.data_completeness)}
+                                {renderRating(
+                                  feedback.dataCompleteness ??
+                                    feedback.data_completeness
+                                )}
                               </td>
 
                               <td className="px-6 py-5">
