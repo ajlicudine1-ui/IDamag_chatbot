@@ -21,7 +21,6 @@ function Sidebar({
   activeOfficeId,
   isCollapsed,
   isOpen,
-  onOpen,
   onClose,
   isManualCollapsed,
   setIsManualCollapsed,
@@ -43,7 +42,6 @@ function Sidebar({
   const touchStartY = useRef(null);
 
   const SWIPE_DISTANCE = 60;
-  const EDGE_DISTANCE = 35;
 
   useEffect(() => {
     const handleTouchStart = (event) => {
@@ -91,21 +89,6 @@ function Sidebar({
       }
 
       // ----------------------------------------------------------
-      // OPEN
-      // Swipe RIGHT starting near left edge
-      // ----------------------------------------------------------
-
-      if (
-        !isOpen &&
-        touchStartX.current <= EDGE_DISTANCE &&
-        distanceX >= SWIPE_DISTANCE
-      ) {
-        if (onOpen) {
-          onOpen();
-        }
-      }
-
-      // ----------------------------------------------------------
       // CLOSE
       // Swipe LEFT while sidebar is open
       // ----------------------------------------------------------
@@ -148,7 +131,7 @@ function Sidebar({
         handleTouchEnd
       );
     };
-  }, [isOpen, onOpen, onClose]);
+  }, [isOpen, onClose]);
 
   // ============================================================
   // LOAD OFFICES
@@ -207,13 +190,7 @@ function Sidebar({
     }
   };
 
-  const toggleMobileSidebar = () => {
-    if (isOpen) {
-      onClose();
-    } else if (onOpen) {
-      onOpen();
-    }
-  };
+
 
   return (
     <>
@@ -235,61 +212,6 @@ function Sidebar({
           onClick={onClose}
         />
       )}
-
-      {/* ========================================================
-          MOBILE OPEN / CLOSE TAB
-      ======================================================== */}
-
-      <button
-        type="button"
-        onClick={toggleMobileSidebar}
-        aria-label={
-          isOpen
-            ? "Close sidebar"
-            : "Open sidebar"
-        }
-        className={`
-          md:hidden
-
-          fixed
-          top-1/2
-          -translate-y-1/2
-
-          z-[60]
-
-          w-8
-          h-12
-
-          flex
-          items-center
-          justify-center
-
-          bg-white
-
-          border
-          border-slate-200
-
-          shadow-lg
-
-          text-amber-500
-
-          transition-all
-          duration-500
-          ease-in-out
-
-          ${
-            isOpen
-              ? "left-[17rem] rounded-r-full"
-              : "left-0 rounded-r-full"
-          }
-        `}
-      >
-        {isOpen ? (
-          <ChevronLeft className="w-4 h-4" />
-        ) : (
-          <ChevronRight className="w-4 h-4" />
-        )}
-      </button>
 
       {/* ========================================================
           SIDEBAR
