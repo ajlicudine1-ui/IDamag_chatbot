@@ -200,7 +200,7 @@ function Register() {
                options={offices}
                value={formData.officeId}
                onChange={handleSelectChange('officeId')}
-               placeholder="Select your Office..."
+               placeholder="Select your Category..."
             />
           </div>
           <div className="md:col-span-6">
@@ -209,7 +209,7 @@ function Register() {
                options={divisions}
                value={formData.divisionId}
                onChange={handleSelectChange('divisionId')}
-               placeholder={formData.officeId ? "Select your Division..." : "Select Office First"}
+               placeholder={formData.officeId ? "Select your Subcategory..." : "Select Category First"}
              />
           </div>
 
