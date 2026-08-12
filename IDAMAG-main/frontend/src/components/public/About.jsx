@@ -6,6 +6,10 @@ import {
   Database,
   LayoutDashboard,
   Loader2,
+  CalendarDays,
+  MapPin,
+  Presentation,
+  PanelsTopLeft,
 } from "lucide-react";
 
 import logo from "../../assets/DA-RFO1_LOGO.png";
@@ -537,6 +541,94 @@ const About = () => {
                     more accessible, organized, and easier to understand
                     through interactive dashboards and data-driven reports.
                   </p>
+
+                {/* =================================================
+                    HOW I-DAMAG STARTED
+                ================================================= */}
+
+                <div className="mt-10">
+                  <div className="mb-5">
+                    <p className="text-xs font-black uppercase tracking-[0.2em] text-[#235E26]">
+                      Our Beginning
+                    </p>
+
+                    <h3 className="mt-2 text-2xl font-black tracking-tight text-slate-900 sm:text-3xl">
+                      How I-DAMAG Started
+                    </h3>
+                  </div>
+
+                  <div className="rounded-[28px] border border-[#D7E7D5] bg-[#F7FAF6] p-5 sm:p-7">
+                    <p className="text-justify text-[15px] leading-8 text-slate-700 sm:text-base">
+                      The development of <span className="font-bold text-[#235E26]">I-DAMAG</span> traces its beginnings to the
+                      <span className="font-semibold text-slate-900"> Data Warehousing and Visualization Using Microsoft Power BI Workshop and Training</span>,
+                      attended by personnel from the Department of Agriculture - Regional Field Office I in
+                      <span className="font-semibold text-slate-900"> Baguio City on April 21-24, 2026</span>.
+                    </p>
+
+                    <p className="mt-4 text-justify text-[15px] leading-8 text-slate-700 sm:text-base">
+                      The training strengthened participants' knowledge and skills in organizing, analyzing, and transforming
+                      data into meaningful and interactive visualizations using Microsoft Power BI. Following the training,
+                      different offices, divisions, and sections of DA-RFO I developed dashboards to present and monitor their
+                      respective data and information more effectively.
+                    </p>
+
+                    <p className="mt-4 text-justify text-[15px] leading-8 text-slate-700 sm:text-base">
+                      As the number of dashboards increased, the need for a centralized platform became evident. This led to the
+                      development of <span className="font-bold text-[#235E26]">I-DAMAG - Ilocos-Data and Analytics Management for Agricultural Gateway</span>,
+                      a web-based platform that brings these dashboards together in one accessible location.
+                    </p>
+
+                    <div className="mt-7 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                      <div className="rounded-2xl border border-[#D7E7D5] bg-white p-4">
+                        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[#EAF4E8]">
+                          <CalendarDays className="h-5 w-5 text-[#235E26]" />
+                        </div>
+                        <p className="text-xs font-black uppercase tracking-wider text-[#235E26]">
+                          April 21-24, 2026
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-slate-600">
+                          Data warehousing and Power BI workshop and training.
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-[#D7E7D5] bg-white p-4">
+                        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[#EAF4E8]">
+                          <MapPin className="h-5 w-5 text-[#235E26]" />
+                        </div>
+                        <p className="text-xs font-black uppercase tracking-wider text-[#235E26]">
+                          Baguio City
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-slate-600">
+                          The workshop became the starting point for the initiative.
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-[#D7E7D5] bg-white p-4">
+                        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[#EAF4E8]">
+                          <Presentation className="h-5 w-5 text-[#235E26]" />
+                        </div>
+                        <p className="text-xs font-black uppercase tracking-wider text-[#235E26]">
+                          Dashboard Development
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-slate-600">
+                          DA-RFO I offices and sections developed interactive Power BI dashboards.
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl border border-[#D7E7D5] bg-white p-4">
+                        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[#235E26]">
+                          <PanelsTopLeft className="h-5 w-5 text-white" />
+                        </div>
+                        <p className="text-xs font-black uppercase tracking-wider text-[#235E26]">
+                          I-DAMAG
+                        </p>
+                        <p className="mt-1 text-xs leading-5 text-slate-600">
+                          One centralized website linking the dashboards of DA-RFO I.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
 
                 {/* =================================================
                     FEATURES
