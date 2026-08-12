@@ -300,4 +300,5 @@ function ManagementSidebar({ isCollapsed, setIsCollapsed }) {
   );
 }
 
+
 export default ManagementSidebar;
