@@ -2025,6 +2025,60 @@ app.post("/api/website-feedback", async (req, res) => {
     });
   }
 });
+
+
+// ============================================================
+// FEEDBACK MANAGEMENT API ALIASES
+// Used by the Admin Feedback Management page
+// ============================================================
+
+app.get("/api/feedback/dashboard", async (req, res) => {
+  try {
+    const [rows] = await sequelize.query(`
+      SELECT
+        data_accuracy,
+        accessibility,
+        additional_comments,
+        full_name,
+        email,
+        created_at
+      FROM dashboard_feedback
+      ORDER BY created_at DESC
+    `);
+
+    res.status(200).json(rows);
+  } catch (error) {
+    console.error("GET FEEDBACK MANAGEMENT DASHBOARD ERROR:", error);
+
+    res.status(500).json({
+      message: "Unable to load dashboard feedback.",
+      error: error.message,
+    });
+  }
+});
+
+app.get("/api/feedback/website", async (req, res) => {
+  try {
+    const [rows] = await sequelize.query(`
+      SELECT
+        id,
+        website_suggestion,
+        created_at
+      FROM website_feedback
+      ORDER BY created_at DESC
+    `);
+
+    res.status(200).json(rows);
+  } catch (error) {
+    console.error("GET FEEDBACK MANAGEMENT WEBSITE ERROR:", error);
+
+    res.status(500).json({
+      message: "Unable to load website feedback.",
+      error: error.message,
+    });
+  }
+});
+
 // ============================================================
 // ROOT
 // ============================================================
