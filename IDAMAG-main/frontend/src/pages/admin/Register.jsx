@@ -195,7 +195,7 @@ function Register() {
 
           {/* Row 3: Organization */}
           <div className="md:col-span-6">
-            <label className="block text-xs font-bold text-slate-700 mb-1.5 pl-1">Office / Branch</label>
+            <label className="block text-xs font-bold text-slate-700 mb-1.5 pl-1">Categories</label>
             <SearchableSelect 
                options={offices}
                value={formData.officeId}
@@ -204,7 +204,7 @@ function Register() {
             />
           </div>
           <div className="md:col-span-6">
-            <label className="block text-xs font-bold text-slate-700 mb-1.5 pl-1">Division / Section</label>
+            <label className="block text-xs font-bold text-slate-700 mb-1.5 pl-1">Subcategories</label>
              <SearchableSelect 
                options={divisions}
                value={formData.divisionId}
