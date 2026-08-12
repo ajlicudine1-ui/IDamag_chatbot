@@ -37,7 +37,7 @@ function FeedbackManagement() {
 
       const [dashboardResponse, websiteResponse] =
         await Promise.all([
-          fetch(`${API_URL}/feedback/dashboard`),
+          fetch(`${API_URL}/dashboard-feedback`),
           fetch(`${API_URL}/feedback/website`),
         ]);
 
@@ -328,6 +328,17 @@ function FeedbackManagement() {
                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
                           User
                         </th>
+                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                          User Interface
+                        </th>
+
+                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                          User Experience
+                        </th>
+
+                        <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                          Data Completeness
+                        </th>
 
                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
                           Data Accuracy
@@ -394,6 +405,18 @@ function FeedbackManagement() {
                                   </div>
 
                                 </div>
+                              </td>
+
+                              <td className="px-6 py-5">
+                                {renderRating(feedback.user_interface)}
+                              </td>
+
+                              <td className="px-6 py-5">
+                                {renderRating(feedback.user_experience)}
+                              </td>
+
+                              <td className="px-6 py-5">
+                                {renderRating(feedback.data_completeness)}
                               </td>
 
                               <td className="px-6 py-5">
