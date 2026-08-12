@@ -94,7 +94,7 @@ const Hero = () => {
             hover:scale-105
           "
         >
-          Explore Division
+          Explore Dashboards
 
           <svg
             xmlns="http://www.w3.org/2000/svg"
