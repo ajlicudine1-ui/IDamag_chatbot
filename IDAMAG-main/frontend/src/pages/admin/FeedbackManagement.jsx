@@ -37,7 +37,7 @@ function FeedbackManagement() {
 
       const [dashboardResponse, websiteResponse] =
         await Promise.all([
-          fetch(`${API_URL}/dashboard-feedback`),
+          fetch(`${API_URL}/feedback/dashboard`),
           fetch(`${API_URL}/feedback/website`),
         ]);
 

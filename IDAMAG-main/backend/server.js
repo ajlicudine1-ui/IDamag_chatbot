@@ -2036,6 +2036,9 @@ app.get("/api/feedback/dashboard", async (req, res) => {
   try {
     const [rows] = await sequelize.query(`
       SELECT
+        user_interface,
+        user_experience,
+        data_completeness,
         data_accuracy,
         accessibility,
         additional_comments,
@@ -2046,13 +2049,12 @@ app.get("/api/feedback/dashboard", async (req, res) => {
       ORDER BY created_at DESC
     `);
 
-    res.status(200).json(rows);
+    res.json(rows);
   } catch (error) {
-    console.error("GET FEEDBACK MANAGEMENT DASHBOARD ERROR:", error);
+    console.error("Dashboard feedback error:", error);
 
     res.status(500).json({
       message: "Unable to load dashboard feedback.",
-      error: error.message,
     });
   }
 });
