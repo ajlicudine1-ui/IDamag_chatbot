@@ -800,7 +800,7 @@ const About = () => {
                   </div>
 
                   <div className="rounded-2xl border border-[#D7E7D5] bg-[#F7FAF6] p-4">
-                    <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[#235E26]">
+                    <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-[#EAF4E8]">
                       <PanelsTopLeft className="h-5 w-5 text-white" />
                     </div>
 
