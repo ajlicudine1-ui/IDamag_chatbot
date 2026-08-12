@@ -182,7 +182,7 @@ const closeDevelopmentNotice = () => {
                 tracking-tight
               "
             >
-              DA RFO I Dashboard Categories
+              DA-RFO I Dashboard Categories
             </h2>
 
             <p
