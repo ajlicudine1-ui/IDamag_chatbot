@@ -182,7 +182,7 @@ const closeDevelopmentNotice = () => {
                 tracking-tight
               "
             >
-              DA RFO I Divisions and Sections
+              DA RFO I Dashboard Categories
             </h2>
 
             <p
@@ -193,8 +193,7 @@ const closeDevelopmentNotice = () => {
                 mx-auto
               "
             >
-              Select a division to access its specific
-              reports, documents, and resources.
+              Select Categories and Subcategories to access its dashboards, and reports.
             </p>
           </div>
 
