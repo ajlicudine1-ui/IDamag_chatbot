@@ -20,6 +20,7 @@ import ProtectedRoute from "./components/auth/ProtectedRoute";
 import PublicRoute from "./components/auth/PublicRoute";
 import FloatingChatbotButton from "./components/public/FloatingChatbotButton";
 import UserGuide from "./components/public/UserGuide";
+import FeedbackManagement from "./pages/admin/FeedbackManagement";
 
 /*
  * Supports either:
@@ -891,6 +892,11 @@ function App() {
         <Route
           path="*"
           element={<NotFound />}
+        />
+
+        <Route
+          path="/feedback-management"
+          element={<FeedbackManagement />}
         />
       </Routes>
 
