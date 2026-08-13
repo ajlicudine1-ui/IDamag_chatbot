@@ -22,6 +22,7 @@ const {
 const {
   normalizeDatasets,
   normalizeText,
+  similarity,
 } = require("./utils");
 
 const {
@@ -370,7 +371,52 @@ function tokenSimilarity(
   return overlap / denominator;
 }
 
-function questionContainsValue(
+function buildQuestionNgrams(
+  question,
+  maxWords = 4
+) {
+  const normalized =
+    normalizeText(question);
+
+  const tokens =
+    normalized
+      .split(/\s+/)
+      .filter(
+        (token) =>
+          token.length >= 2
+      );
+
+  const phrases = [];
+
+  for (
+    let size = 1;
+    size <= Math.min(
+      maxWords,
+      tokens.length
+    );
+    size += 1
+  ) {
+    for (
+      let i = 0;
+      i <=
+      tokens.length - size;
+      i += 1
+    ) {
+      phrases.push(
+        tokens
+          .slice(
+            i,
+            i + size
+          )
+          .join(" ")
+      );
+    }
+  }
+
+  return phrases;
+}
+
+function questionValueMatchScore(
   question,
   value
 ) {
@@ -381,27 +427,82 @@ function questionContainsValue(
     normalizeText(value);
 
   if (!q || !v) {
-    return false;
+    return 0;
   }
 
+  /**
+   * Exact phrase present in the question.
+   */
   if (q.includes(v)) {
-    return true;
+    return 1;
   }
 
-  const tokens =
+  const valueWords =
     v.split(/\s+/)
-      .filter(
-        (token) =>
-          token.length >= 3
+      .filter(Boolean);
+
+  const ngrams =
+    buildQuestionNgrams(
+      question,
+      Math.max(
+        1,
+        valueWords.length
+      )
+    );
+
+  let best = 0;
+
+  for (const phrase of ngrams) {
+    /**
+     * Avoid comparing wildly different lengths.
+     */
+    const shortLength =
+      Math.min(
+        phrase.length,
+        v.length
       );
 
-  if (!tokens.length) {
-    return false;
+    const longLength =
+      Math.max(
+        phrase.length,
+        v.length
+      );
+
+    if (
+      shortLength < 3 ||
+      shortLength /
+        Math.max(
+          longLength,
+          1
+        ) <
+        0.55
+    ) {
+      continue;
+    }
+
+    const score =
+      similarity(
+        phrase,
+        v
+      );
+
+    if (score > best) {
+      best = score;
+    }
   }
 
-  return tokens.every(
-    (token) =>
-      q.includes(token)
+  return best;
+}
+
+function questionContainsValue(
+  question,
+  value
+) {
+  return (
+    questionValueMatchScore(
+      question,
+      value
+    ) >= 0.78
   );
 }
 
@@ -442,7 +543,7 @@ function collectQuestionMatchesForColumn({
     };
 
   /**
-   * Preserve values already identified by the planner.
+   * Preserve / resolve values already identified by the planner.
    */
   for (
     const seedValue of
@@ -474,9 +575,13 @@ function collectQuestionMatchesForColumn({
 
     for (const candidate of actualValues) {
       const score =
-        tokenSimilarity(
-          seedValue,
-          candidate
+        similarity(
+          normalizeText(
+            seedValue
+          ),
+          normalizeText(
+            candidate
+          )
         );
 
       if (
@@ -493,7 +598,7 @@ function collectQuestionMatchesForColumn({
 
     if (
       best &&
-      best.score >= 0.75
+      best.score >= 0.78
     ) {
       addValue(
         best.value
@@ -502,21 +607,42 @@ function collectQuestionMatchesForColumn({
   }
 
   /**
-   * Dynamically find every actual value from this column that
-   * appears in the user's question.
+   * Search the user's question against EVERY actual value
+   * in the dynamically chosen column.
+   *
+   * This supports small spelling differences, e.g. a user
+   * types a name slightly differently from the sheet.
    */
+  const fuzzyCandidates =
+    actualValues
+      .map(
+        (candidate) => ({
+          value:
+            candidate,
+
+          score:
+            questionValueMatchScore(
+              question,
+              candidate
+            ),
+        })
+      )
+      .filter(
+        (item) =>
+          item.score >= 0.78
+      )
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
   for (
     const candidate of
-    actualValues
+    fuzzyCandidates
   ) {
-    if (
-      questionContainsValue(
-        question,
-        candidate
-      )
-    ) {
-      addValue(candidate);
-    }
+    addValue(
+      candidate.value
+    );
   }
 
   return selected;
