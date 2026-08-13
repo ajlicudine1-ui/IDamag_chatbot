@@ -21,6 +21,7 @@ const {
 
 const {
   normalizeDatasets,
+  normalizeText,
 } = require("./utils");
 
 const {
@@ -52,6 +53,10 @@ const {
 const {
   compareVerifiedResults,
 } = require("./comparisonEngine");
+
+const {
+  inferValueFilters,
+} = require("./filterEngine");
 
 /**
  * ==========================================================
@@ -234,6 +239,225 @@ function applyConversationContext(
   }
 
   return resolvedPlan;
+}
+
+
+/**
+ * ==========================================================
+ * REPAIR MULTI-ENTITY FILTERS
+ * ==========================================================
+ *
+ * This is fully dynamic.
+ *
+ * It does NOT hardcode:
+ * - names
+ * - divisions
+ * - provinces
+ * - municipalities
+ * - worksheet names
+ * - column names
+ *
+ * It scans the current selected worksheet for actual values
+ * mentioned in the user's question.
+ *
+ * Example runtime behavior:
+ *
+ * Planner:
+ *   LAST NAME = PERALES
+ *
+ * Question also contains another real LAST NAME value.
+ *
+ * JavaScript may safely upgrade this to:
+ *
+ *   LAST NAME IN [value1, value2]
+ *
+ * The actual column and values are discovered from the live
+ * worksheet, not written into this code.
+ */
+function repairMultiEntityFilters({
+  datasets,
+  plan,
+  question,
+}) {
+  if (
+    !plan ||
+    plan.route !== "dataset" ||
+    !plan.dataset
+  ) {
+    return plan;
+  }
+
+  const rows =
+    datasets?.[plan.dataset];
+
+  if (
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return plan;
+  }
+
+  const inferred =
+    inferValueFilters(
+      rows,
+      question,
+      []
+    );
+
+  if (
+    !Array.isArray(inferred) ||
+    !inferred.length
+  ) {
+    return plan;
+  }
+
+  const inferredMulti =
+    inferred.filter(
+      (candidate) =>
+        candidate &&
+        candidate.column &&
+        String(
+          candidate.operator || ""
+        )
+          .trim()
+          .toLowerCase() === "in" &&
+        Array.isArray(
+          candidate.value
+        ) &&
+        candidate.value.length > 1
+    );
+
+  if (!inferredMulti.length) {
+    return plan;
+  }
+
+  const currentFilters =
+    Array.isArray(
+      plan.filters
+    )
+      ? plan.filters.map(
+          (filter) => ({
+            ...filter,
+
+            value:
+              Array.isArray(
+                filter?.value
+              )
+                ? [...filter.value]
+                : filter?.value,
+          })
+        )
+      : [];
+
+  let repaired = false;
+
+  const repairedFilters =
+    currentFilters.map(
+      (existingFilter) => {
+        if (
+          !existingFilter ||
+          !existingFilter.column
+        ) {
+          return existingFilter;
+        }
+
+        const existingOperator =
+          String(
+            existingFilter.operator ||
+              "equals"
+          )
+            .trim()
+            .toLowerCase();
+
+        /**
+         * Only upgrade equality-style filters.
+         * Never rewrite numeric comparisons, contains,
+         * starts_with, etc.
+         */
+        if (
+          existingOperator !==
+            "equals" &&
+          existingOperator !==
+            "in"
+        ) {
+          return existingFilter;
+        }
+
+        const matchingMulti =
+          inferredMulti.find(
+            (candidate) =>
+              normalizeText(
+                candidate.column
+              ) ===
+              normalizeText(
+                existingFilter.column
+              )
+          );
+
+        if (!matchingMulti) {
+          return existingFilter;
+        }
+
+        repaired = true;
+
+        return {
+          ...existingFilter,
+
+          column:
+            matchingMulti.column,
+
+          operator:
+            "in",
+
+          value: [
+            ...matchingMulti.value,
+          ],
+        };
+      }
+    );
+
+  /**
+   * If the planner supplied no filter at all, but the live
+   * worksheet scan found exactly one unambiguous multi-value
+   * column in the question, use it.
+   */
+  if (
+    currentFilters.length === 0 &&
+    inferredMulti.length === 1
+  ) {
+    repaired = true;
+
+    repairedFilters.push({
+      column:
+        inferredMulti[0].column,
+
+      operator:
+        "in",
+
+      value: [
+        ...inferredMulti[0].value,
+      ],
+    });
+  }
+
+  if (!repaired) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+    filters:
+      repairedFilters,
+
+    /**
+     * Multi-entity lookups should not silently drop
+     * matching rows because of the default limit.
+     */
+    showAll:
+      plan.operation === "lookup"
+        ? true
+        : plan.showAll,
+  };
 }
 
 /**
@@ -879,6 +1103,17 @@ async function answerQuestion(
         conversationContext
       );
 
+    groqPlan =
+      repairMultiEntityFilters({
+        datasets,
+
+        plan:
+          groqPlan,
+
+        question:
+          cleanQuestion,
+      });
+
     if (
       process.env.NODE_ENV !==
         "production"
@@ -938,6 +1173,17 @@ async function answerQuestion(
         localPlan,
         conversationContext
       );
+
+    localPlan =
+      repairMultiEntityFilters({
+        datasets,
+
+        plan:
+          localPlan,
+
+        question:
+          cleanQuestion,
+      });
 
     if (
       process.env.NODE_ENV !==
