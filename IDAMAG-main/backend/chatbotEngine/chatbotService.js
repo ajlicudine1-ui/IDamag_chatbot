@@ -34,6 +34,156 @@ const {
  * 4. Groq never calculates, filters, joins, ranks, or invents dataset answers.
  * 5. If Groq is unavailable or returns a bad plan, the local parser is used.
  */
+
+function applyConversationContext(
+  plan,
+  context
+) {
+  if (
+    !plan ||
+    typeof plan !== "object" ||
+    !context ||
+    context.isFollowUp !== true
+  ) {
+    return plan;
+  }
+
+  const resolvedPlan = {
+    ...plan,
+
+    filters:
+      Array.isArray(plan.filters)
+        ? [...plan.filters]
+        : [],
+
+    selectColumns:
+      Array.isArray(
+        plan.selectColumns
+      )
+        ? [...plan.selectColumns]
+        : [],
+  };
+
+  // ==========================================================
+  // 1. INHERIT THE LAST PERSON / ENTITY
+  // ==========================================================
+  //
+  // Example:
+  //
+  // Previous:
+  // ROBERTO PERALES
+  //
+  // Current:
+  // "what is his position title?"
+  //
+  // If Groq did not identify a new person,
+  // keep ROBERTO PERALES.
+  //
+
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    resolvedPlan.filters.length ===
+      0 &&
+    context.lastEntity
+  ) {
+    resolvedPlan.filters.push({
+      column:
+        context.lastEntity.column,
+
+      operator:
+        context.lastEntity
+          .operator ||
+        "equals",
+
+      value:
+        context.lastEntity.value,
+    });
+  }
+
+  // ==========================================================
+  // 2. INHERIT PREVIOUS OUTPUT FIELD
+  // ==========================================================
+  //
+  // Example:
+  //
+  // Previous:
+  // "what is his position title?"
+  //
+  // Current:
+  // "what about Vener Dllig?"
+  //
+  // New entity = Vener Dllig
+  // Previous metric = POSITION TITLE
+  //
+  // So return POSITION TITLE only.
+  //
+
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    resolvedPlan.operation ===
+      "lookup" &&
+    resolvedPlan.selectColumns
+      .length === 0 &&
+    context.lastMetric
+  ) {
+    if (
+      Array.isArray(
+        context.lastMetric
+      )
+    ) {
+      resolvedPlan.selectColumns = [
+        ...context.lastMetric,
+      ];
+    } else {
+      resolvedPlan.selectColumns = [
+        context.lastMetric,
+      ];
+    }
+
+    resolvedPlan.outputRequested =
+      true;
+  }
+
+  // ==========================================================
+  // 3. INHERIT PREVIOUS OPERATION
+  // ==========================================================
+  //
+  // "total salary of Roberto"
+  // "how about Vener?"
+  //
+  // keeps operation = sum, when appropriate.
+  //
+
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    (
+      !resolvedPlan.operation ||
+      resolvedPlan.operation ===
+        "lookup"
+    ) &&
+    context.lastIntent &&
+    context.lastIntent !==
+      "general"
+  ) {
+    /*
+     * Do not overwrite a clearly
+     * requested lookup operation.
+     */
+    if (
+      resolvedPlan.selectColumns
+        .length === 0
+    ) {
+      resolvedPlan.operation =
+        context.lastIntent;
+    }
+  }
+
+  return resolvedPlan;
+}
+
 async function answerQuestion(
   input,
   question,
@@ -141,7 +291,7 @@ async function answerQuestion(
       }
 
       plan = validation.plan;
-      
+
       let result;
 
       // --------------------------------------------------------
@@ -275,6 +425,12 @@ async function answerQuestion(
         context:
           conversationContext,
       });
+
+      groqPlan =
+        applyConversationContext(
+          groqPlan,
+          conversationContext
+        );
 
     if (
       process.env.NODE_ENV !==
