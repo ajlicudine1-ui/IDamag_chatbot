@@ -11,7 +11,64 @@ import {
   Layers,
   ArrowLeft,
   Menu,
+  Wheat,
+  Sprout,
+  Users,
+  HeartPulse,
+  Banknote,
+  Construction,
+  FlaskConical,
+  Settings,
+  LayoutGrid,
 } from "lucide-react";
+
+
+const getCategoryIcon = (office) => {
+  const acronym = String(office?.acronym || "")
+    .trim()
+    .toUpperCase();
+
+  const name = String(office?.name || "")
+    .trim()
+    .toLowerCase();
+
+  const iconByAcronym = {
+    AGPROD: Wheat,
+    AGPROG: Sprout,
+    ADMIN: Settings,
+    "FARM&BEN": Users,
+    AH: HeartPulse,
+    FINMAN: Banknote,
+    INFRA: Construction,
+    "R&T": FlaskConical,
+    OTHERS: LayoutGrid,
+  };
+
+  if (iconByAcronym[acronym]) {
+    return iconByAcronym[acronym];
+  }
+
+  if (name.includes("agricultural production")) return Wheat;
+  if (name.includes("agricultural programs")) return Sprout;
+  if (name.includes("administration")) return Settings;
+  if (
+    name.includes("farmers") ||
+    name.includes("beneficiaries")
+  ) {
+    return Users;
+  }
+  if (name.includes("animal health")) return HeartPulse;
+  if (name.includes("financial management")) return Banknote;
+  if (name.includes("infrastructure")) return Construction;
+  if (
+    name.includes("research") ||
+    name.includes("technical services")
+  ) {
+    return FlaskConical;
+  }
+
+  return LayoutGrid;
+};
 
 function OfficeLayout() {
   const { officeId } = useParams();
@@ -211,6 +268,8 @@ function OfficeLayout() {
     );
   }
 
+  const CategoryIcon = getCategoryIcon(office);
+
   return (
     <div className="h-screen w-full overflow-hidden flex flex-col">
       <Header />
@@ -245,7 +304,11 @@ function OfficeLayout() {
                   <Menu className="w-5 h-5" />
                 </button>
 
-                <div className="min-w-[2.2rem] lg:min-w-[2.5rem] h-9 lg:h-10 px-2 lg:px-3 bg-moss-600 rounded-lg lg:rounded-xl flex items-center justify-center text-white font-bold text-[10px] lg:text-xs shadow-lg shadow-moss-600/20">
+                <div className="w-9 h-9 lg:w-10 lg:h-10 bg-moss-50 rounded-lg lg:rounded-xl flex items-center justify-center text-moss-600 shadow-sm border border-moss-100">
+                  <CategoryIcon className="w-5 h-5 lg:w-6 lg:h-6" />
+                </div>
+
+                <div className="hidden sm:flex min-w-[2.2rem] lg:min-w-[2.5rem] h-7 lg:h-8 px-2 lg:px-3 bg-moss-600 rounded-lg items-center justify-center text-white font-bold text-[9px] lg:text-[10px] shadow-lg shadow-moss-600/20">
                   {office.acronym || "N/A"}
                 </div>
 
