@@ -27,6 +27,10 @@ const {
   validateResult,
 } = require("./resultValidator");
 
+const {
+  generateNaturalResponse,
+} = require("./responseGenerator");
+
 
 
 /**
@@ -388,8 +392,8 @@ async function answerQuestion(
        * context after a clarification question.
        */
       // ==========================================================
-// VALIDATE EXECUTED RESULT
-// ==========================================================
+      // VALIDATE EXECUTED RESULT
+      // ==========================================================
 
       const resultValidation =
         validateResult({
@@ -420,29 +424,64 @@ async function answerQuestion(
         );
       }
 
-      result =
-        resultValidation.result;
+          result =
+            resultValidation.result;
 
-// ==========================================================
-// SAVE VERIFIED CONVERSATION STATE
-// ==========================================================
+    // ==========================================================
+    // SAVE VERIFIED CONVERSATION STATE
+    // ==========================================================
 
-if (
-  result &&
-  plan.route !== "clarify"
-) {
-  updateConversation(
-    sessionId,
-    {
-      question:
-        cleanQuestion,
-      plan,
-      result,
-    }
-  );
-}
+    
+      if (
+        result &&
+        plan.route !== "clarify"
+      ) {
+        updateConversation(
+          sessionId,
+          {
+            question:
+              cleanQuestion,
+            plan,
+            result,
+          }
+        );
+      }
 
-return result;
+      // ==========================================================
+      // NATURAL RESPONSE GENERATOR
+      // ==========================================================
+
+      if (
+        result &&
+        result.success !== false &&
+        plan.route !== "clarify"
+      ) {
+        const naturalAnswer =
+          await generateNaturalResponse({
+            question:
+              cleanQuestion,
+            plan,
+            result,
+          });
+
+        return {
+          ...result,
+
+          /**
+           * Only the presentation is replaced.
+           *
+           * Calculated fields inside result remain
+           * untouched.
+           */
+          answer:
+            naturalAnswer,
+
+          responseStyle:
+            "natural",
+        };
+      }
+
+    return result;
    };
 
   // ==========================================================
