@@ -1484,11 +1484,26 @@ function executePlan({
     plan.filters
   );
 
-  const implicitFilters = inferValueFilters(
-    rows,
-    question,
-    [column, groupBy]
-  );
+  /**
+   * Only infer filters from raw question text when the
+   * query planner did NOT already provide a filter.
+   *
+   * If Groq has already resolved:
+   *
+   *   DIVISION = PMED
+   *
+   * we trust that structured filter instead of scanning
+   * every column for other values that happen to match
+   * parts of "PMED".
+   */
+  const implicitFilters =
+    explicitFilters.length > 0
+      ? []
+      : inferValueFilters(
+          rows,
+          question,
+          [column, groupBy]
+        );
 
   const filters = mergeFilters(
     explicitFilters,
@@ -1607,6 +1622,24 @@ function executePlan({
 
     unique.sort((a, b) => a.localeCompare(b));
 
+    if (
+      operation === "list" &&
+      unique.length === 0
+    ) {
+      return {
+        success: true,
+        source: "dataset",
+        dataset: datasetName,
+        operation,
+        column: selectedColumn,
+        count: 0,
+        results: [],
+        filters,
+        answer:
+          `I couldn't find any ${selectedColumn} values matching the requested filter.`,
+      };
+    }
+
     if (operation === "distinct_count") {
       return {
         success: true,
@@ -1676,13 +1709,23 @@ function executePlan({
       results: shown,
       filters,
       answer:
-        `${selectedColumn} values in ${datasetName}${filterText}:\n` +
-        shown
-          .map(
-            (value, index) =>
-              `${index + 1}. ${value}`
-          )
-          .join("\n"),
+      filters.length > 0
+        ? `I found ${formatNumber(
+            unique.length
+          )} ${selectedColumn} value(s) matching your request:\n\n` +
+          shown
+            .map(
+              (value, index) =>
+                `${index + 1}. ${value}`
+            )
+            .join("\n")
+        : `Here are the ${selectedColumn} values I found:\n\n` +
+          shown
+            .map(
+              (value, index) =>
+                `${index + 1}. ${value}`
+            )
+            .join("\n"),
     };
   }
 
