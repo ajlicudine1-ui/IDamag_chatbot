@@ -19,6 +19,10 @@ const {
   normalizeQuestion,
 } = require("./questionNormalizer");
 
+const {
+  validateQueryPlan,
+} = require("./queryValidator");
+
 /**
  * Main chatbot entry point.
  *
@@ -123,7 +127,21 @@ async function answerQuestion(
           "The query planner returned an invalid plan."
         );
       }
+      const validation =
+        validateQueryPlan({
+          datasets,
+          schema,
+          plan,
+        });
 
+      if (!validation.valid) {
+        throw new Error(
+          validation.message
+        );
+      }
+
+      plan = validation.plan;
+      
       let result;
 
       // --------------------------------------------------------
