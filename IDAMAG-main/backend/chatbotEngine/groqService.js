@@ -1,3 +1,7 @@
+  const {
+    buildSemanticHints,
+  } = require("./semanticDictionary");
+  
   const GROQ_URL =
     "https://api.groq.com/openai/v1/chat/completions";
 
@@ -174,6 +178,9 @@ async function createSchemaAwarePlan({
     ),
   }));
 
+  const semanticHints =
+  buildSemanticHints(schema);
+
   const safeContext = context
   ? {
       isFollowUp:
@@ -318,6 +325,79 @@ AVAILABLE ROUTES
 }
 
 ============================================================
+SEMANTIC ALIAS RULES
+============================================================
+
+You will receive SEMANTIC HINTS.
+
+Each semantic hint maps natural user wording to an exact
+column that exists in the current schema.
+
+Example:
+
+{
+  "column": "ACTUAL SALARY",
+  "aliases": [
+    "actual salary",
+    "salary",
+    "current salary",
+    "actual pay",
+    "pay",
+    "current pay"
+  ]
+}
+
+If the user's wording clearly matches one semantic alias,
+use the corresponding exact schema column.
+
+Semantic aliases have priority over guessing between multiple
+similar columns.
+
+Example:
+
+If:
+
+"pay" -> ACTUAL SALARY
+
+and the schema also contains:
+
+AUTHORIZED SALARY
+
+then:
+
+"What is Roberto's pay?"
+
+means ACTUAL SALARY.
+
+Do NOT return both ACTUAL SALARY and AUTHORIZED SALARY unless
+the user explicitly asks for both.
+
+Similarly:
+
+"job title" -> POSITION TITLE
+
+means return POSITION TITLE only.
+
+"salary grade" -> SG
+
+means SG only.
+
+"section" -> UNIT/SECTION/STATION
+
+means UNIT/SECTION/STATION when that alias is supplied.
+
+IMPORTANT:
+
+- Semantic hints identify COLUMN MEANING only.
+- They do NOT contain dataset answers.
+- They must never be treated as row values.
+- Never invent an alias that is not supplied.
+- Never invent a column.
+- The selected column must still exist in the supplied schema.
+- If the user explicitly requests multiple different fields,
+  preserve all of them.
+
+============================================================
 GENERAL RULES
 ============================================================
 
@@ -345,11 +425,26 @@ GENERAL RULES
 - If the user asks for a value from a record or row,
   use operation "lookup".
 
-- If the user asks for only one output field,
-  put that field in selectColumns.
+- If the user asks for only one semantic concept or output
+  field, put ONLY the best matching exact column in
+  selectColumns.
 
-- If the user asks for multiple output fields,
-  put ALL requested fields in selectColumns.
+- Do NOT add related columns merely because they have similar
+  meanings or names.
+
+- Example:
+  If "pay" maps to ACTUAL SALARY, do NOT additionally return
+  AUTHORIZED SALARY.
+
+- Example:
+  If "job title" maps to POSITION TITLE, do NOT additionally
+  return CATEGORY OF POSITION.
+
+- If the user explicitly asks for multiple different output
+  fields, put ALL requested fields in selectColumns.
+
+- Do NOT collapse a genuine multiple-field request into one
+  field.
 
 - Do NOT collapse a multiple-field request into one field.
 
@@ -822,6 +917,10 @@ No code block.
         content:
           `SCHEMA:\n${JSON.stringify(
             compactSchema
+          )}\n\n` +
+
+          `SEMANTIC HINTS:\n${JSON.stringify(
+            semanticHints
           )}\n\n` +
 
           `CONVERSATION CONTEXT:\n${JSON.stringify(
