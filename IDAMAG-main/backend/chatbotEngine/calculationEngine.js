@@ -21,7 +21,9 @@ const {
   formatAggregateAnswer,
   formatCountAnswer,
 } = require("./responseFormatter");
-
+const {
+  findBestRelationship,
+} = require("./relationshipEngine");
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
 
@@ -132,16 +134,16 @@ function scoreJoinColumn(sourceRows, targetRows, shared) {
   return overlapRatio * 4 + sourceUniqueRatio + targetUniqueRatio;
 }
 
-function chooseJoin(sourceRows, targetRows) {
-  const shared = findSharedColumns(sourceRows, targetRows)
-    .map((item) => ({
-      ...item,
-      score: scoreJoinColumn(sourceRows, targetRows, item),
-    }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score);
-
-  return shared[0] || null;
+function chooseJoin(
+  sourceRows,
+  targetRows
+) {
+  return (
+    findBestRelationship(
+      sourceRows,
+      targetRows
+    ) || null
+  );
 }
 
 function getRequestedOutputColumns(datasets, plan) {
@@ -538,28 +540,16 @@ function executePlannedCrossDatasetCount({
     };
   }
 
+  const bestRelationship =
+  findBestRelationship(
+    sourceRows,
+    targetRows
+  );
+
   const joinCandidates =
-    findSharedColumns(
-      sourceRows,
-      targetRows
-    )
-      .map((shared) => ({
-        ...shared,
-        score:
-          scoreJoinColumn(
-            sourceRows,
-            targetRows,
-            shared
-          ),
-      }))
-      .filter(
-        (item) =>
-          item.score > 0
-      )
-      .sort(
-        (a, b) =>
-          b.score - a.score
-      );
+    bestRelationship
+      ? [bestRelationship]
+      : [];
 
   let selectedJoin = null;
   let targetIndex = null;

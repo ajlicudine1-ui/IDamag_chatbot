@@ -23,6 +23,12 @@ const {
   validateQueryPlan,
 } = require("./queryValidator");
 
+const {
+  validateResult,
+} = require("./resultValidator");
+
+
+
 /**
  * Main chatbot entry point.
  *
@@ -381,23 +387,63 @@ async function answerQuestion(
        * We intentionally do not overwrite
        * context after a clarification question.
        */
-      if (
-        result &&
-        plan.route !== "clarify"
-      ) {
-        updateConversation(
-          sessionId,
+      // ==========================================================
+// VALIDATE EXECUTED RESULT
+// ==========================================================
+
+      const resultValidation =
+        validateResult({
+          plan,
+          result,
+        });
+
+      if (!resultValidation.valid) {
+        console.error(
+          "Chatbot result validation failed:",
           {
-            question:
-              cleanQuestion,
+            code:
+              resultValidation.code,
+
+            message:
+              resultValidation.message,
+
+            details:
+              resultValidation.details,
+
             plan,
             result,
           }
         );
+
+        throw new Error(
+          resultValidation.message
+        );
       }
 
-      return result;
-    };
+      result =
+        resultValidation.result;
+
+// ==========================================================
+// SAVE VERIFIED CONVERSATION STATE
+// ==========================================================
+
+if (
+  result &&
+  plan.route !== "clarify"
+) {
+  updateConversation(
+    sessionId,
+    {
+      question:
+        cleanQuestion,
+      plan,
+      result,
+    }
+  );
+}
+
+return result;
+   };
 
   // ==========================================================
   // 1. GROQ FIRST
@@ -461,58 +507,57 @@ async function answerQuestion(
   // ==========================================================
 
   try {
-    const localPlan =
-      await createPlan({
-        question:
-          cleanQuestion,
+  let localPlan =
+    await createPlan({
+      question:
+        cleanQuestion,
 
-        schema,
+      schema,
 
-        datasets,
+      datasets,
 
-        /**
-         * Pass conversation context here
-         * as well.
-         *
-         * Your current intentParser may
-         * ignore it for now. That is fine.
-         */
-        context:
-          conversationContext,
-      });
+      context:
+        conversationContext,
+    });
 
-    if (
-      process.env.NODE_ENV !==
-      "production"
-    ) {
-      console.log(
-        "Chatbot local fallback plan:",
-        JSON.stringify(
-          localPlan,
-          null,
-          2
-        )
-      );
-    }
-
-    return await executeResolvedPlan(
-      localPlan
-    );
-  } catch (localError) {
-    console.error(
-      "Local chatbot fallback failed:",
-      localError
+  localPlan =
+    applyConversationContext(
+      localPlan,
+      conversationContext
     );
 
-    return {
-      success: false,
-      source: "system",
-      operation: "error",
-      answer:
-        localError.message ||
-        "The chatbot could not process the question.",
-    };
+  if (
+    process.env.NODE_ENV !==
+    "production"
+  ) {
+    console.log(
+      "Chatbot local fallback plan:",
+      JSON.stringify(
+        localPlan,
+        null,
+        2
+      )
+    );
   }
+
+  return await executeResolvedPlan(
+    localPlan
+  );
+} catch (localError) {
+  console.error(
+    "Local chatbot fallback failed:",
+    localError
+  );
+
+  return {
+    success: false,
+    source: "system",
+    operation: "error",
+    answer:
+      localError.message ||
+      "The chatbot could not process the question.",
+  };
+}
 }
 
 module.exports = {
