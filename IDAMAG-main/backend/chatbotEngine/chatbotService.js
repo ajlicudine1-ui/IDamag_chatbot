@@ -95,22 +95,39 @@ function applyConversationContext(
   if (
     resolvedPlan.route ===
       "dataset" &&
-    resolvedPlan.filters.length ===
-      0 &&
     context.lastEntity
   ) {
-    resolvedPlan.filters.push({
-      column:
-        context.lastEntity.column,
+    const entityColumn =
+      context.lastEntity.column;
 
-      operator:
-        context.lastEntity
-          .operator ||
-        "equals",
+    const alreadyHasEntity =
+      resolvedPlan.filters.some(
+        (filter) =>
+          String(
+            filter?.column || ""
+          )
+            .trim()
+            .toLowerCase() ===
+          String(
+            entityColumn || ""
+          )
+            .trim()
+            .toLowerCase()
+      );
 
-      value:
-        context.lastEntity.value,
-    });
+    if (!alreadyHasEntity) {
+      resolvedPlan.filters.push({
+        column:
+          context.lastEntity.column,
+
+        operator:
+          context.lastEntity.operator ||
+          "equals",
+
+        value:
+          context.lastEntity.value,
+      });
+    }
   }
 
   // ==========================================================
