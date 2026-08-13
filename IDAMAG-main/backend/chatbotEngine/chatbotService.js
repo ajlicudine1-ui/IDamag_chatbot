@@ -807,10 +807,34 @@ async function answerQuestion(
 
           responseStyle:
             "natural",
+
+          /**
+           * TEMPORARY DEBUG OUTPUT
+           *
+           * Remove these after the multi-entity issue is fixed.
+           */
+          debugPlan:
+            plan,
+
+          debugEntityChanges:
+            entityResolution.changes || [],
         };
       }
 
-      return result;
+      return {
+        ...result,
+
+        /**
+         * TEMPORARY DEBUG OUTPUT
+         *
+         * Remove these after the multi-entity issue is fixed.
+         */
+        debugPlan:
+          plan,
+
+        debugEntityChanges:
+          entityResolution.changes || [],
+      };
     };
 
   // ========================================================
