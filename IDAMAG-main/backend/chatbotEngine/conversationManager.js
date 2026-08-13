@@ -1,6 +1,7 @@
 const conversations = new Map();
 
 const MAX_HISTORY = 10;
+const MAX_RECENT_RESULTS = 5;
 
 /**
  * Create a fresh conversation state.
@@ -14,6 +15,10 @@ function createEmptyContext() {
     lastFilters: [],
     lastPlan: null,
     lastResult: null,
+
+    // Used for comparison follow-ups.
+    recentResults: [],
+
     history: [],
   };
 }
@@ -21,23 +26,35 @@ function createEmptyContext() {
 /**
  * Get conversation state.
  */
-function getConversation(sessionId = "default") {
-  if (!conversations.has(sessionId)) {
+function getConversation(
+  sessionId = "default"
+) {
+  if (
+    !conversations.has(
+      sessionId
+    )
+  ) {
     conversations.set(
       sessionId,
       createEmptyContext()
     );
   }
 
-  return conversations.get(sessionId);
+  return conversations.get(
+    sessionId
+  );
 }
 
 /**
  * Determine whether a question depends on
  * something previously discussed.
  */
-function isFollowUpQuestion(question) {
-  const text = String(question || "")
+function isFollowUpQuestion(
+  question
+) {
+  const text = String(
+    question || ""
+  )
     .toLowerCase()
     .trim();
 
@@ -76,10 +93,29 @@ function isFollowUpQuestion(question) {
 
     /^what about the total\b/i,
     /^how about the total\b/i,
+
+    // ======================================================
+    // COMPARISON FOLLOW-UPS
+    // ======================================================
+
+    /\bwhich (?:one )?is higher\b/i,
+    /\bwhich (?:one )?is lower\b/i,
+
+    /\bwho (?:has|have) (?:the )?higher\b/i,
+    /\bwho (?:has|have) (?:the )?lower\b/i,
+
+    /\bwhat(?:'s| is) the difference\b/i,
+
+    /\bhow much (?:higher|lower|more|less)\b/i,
+
+    /\bcompare (?:them|those|the two)\b/i,
+
+    /\bbetween (?:them|those|the two)\b/i,
   ];
 
   return patterns.some(
-    (pattern) => pattern.test(text)
+    (pattern) =>
+      pattern.test(text)
   );
 }
 
@@ -87,7 +123,7 @@ function isFollowUpQuestion(question) {
  * Extract the most useful entity/filter
  * from a query plan.
  *
- * Groq uses filters like:
+ * Example:
  *
  * [
  *   {
@@ -97,25 +133,34 @@ function isFollowUpQuestion(question) {
  *   }
  * ]
  */
-function extractPrimaryEntity(filters) {
-  if (!Array.isArray(filters)) {
+function extractPrimaryEntity(
+  filters
+) {
+  if (
+    !Array.isArray(
+      filters
+    )
+  ) {
     return null;
   }
 
   /**
-   * Prefer equality because this usually
-   * identifies a specific entity.
+   * Prefer equality filters because they
+   * usually identify a specific entity.
    */
   const equalityFilter =
     filters.find(
       (filter) =>
         filter &&
         filter.column &&
-        filter.value !== undefined &&
+        filter.value !==
+          undefined &&
         filter.value !== null &&
         String(
-          filter.operator || "equals"
-        ).toLowerCase() === "equals"
+          filter.operator ||
+            "equals"
+        ).toLowerCase() ===
+          "equals"
     );
 
   if (equalityFilter) {
@@ -140,7 +185,8 @@ function extractPrimaryEntity(filters) {
       (filter) =>
         filter &&
         filter.column &&
-        filter.value !== undefined &&
+        filter.value !==
+          undefined &&
         filter.value !== null
     );
 
@@ -165,7 +211,9 @@ function extractPrimaryEntity(filters) {
  * Determine the metric/output field from
  * a structured query plan.
  */
-function extractMetric(plan) {
+function extractMetric(
+  plan
+) {
   if (!plan) {
     return null;
   }
@@ -180,13 +228,6 @@ function extractMetric(plan) {
     ) &&
     plan.selectColumns.length
   ) {
-    /**
-     * Keep all requested fields.
-     *
-     * This is useful for follow-ups after:
-     *
-     * "show farmer and municipality"
-     */
     return [
       ...plan.selectColumns,
     ];
@@ -197,6 +238,128 @@ function extractMetric(plan) {
   }
 
   return null;
+}
+
+/**
+ * Save a compact VERIFIED result for
+ * future comparison questions.
+ *
+ * Example:
+ *
+ * Roberto
+ * ACTUAL SALARY
+ * 167129
+ *
+ * Vener
+ * ACTUAL SALARY
+ * 148940
+ *
+ * Then:
+ *
+ * "Who has the higher salary?"
+ */
+function addRecentResult(
+  context,
+  {
+    question,
+    plan,
+    result,
+  }
+) {
+  if (
+    !plan ||
+    !result ||
+    result.success === false
+  ) {
+    return;
+  }
+
+  /**
+   * Only executed dataset questions should
+   * be used for analytical comparisons.
+   */
+  if (
+    plan.route !==
+      "dataset"
+  ) {
+    return;
+  }
+
+  const entity =
+    extractPrimaryEntity(
+      plan.filters
+    );
+
+  const metric =
+    extractMetric(plan);
+
+  const entry = {
+    question,
+
+    dataset:
+      plan.dataset || null,
+
+    entity:
+      entity
+        ? {
+            ...entity,
+          }
+        : null,
+
+    metric:
+      Array.isArray(metric)
+        ? [...metric]
+        : metric,
+
+    plan: {
+      ...plan,
+
+      filters:
+        Array.isArray(
+          plan.filters
+        )
+          ? plan.filters.map(
+              (filter) => ({
+                ...filter,
+              })
+            )
+          : [],
+
+      selectColumns:
+        Array.isArray(
+          plan.selectColumns
+        )
+          ? [
+              ...plan.selectColumns,
+            ]
+          : [],
+    },
+
+    /**
+     * IMPORTANT:
+     * This must be the VERIFIED JavaScript
+     * result, not Groq-generated prose.
+     */
+    result,
+
+    timestamp:
+      Date.now(),
+  };
+
+  context.recentResults.push(
+    entry
+  );
+
+  if (
+    context.recentResults
+      .length >
+    MAX_RECENT_RESULTS
+  ) {
+    context.recentResults =
+      context.recentResults.slice(
+        -MAX_RECENT_RESULTS
+      );
+  }
 }
 
 /**
@@ -212,7 +375,9 @@ function updateConversation(
   } = {}
 ) {
   const context =
-    getConversation(sessionId);
+    getConversation(
+      sessionId
+    );
 
   if (plan) {
     if (plan.dataset) {
@@ -223,7 +388,9 @@ function updateConversation(
     if (plan.operation) {
       context.lastIntent =
         plan.operation;
-    } else if (plan.intent) {
+    } else if (
+      plan.intent
+    ) {
       context.lastIntent =
         plan.intent;
     }
@@ -237,12 +404,12 @@ function updateConversation(
     }
 
     /**
-     * IMPORTANT:
-     * filters in your current Groq plan
-     * are ARRAYS.
+     * Groq filters are arrays.
      */
     if (
-      Array.isArray(plan.filters)
+      Array.isArray(
+        plan.filters
+      )
     ) {
       context.lastFilters =
         plan.filters.map(
@@ -267,16 +434,42 @@ function updateConversation(
     };
   }
 
-  if (result !== undefined) {
+  if (
+    result !== undefined
+  ) {
     context.lastResult =
       result;
   }
+
+  // ========================================================
+  // SAVE VERIFIED RESULT FOR FUTURE COMPARISONS
+  // ========================================================
+
+  if (
+    question &&
+    plan &&
+    result
+  ) {
+    addRecentResult(
+      context,
+      {
+        question,
+        plan,
+        result,
+      }
+    );
+  }
+
+  // ========================================================
+  // NORMAL CONVERSATION HISTORY
+  // ========================================================
 
   if (question) {
     context.history.push({
       question,
       plan,
       result,
+
       timestamp:
         Date.now(),
     });
@@ -304,20 +497,15 @@ function getRelevantContext(
   question
 ) {
   const context =
-    getConversation(sessionId);
+    getConversation(
+      sessionId
+    );
 
   const isFollowUp =
-    isFollowUpQuestion(question);
+    isFollowUpQuestion(
+      question
+    );
 
-  /**
-   * We return previous information even
-   * for a normal question so the planner
-   * can see it if needed.
-   *
-   * But isFollowUp explicitly tells Groq
-   * whether it is allowed to inherit
-   * previous meaning.
-   */
   return {
     isFollowUp,
 
@@ -345,7 +533,38 @@ function getRelevantContext(
       isFollowUp
         ? context.lastResult
         : null,
+
+    /**
+     * Used by Step 10.
+     *
+     * Only expose recent results when the
+     * current question looks conversational.
+     */
+    recentResults:
+      isFollowUp
+        ? context.recentResults.slice(
+            -MAX_RECENT_RESULTS
+          )
+        : [],
   };
+}
+
+/**
+ * Get all recent VERIFIED results.
+ *
+ * Useful for comparisonEngine.js.
+ */
+function getRecentResults(
+  sessionId = "default"
+) {
+  const context =
+    getConversation(
+      sessionId
+    );
+
+  return [
+    ...context.recentResults,
+  ];
 }
 
 /**
@@ -355,7 +574,9 @@ function getHistory(
   sessionId = "default"
 ) {
   const context =
-    getConversation(sessionId);
+    getConversation(
+      sessionId
+    );
 
   return [
     ...context.history,
@@ -384,6 +605,7 @@ module.exports = {
   getConversation,
   updateConversation,
   getRelevantContext,
+  getRecentResults,
   getHistory,
   isFollowUpQuestion,
   clearConversation,

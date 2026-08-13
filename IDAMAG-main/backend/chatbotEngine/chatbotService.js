@@ -1,18 +1,32 @@
-const { buildSchema } = require("./schemaBuilder");
-const { createPlan } = require("./intentParser");
-const { executePlan } = require("./calculationEngine");
-const { answerSchemaQuestion } = require("./schemaEngine");
+const {
+  buildSchema,
+} = require("./schemaBuilder");
+
+const {
+  createPlan,
+} = require("./intentParser");
+
+const {
+  executePlan,
+} = require("./calculationEngine");
+
+const {
+  answerSchemaQuestion,
+} = require("./schemaEngine");
 
 const {
   answerGeneralQuestion,
   createSchemaAwarePlan,
 } = require("./groqService");
 
-const { normalizeDatasets } = require("./utils");
+const {
+  normalizeDatasets,
+} = require("./utils");
 
 const {
   getRelevantContext,
   updateConversation,
+  getRecentResults,
 } = require("./conversationManager");
 
 const {
@@ -35,19 +49,25 @@ const {
   resolvePlanEntities,
 } = require("./entityResolver");
 
+const {
+  compareVerifiedResults,
+} = require("./comparisonEngine");
 
 /**
- * Main chatbot entry point.
+ * ==========================================================
+ * APPLY CONVERSATION CONTEXT
+ * ==========================================================
  *
- * GROQ-FIRST, DATA-SAFE ARCHITECTURE
- * ----------------------------------
- * 1. Groq interprets flexible natural-language wording using the live schema.
- * 2. Conversation context is supplied for follow-up questions.
- * 3. JavaScript validates and executes the structured plan using CURRENT rows.
- * 4. Groq never calculates, filters, joins, ranks, or invents dataset answers.
- * 5. If Groq is unavailable or returns a bad plan, the local parser is used.
+ * Allows follow-up questions such as:
+ *
+ * "What is the salary of Roberto?"
+ * "What is his position?"
+ *
+ * or:
+ *
+ * "What is Roberto's position?"
+ * "What about Vener?"
  */
-
 function applyConversationContext(
   plan,
   context
@@ -65,41 +85,62 @@ function applyConversationContext(
     ...plan,
 
     filters:
-      Array.isArray(plan.filters)
-        ? [...plan.filters]
+      Array.isArray(
+        plan.filters
+      )
+        ? [
+            ...plan.filters,
+          ]
         : [],
 
     selectColumns:
       Array.isArray(
         plan.selectColumns
       )
-        ? [...plan.selectColumns]
+        ? [
+            ...plan.selectColumns,
+          ]
         : [],
   };
 
-  // ==========================================================
-  // 1. INHERIT THE LAST PERSON / ENTITY
-  // ==========================================================
-  //
-  // Example:
+  // ========================================================
+  // 1. INHERIT LAST ENTITY
+  // ========================================================
   //
   // Previous:
-  // ROBERTO PERALES
+  // Roberto Perales
   //
   // Current:
-  // "what is his position title?"
+  // "What is his position title?"
   //
-  // If Groq did not identify a new person,
-  // keep ROBERTO PERALES.
+  // If the current plan does not already contain the
+  // entity column, inherit Roberto.
   //
 
-      if (
-      resolvedPlan.route ===
-        "dataset" &&
-      resolvedPlan.filters.length ===
-        0 &&
-      context.lastEntity
-    ) {
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    context.lastEntity
+  ) {
+    const entityColumn =
+      context.lastEntity.column;
+
+    const alreadyHasEntity =
+      resolvedPlan.filters.some(
+        (filter) =>
+          String(
+            filter?.column || ""
+          )
+            .trim()
+            .toLowerCase() ===
+          String(
+            entityColumn || ""
+          )
+            .trim()
+            .toLowerCase()
+      );
+
+    if (!alreadyHasEntity) {
       resolvedPlan.filters.push({
         column:
           context.lastEntity.column,
@@ -113,23 +154,23 @@ function applyConversationContext(
           context.lastEntity.value,
       });
     }
+  }
 
-  // ==========================================================
+  // ========================================================
   // 2. INHERIT PREVIOUS OUTPUT FIELD
-  // ==========================================================
-  //
-  // Example:
+  // ========================================================
   //
   // Previous:
-  // "what is his position title?"
+  // "What is Roberto's position title?"
   //
   // Current:
-  // "what about Vener Dllig?"
+  // "What about Vener?"
   //
-  // New entity = Vener Dllig
-  // Previous metric = POSITION TITLE
+  // New entity:
+  // Vener
   //
-  // So return POSITION TITLE only.
+  // Previous output:
+  // POSITION TITLE
   //
 
   if (
@@ -159,14 +200,16 @@ function applyConversationContext(
       true;
   }
 
-  // ==========================================================
+  // ========================================================
   // 3. INHERIT PREVIOUS OPERATION
-  // ==========================================================
+  // ========================================================
   //
-  // "total salary of Roberto"
-  // "how about Vener?"
+  // Example:
   //
-  // keeps operation = sum, when appropriate.
+  // "What is the total production of Ilocos Norte?"
+  // "How about Ilocos Sur?"
+  //
+  // The second question may inherit SUM.
   //
 
   if (
@@ -181,10 +224,6 @@ function applyConversationContext(
     context.lastIntent !==
       "general"
   ) {
-    /*
-     * Do not overwrite a clearly
-     * requested lookup operation.
-     */
     if (
       resolvedPlan.selectColumns
         .length === 0
@@ -197,14 +236,133 @@ function applyConversationContext(
   return resolvedPlan;
 }
 
+/**
+ * ==========================================================
+ * STEP 10 — DETECT ANALYTICAL COMPARISONS
+ * ==========================================================
+ *
+ * Examples:
+ *
+ * "Who has the higher salary?"
+ * "Which one is lower?"
+ * "What is the difference?"
+ * "Compare them."
+ *
+ * This does NOT perform calculations.
+ *
+ * It only determines which comparison operation
+ * JavaScript should execute.
+ */
+function detectComparisonRequest(
+  question
+) {
+  const text = String(
+    question || ""
+  )
+    .toLowerCase()
+    .trim();
+
+  if (!text) {
+    return null;
+  }
+
+  // ========================================================
+  // DIFFERENCE
+  // ========================================================
+
+  if (
+    /\b(?:what(?:'s| is) )?(?:the )?difference\b/i.test(
+      text
+    ) ||
+    /\bhow much (?:more|less|higher|lower)\b/i.test(
+      text
+    )
+  ) {
+    return "difference";
+  }
+
+  // ========================================================
+  // LOWER
+  // ========================================================
+
+  if (
+    /\bwhich (?:one )?is (?:the )?lower\b/i.test(
+      text
+    ) ||
+    /\bwho (?:has|have) (?:the )?lower\b/i.test(
+      text
+    ) ||
+    /\bwhich (?:one )?has (?:the )?lower\b/i.test(
+      text
+    )
+  ) {
+    return "lower";
+  }
+
+  // ========================================================
+  // HIGHER
+  // ========================================================
+
+  if (
+    /\bwhich (?:one )?is (?:the )?higher\b/i.test(
+      text
+    ) ||
+    /\bwho (?:has|have) (?:the )?higher\b/i.test(
+      text
+    ) ||
+    /\bwhich (?:one )?has (?:the )?higher\b/i.test(
+      text
+    )
+  ) {
+    return "higher";
+  }
+
+  // ========================================================
+  // GENERIC COMPARISON
+  // ========================================================
+
+  if (
+    /\bcompare (?:them|those|the two)\b/i.test(
+      text
+    )
+  ) {
+    return "higher";
+  }
+
+  return null;
+}
+
+/**
+ * ==========================================================
+ * MAIN CHATBOT ENTRY POINT
+ * ==========================================================
+ *
+ * GROQ-FIRST, DATA-SAFE ARCHITECTURE
+ *
+ * 1. Normalize question.
+ * 2. Load current datasets.
+ * 3. Retrieve conversation context.
+ * 4. Handle analytical comparison follow-ups.
+ * 5. Groq interprets natural language.
+ * 6. JavaScript applies conversation context.
+ * 7. Query Validator validates the plan.
+ * 8. Entity Resolver resolves real dataset values.
+ * 9. JavaScript executes the plan.
+ * 10. Result Validator verifies the result.
+ * 11. Verified result is saved to conversation memory.
+ * 12. Natural Response Generator improves wording.
+ *
+ * Groq never performs dataset calculations.
+ */
 async function answerQuestion(
   input,
   question,
   sessionId = "default"
 ) {
-  const originalQuestion = String(
-    question || ""
-  ).trim();
+  const originalQuestion =
+    String(
+      question || ""
+    ).trim();
 
   const cleanQuestion =
     normalizeQuestion(
@@ -215,14 +373,25 @@ async function answerQuestion(
     return {
       success: false,
       source: "system",
-      answer: "Please enter a question.",
+      answer:
+        "Please enter a question.",
     };
   }
 
-  const datasets =
-    normalizeDatasets(input);
+  // ========================================================
+  // NORMALIZE ALL CURRENT DATASETS
+  // ========================================================
 
-  if (!Object.keys(datasets).length) {
+  const datasets =
+    normalizeDatasets(
+      input
+    );
+
+  if (
+    !Object.keys(
+      datasets
+    ).length
+  ) {
     return {
       success: false,
       source: "system",
@@ -231,31 +400,19 @@ async function answerQuestion(
     };
   }
 
-  const schema =
-    buildSchema(datasets);
+  // ========================================================
+  // BUILD LIVE SCHEMA
+  // ========================================================
 
-  /**
-   * Previous conversation information.
-   *
-   * Example:
-   *
-   * User:
-   * "What is the planting month of Aaron?"
-   *
-   * Next question:
-   * "How about his expected yield?"
-   *
-   * Context may contain:
-   *
-   * {
-   *   lastEntity: {
-   *     column: "Farmer",
-   *     value: "Aaron"
-   *   },
-   *   lastDataset: "farmer_details",
-   *   lastMetric: "Planting Month"
-   * }
-   */
+  const schema =
+    buildSchema(
+      datasets
+    );
+
+  // ========================================================
+  // LOAD CONVERSATION CONTEXT
+  // ========================================================
+
   const conversationContext =
     getRelevantContext(
       sessionId,
@@ -264,7 +421,7 @@ async function answerQuestion(
 
   if (
     process.env.NODE_ENV !==
-    "production"
+      "production"
   ) {
     console.log(
       "Chatbot conversation context:",
@@ -276,20 +433,137 @@ async function answerQuestion(
     );
   }
 
-  // ==========================================================
-  // EXECUTE A RESOLVED PLAN
-  // ==========================================================
+  // ========================================================
+  // STEP 10 — ANALYTICAL COMPARISON FOLLOW-UPS
+  // ========================================================
+  //
+  // These questions should NOT be sent through the normal
+  // dataset planner because they refer to already verified
+  // previous results.
+  //
+  // Example:
+  //
+  // User:
+  // "What is Roberto's salary?"
+  //
+  // User:
+  // "What is Vener's salary?"
+  //
+  // User:
+  // "Who has the higher salary?"
+  //
+  // We compare the previous VERIFIED JavaScript results.
+  //
+
+  const comparisonMode =
+    detectComparisonRequest(
+      cleanQuestion
+    );
+
+  if (comparisonMode) {
+    const recentResults =
+      getRecentResults(
+        sessionId
+      );
+
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot comparison history:",
+        JSON.stringify(
+          recentResults,
+          null,
+          2
+        )
+      );
+    }
+
+    // ======================================================
+    // REQUIRE TWO VERIFIED RESULTS
+    // ======================================================
+
+    if (
+      recentResults.length <
+      2
+    ) {
+      return {
+        success: false,
+        source:
+          "comparison",
+        operation:
+          "clarify",
+        answer:
+          "I need two previous results before I can compare them.",
+      };
+    }
+
+    /**
+     * Compare the two most recent verified results.
+     */
+    const left =
+      recentResults[
+        recentResults.length -
+          2
+      ];
+
+    const right =
+      recentResults[
+        recentResults.length -
+          1
+      ];
+
+    const comparisonResult =
+      compareVerifiedResults({
+        left,
+        right,
+        mode:
+          comparisonMode,
+      });
+
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot comparison result:",
+        JSON.stringify(
+          comparisonResult,
+          null,
+          2
+        )
+      );
+    }
+
+    /**
+     * Comparison Engine performs all arithmetic.
+     *
+     * Do NOT ask Groq to recalculate this result.
+     */
+    return comparisonResult;
+  }
+
+  // ========================================================
+  // EXECUTE A RESOLVED QUERY PLAN
+  // ========================================================
 
   const executeResolvedPlan =
     async (plan) => {
       if (
         !plan ||
-        typeof plan !== "object"
+        typeof plan !==
+          "object"
       ) {
         throw new Error(
           "The query planner returned an invalid plan."
         );
       }
+
+      // ====================================================
+      // QUERY VALIDATOR
+      // ====================================================
+
       const validation =
         validateQueryPlan({
           datasets,
@@ -297,20 +571,20 @@ async function answerQuestion(
           plan,
         });
 
-      if (!validation.valid) {
+      if (
+        !validation.valid
+      ) {
         throw new Error(
           validation.message
         );
       }
 
-      plan = validation.plan;
+      plan =
+        validation.plan;
 
-
-      let result;
-
-      // ==========================================================
-      // RESOLVE REAL DATASET VALUES
-      // ==========================================================
+      // ====================================================
+      // STEP 9 — RESOLVE REAL DATASET VALUES
+      // ====================================================
 
       const entityResolution =
         resolvePlanEntities({
@@ -324,8 +598,8 @@ async function answerQuestion(
       if (
         process.env.NODE_ENV !==
           "production" &&
-        entityResolution.changes
-          ?.length
+        entityResolution
+          .changes?.length
       ) {
         console.log(
           "Chatbot entity corrections:",
@@ -337,76 +611,89 @@ async function answerQuestion(
         );
       }
 
-      // --------------------------------------------------------
+      let result;
+
+      // ====================================================
       // SCHEMA QUESTION
-      // --------------------------------------------------------
+      // ====================================================
 
       if (
-        plan.route === "schema"
+        plan.route ===
+        "schema"
       ) {
         result =
           await answerSchemaQuestion({
             datasets,
             schema,
             plan,
+
             question:
               cleanQuestion,
           });
       }
 
-      // --------------------------------------------------------
+      // ====================================================
       // DATASET QUESTION
-      // --------------------------------------------------------
+      // ====================================================
 
       else if (
-        plan.route === "dataset"
+        plan.route ===
+        "dataset"
       ) {
         result =
           await executePlan({
             datasets,
             schema,
             plan,
+
             question:
               cleanQuestion,
           });
       }
 
-      // --------------------------------------------------------
+      // ====================================================
       // GENERAL QUESTION
-      // --------------------------------------------------------
+      // ====================================================
 
       else if (
-        plan.route === "general"
+        plan.route ===
+        "general"
       ) {
         result =
           await answerGeneralQuestion({
             question:
               cleanQuestion,
+
             schema,
           });
       }
 
-      // --------------------------------------------------------
+      // ====================================================
       // CLARIFICATION
-      // --------------------------------------------------------
+      // ====================================================
 
       else if (
-        plan.route === "clarify"
+        plan.route ===
+        "clarify"
       ) {
         result = {
           success: false,
-          source: "router",
+
+          source:
+            "router",
+
           operation:
             "clarify",
+
           answer:
             plan.question ||
             "Please clarify which worksheet, field, or calculation you want.",
         };
       }
 
-      // --------------------------------------------------------
+      // ====================================================
       // UNKNOWN ROUTE
-      // --------------------------------------------------------
+      // ====================================================
 
       else {
         throw new Error(
@@ -417,16 +704,9 @@ async function answerQuestion(
         );
       }
 
-      /**
-       * Save conversation state only when
-       * we received a usable result.
-       *
-       * We intentionally do not overwrite
-       * context after a clarification question.
-       */
-      // ==========================================================
-      // VALIDATE EXECUTED RESULT
-      // ==========================================================
+      // ====================================================
+      // STEP 6 — RESULT VALIDATOR
+      // ====================================================
 
       const resultValidation =
         validateResult({
@@ -434,7 +714,9 @@ async function answerQuestion(
           result,
         });
 
-      if (!resultValidation.valid) {
+      if (
+        !resultValidation.valid
+      ) {
         console.error(
           "Chatbot result validation failed:",
           {
@@ -457,43 +739,57 @@ async function answerQuestion(
         );
       }
 
-          result =
-            resultValidation.result;
+      result =
+        resultValidation.result;
 
-    // ==========================================================
-    // SAVE VERIFIED CONVERSATION STATE
-    // ==========================================================
+      // ====================================================
+      // SAVE VERIFIED CONVERSATION STATE
+      // ====================================================
+      //
+      // IMPORTANT:
+      //
+      // Save BEFORE natural-response rewriting.
+      //
+      // This ensures Step 10 stores and compares the
+      // verified JavaScript result instead of Groq prose.
+      //
 
-    
       if (
         result &&
-        plan.route !== "clarify"
+        plan.route !==
+          "clarify"
       ) {
         updateConversation(
           sessionId,
           {
             question:
               cleanQuestion,
+
             plan,
+
             result,
           }
         );
       }
 
-      // ==========================================================
-      // NATURAL RESPONSE GENERATOR
-      // ==========================================================
+      // ====================================================
+      // STEP 7 — NATURAL RESPONSE GENERATOR
+      // ====================================================
 
       if (
         result &&
-        result.success !== false &&
-        plan.route !== "clarify"
+        result.success !==
+          false &&
+        plan.route !==
+          "clarify"
       ) {
         const naturalAnswer =
           await generateNaturalResponse({
             question:
               cleanQuestion,
+
             plan,
+
             result,
           });
 
@@ -501,10 +797,10 @@ async function answerQuestion(
           ...result,
 
           /**
-           * Only the presentation is replaced.
+           * Only presentation is changed.
            *
-           * Calculated fields inside result remain
-           * untouched.
+           * Numeric and structured result properties
+           * remain untouched.
            */
           answer:
             naturalAnswer,
@@ -514,12 +810,26 @@ async function answerQuestion(
         };
       }
 
-    return result;
-   };
+      return result;
+    };
 
-  // ==========================================================
+  // ========================================================
   // 1. GROQ FIRST
-  // ==========================================================
+  // ========================================================
+  //
+  // Groq interprets flexible language and creates only
+  // a structured query plan.
+  //
+  // JavaScript remains responsible for:
+  //
+  // - filtering
+  // - joining
+  // - counting
+  // - sums
+  // - averages
+  // - rankings
+  // - comparisons
+  //
 
   let groqPlan = null;
 
@@ -531,28 +841,23 @@ async function answerQuestion(
 
         schema,
 
-        /**
-         * NEW:
-         * Groq now receives previous
-         * conversational context.
-         *
-         * groqService.js will be updated
-         * in the next small change to
-         * actually use this property.
-         */
         context:
           conversationContext,
       });
 
-      groqPlan =
-        applyConversationContext(
-          groqPlan,
-          conversationContext
-        );
+    // ======================================================
+    // APPLY FOLLOW-UP CONTEXT
+    // ======================================================
+
+    groqPlan =
+      applyConversationContext(
+        groqPlan,
+        conversationContext
+      );
 
     if (
       process.env.NODE_ENV !==
-      "production"
+        "production"
     ) {
       console.log(
         "Chatbot Groq plan:",
@@ -574,62 +879,79 @@ async function answerQuestion(
     );
   }
 
-  // ==========================================================
+  // ========================================================
   // 2. LOCAL PARSER FALLBACK
-  // ==========================================================
+  // ========================================================
+  //
+  // Used when:
+  //
+  // - GROQ_API_KEY is unavailable
+  // - Groq request fails
+  // - Groq returns malformed JSON
+  // - Groq creates an invalid plan
+  //
 
   try {
-  let localPlan =
-    await createPlan({
-      question:
-        cleanQuestion,
+    let localPlan =
+      await createPlan({
+        question:
+          cleanQuestion,
 
-      schema,
+        schema,
 
-      datasets,
+        datasets,
 
-      context:
-        conversationContext,
-    });
+        context:
+          conversationContext,
+      });
 
-  localPlan =
-    applyConversationContext(
-      localPlan,
-      conversationContext
-    );
+    // ======================================================
+    // APPLY SAME FOLLOW-UP CONTEXT TO LOCAL PLAN
+    // ======================================================
 
-  if (
-    process.env.NODE_ENV !==
-    "production"
-  ) {
-    console.log(
-      "Chatbot local fallback plan:",
-      JSON.stringify(
+    localPlan =
+      applyConversationContext(
         localPlan,
-        null,
-        2
-      )
+        conversationContext
+      );
+
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot local fallback plan:",
+        JSON.stringify(
+          localPlan,
+          null,
+          2
+        )
+      );
+    }
+
+    return await executeResolvedPlan(
+      localPlan
     );
+  } catch (localError) {
+    console.error(
+      "Local chatbot fallback failed:",
+      localError
+    );
+
+    return {
+      success: false,
+
+      source:
+        "system",
+
+      operation:
+        "error",
+
+      answer:
+        localError.message ||
+        "The chatbot could not process the question.",
+    };
   }
-
-  return await executeResolvedPlan(
-    localPlan
-  );
-} catch (localError) {
-  console.error(
-    "Local chatbot fallback failed:",
-    localError
-  );
-
-  return {
-    success: false,
-    source: "system",
-    operation: "error",
-    answer:
-      localError.message ||
-      "The chatbot could not process the question.",
-  };
-}
 }
 
 module.exports = {
