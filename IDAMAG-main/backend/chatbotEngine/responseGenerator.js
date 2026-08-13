@@ -326,29 +326,30 @@ becomes:
 
   try {
     const response =
-      await callGroq({
-        messages: [
-          {
-            role: "system",
-            content:
-              systemPrompt,
-          },
-          {
-            role: "user",
-            content:
-              `QUESTION:\n${question}\n\n` +
-              `OPERATION:\n${String(
-                plan?.operation || ""
-              )}\n\n` +
-              `VERIFIED RESULT:\n${JSON.stringify(
-                result
-              )}`,
-          },
-        ],
+        await callGroq(
+            [
+            {
+                role: "system",
+                content: systemPrompt,
+            },
 
-        temperature: 0.1,
-        maxTokens: 1200,
-      });
+            {
+                role: "user",
+                content:
+                `QUESTION:\n${question}\n\n` +
+                `OPERATION:\n${String(
+                    plan?.operation || ""
+                )}\n\n` +
+                `VERIFIED RESULT:\n${JSON.stringify(
+                    result
+                )}`,
+            },
+            ],
+            {
+            temperature: 0.1,
+            maxTokens: 1200,
+            }
+        );
 
     const naturalAnswer =
       String(
