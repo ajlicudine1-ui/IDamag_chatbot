@@ -66,10 +66,7 @@ function validateDatasetOperation(plan) {
   return null;
 }
 
-function validateDatasetExists(
-  datasets,
-  plan
-) {
+function validateDatasetExists(datasets, plan) {
   const datasetName =
     findDatasetName(
       datasets,
@@ -146,6 +143,8 @@ function validateFilters(
       "greater_or_equal",
       "less_than",
       "less_or_equal",
+      "in",
+      "not_in",
     ]);
 
   const normalized = [];
@@ -193,12 +192,30 @@ function validateFilters(
       );
     }
 
-    if (
-      filter.value ===
-        undefined ||
+    const isMultiValue =
+      operator === "in" ||
+      operator === "not_in";
+
+    if (isMultiValue) {
+      if (
+        !Array.isArray(filter.value) ||
+        filter.value.length === 0 ||
+        filter.value.every(
+          (value) =>
+            value === undefined ||
+            value === null ||
+            String(value).trim() === ""
+        )
+      ) {
+        return makeError(
+          "EMPTY_FILTER_VALUE",
+          `Filter "${column}" has no usable values.`
+        );
+      }
+    } else if (
+      filter.value === undefined ||
       filter.value === null ||
-      String(filter.value).trim() ===
-        ""
+      String(filter.value).trim() === ""
     ) {
       return makeError(
         "EMPTY_FILTER_VALUE",
@@ -209,8 +226,7 @@ function validateFilters(
     normalized.push({
       column,
       operator,
-      value:
-        filter.value,
+      value: filter.value,
     });
   }
 
@@ -225,9 +241,7 @@ function validateDatasetPlan({
   plan,
 }) {
   const operationCheck =
-    validateDatasetOperation(
-      plan
-    );
+    validateDatasetOperation(plan);
 
   if (operationCheck) {
     return operationCheck;
@@ -273,10 +287,8 @@ function validateDatasetPlan({
 
   const normalizedPlan = {
     ...plan,
-    dataset:
-      datasetName,
-    filters:
-      filterCheck.filters,
+    dataset: datasetName,
+    filters: filterCheck.filters,
   };
 
   const operation =
@@ -286,9 +298,6 @@ function validateDatasetPlan({
       .trim()
       .toLowerCase();
 
-  /*
-   * Operations that require plan.column.
-   */
   const columnRequired =
     new Set([
       "sum",
@@ -309,9 +318,7 @@ function validateDatasetPlan({
     ]);
 
   if (
-    columnRequired.has(
-      operation
-    )
+    columnRequired.has(operation)
   ) {
     const columnCheck =
       validateColumnExists(
@@ -320,15 +327,6 @@ function validateDatasetPlan({
         "Column"
       );
 
-    /*
-     * IMPORTANT:
-     * Cross-worksheet operations can request
-     * a column not present in the primary
-     * worksheet.
-     *
-     * Therefore lookup is handled separately
-     * below.
-     */
     if (
       !columnCheck.valid &&
       ![
@@ -348,16 +346,7 @@ function validateDatasetPlan({
     }
   }
 
-  /*
-   * Lookup can have output columns in
-   * different worksheets.
-   *
-   * We only validate that each requested
-   * column exists somewhere in datasets.
-   */
-  if (
-    operation === "lookup"
-  ) {
+  if (operation === "lookup") {
     const requested =
       Array.isArray(
         plan.selectColumns
@@ -380,14 +369,10 @@ function validateDatasetPlan({
 
       for (
         const rowsToCheck of
-        Object.values(
-          datasets
-        )
+        Object.values(datasets)
       ) {
         if (
-          Array.isArray(
-            rowsToCheck
-          ) &&
+          Array.isArray(rowsToCheck) &&
           rowsToCheck.length &&
           findColumn(
             rowsToCheck,
@@ -408,9 +393,6 @@ function validateDatasetPlan({
     }
   }
 
-  /*
-   * Grouping operations require groupBy.
-   */
   if (
     [
       "group_count",
@@ -437,8 +419,7 @@ function validateDatasetPlan({
 
     if (
       !groupCheck.valid &&
-      operation ===
-        "group_count"
+      operation === "group_count"
     ) {
       return groupCheck;
     }
@@ -449,9 +430,6 @@ function validateDatasetPlan({
     }
   }
 
-  /*
-   * Ranking requires a label/group column.
-   */
   if (
     [
       "rank_rows",
@@ -472,8 +450,7 @@ function validateDatasetPlan({
 
   return {
     valid: true,
-    plan:
-      normalizedPlan,
+    plan: normalizedPlan,
   };
 }
 
@@ -500,8 +477,7 @@ function validateQueryPlan({
   }
 
   if (
-    plan.route ===
-    "dataset"
+    plan.route === "dataset"
   ) {
     return validateDatasetPlan({
       datasets,
@@ -510,10 +486,6 @@ function validateQueryPlan({
     });
   }
 
-  /*
-   * Schema/general/clarify routes
-   * do not execute dataset calculations.
-   */
   return {
     valid: true,
     plan,

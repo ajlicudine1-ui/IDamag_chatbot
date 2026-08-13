@@ -268,9 +268,9 @@ AVAILABLE ROUTES
     {
       "column": "exact column name",
       "operator":
-        "equals|not_equals|contains|starts_with|ends_with|greater_than|greater_or_equal|less_than|less_or_equal",
+        "equals|not_equals|contains|starts_with|ends_with|greater_than|greater_or_equal|less_than|less_or_equal|in|not_in",
       "value":
-        "value taken directly from the user's question"
+        "single value from the user's question, or an array of values when operator is in/not_in"
     }
   ],
 
@@ -562,6 +562,171 @@ Then selectColumns MUST contain:
 ]
 
 Do NOT return only one of them.
+
+============================================================
+MULTI-ENTITY FILTER RULES
+============================================================
+
+The dataset engine supports multi-value filters with:
+
+"operator": "in"
+
+and:
+
+"operator": "not_in"
+
+Use "in" when the user names MULTIPLE values that belong to
+the SAME filter column.
+
+Example:
+
+Question:
+"What is the actual salary of Roberto Perales and Vener Dllig?"
+
+Correct plan:
+
+{
+  "route": "dataset",
+  "dataset": "PERMANENT ONLY",
+  "operation": "lookup",
+  "column": null,
+  "labelColumn": null,
+  "groupBy": null,
+  "aggregation": null,
+  "direction": null,
+  "filters": [
+    {
+      "column": "NAME",
+      "operator": "in",
+      "value": [
+        "Roberto Perales",
+        "Vener Dllig"
+      ]
+    }
+  ],
+  "selectColumns": [
+    "ACTUAL SALARY"
+  ],
+  "outputRequested": true,
+  "transform": null,
+  "limit": 10,
+  "showAll": true
+}
+
+IMPORTANT:
+
+- NEVER represent multiple values from the SAME column as
+  multiple equals filters.
+
+WRONG:
+
+[
+  {
+    "column": "NAME",
+    "operator": "equals",
+    "value": "Roberto Perales"
+  },
+  {
+    "column": "NAME",
+    "operator": "equals",
+    "value": "Vener Dllig"
+  }
+]
+
+That would mean:
+
+NAME = Roberto Perales
+AND
+NAME = Vener Dllig
+
+which cannot match one row.
+
+Instead use:
+
+{
+  "column": "NAME",
+  "operator": "in",
+  "value": [
+    "Roberto Perales",
+    "Vener Dllig"
+  ]
+}
+
+which means:
+
+NAME = Roberto Perales
+OR
+NAME = Vener Dllig
+
+Use the same behavior for any dataset and any column.
+
+Examples:
+
+"What are the positions of Roberto, Vener and Juan?"
+→ one NAME filter using operator "in"
+
+"Show production for Ilocos Norte and Ilocos Sur"
+→ one PROVINCE filter using operator "in"
+
+"Show records for PMED and FOD"
+→ one DIVISION filter using operator "in"
+
+"Give me the municipalities of Farmer A and Farmer B"
+→ one Farmer filter using operator "in"
+
+If the user names multiple values for DIFFERENT columns,
+keep them as separate filters because separate filters still
+represent AND conditions.
+
+Example:
+
+"employees in PMED with ACTIVE status"
+
+Correct:
+
+[
+  {
+    "column": "DIVISION",
+    "operator": "equals",
+    "value": "PMED"
+  },
+  {
+    "column": "STATUS",
+    "operator": "equals",
+    "value": "ACTIVE"
+  }
+]
+
+Do NOT use "in" merely because the word "and" appears in the
+question.
+
+Use "in" only when multiple values belong to the SAME column.
+
+For multi-entity lookup questions, normally set:
+
+"showAll": true
+
+so every matching entity can be returned.
+
+Use "not_in" only when the user explicitly excludes multiple
+values.
+
+Example:
+
+"show employees not in PMED or FOD"
+
+may use:
+
+{
+  "column": "DIVISION",
+  "operator": "not_in",
+  "value": [
+    "PMED",
+    "FOD"
+  ]
+}
+
+Do NOT calculate any result yourself.
 
 ============================================================
 LOOKUP RULES
@@ -961,6 +1126,149 @@ No code block.
     ) {
       plan.selectColumns = [];
     }
+
+    // ========================================================
+    // MULTI-ENTITY FILTER NORMALIZATION
+    // ========================================================
+    //
+    // Ensure "in" and "not_in" always use arrays.
+    //
+    plan.filters = plan.filters
+      .map((filter) => {
+        if (
+          !filter ||
+          typeof filter !== "object"
+        ) {
+          return null;
+        }
+
+        const operator = String(
+          filter.operator || "equals"
+        )
+          .trim()
+          .toLowerCase();
+
+        if (
+          operator === "in" ||
+          operator === "not_in"
+        ) {
+          const values =
+            Array.isArray(filter.value)
+              ? filter.value
+              : [filter.value];
+
+          return {
+            ...filter,
+            operator,
+            value: values.filter(
+              (value) =>
+                value !== null &&
+                value !== undefined &&
+                String(value).trim() !== ""
+            ),
+          };
+        }
+
+        return {
+          ...filter,
+          operator,
+        };
+      })
+      .filter(Boolean);
+
+
+    // ========================================================
+    // MERGE SAME-COLUMN EQUALITY FILTERS
+    // ========================================================
+    //
+    // Safety net:
+    // If the planner still emits:
+    //
+    // NAME = Roberto
+    // NAME = Vener
+    //
+    // merge them into:
+    //
+    // NAME IN [Roberto, Vener]
+    //
+    const groupedEquals = new Map();
+    const otherFilters = [];
+
+    for (const filter of plan.filters) {
+      const operator = String(
+        filter.operator || "equals"
+      )
+        .trim()
+        .toLowerCase();
+
+      if (
+        operator === "equals" &&
+        filter.column &&
+        filter.value !== null &&
+        filter.value !== undefined &&
+        String(filter.value).trim() !== ""
+      ) {
+        const key = String(filter.column)
+          .trim()
+          .toLowerCase();
+
+        if (!groupedEquals.has(key)) {
+          groupedEquals.set(key, {
+            column: filter.column,
+            values: [],
+          });
+        }
+
+        const group =
+          groupedEquals.get(key);
+
+        const normalizedValue =
+          String(filter.value)
+            .trim()
+            .toLowerCase();
+
+        if (
+          !group.values.some(
+            (value) =>
+              String(value)
+                .trim()
+                .toLowerCase() ===
+              normalizedValue
+          )
+        ) {
+          group.values.push(
+            filter.value
+          );
+        }
+
+        continue;
+      }
+
+      otherFilters.push(filter);
+    }
+
+    const mergedEquals = [];
+
+    for (const group of groupedEquals.values()) {
+      if (group.values.length === 1) {
+        mergedEquals.push({
+          column: group.column,
+          operator: "equals",
+          value: group.values[0],
+        });
+      } else {
+        mergedEquals.push({
+          column: group.column,
+          operator: "in",
+          value: group.values,
+        });
+      }
+    }
+
+    plan.filters = [
+      ...mergedEquals,
+      ...otherFilters,
+    ];
 
     if (
       typeof plan.showAll !==

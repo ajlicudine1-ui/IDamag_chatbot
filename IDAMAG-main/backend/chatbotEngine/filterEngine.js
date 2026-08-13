@@ -3,161 +3,738 @@ const {
   parseNumber,
   getColumns,
 } = require("./utils");
-const { findColumn } = require("./columnMatcher");
-const { inferType } = require("./schemaBuilder");
 
-function compare(actual, expected, operator = "equals") {
-  const leftText = normalizeText(actual);
-  const rightText = normalizeText(expected);
-  const leftNumber = parseNumber(actual);
-  const rightNumber = parseNumber(expected);
+const {
+  findColumn,
+} = require("./columnMatcher");
 
-  switch (operator) {
-    case "not_equals": return leftText !== rightText;
-    case "contains": return leftText.includes(rightText);
-    case "starts_with": return leftText.startsWith(rightText);
-    case "ends_with": return leftText.endsWith(rightText);
-    case "greater_than": return leftNumber !== null && rightNumber !== null && leftNumber > rightNumber;
-    case "greater_or_equal": return leftNumber !== null && rightNumber !== null && leftNumber >= rightNumber;
-    case "less_than": return leftNumber !== null && rightNumber !== null && leftNumber < rightNumber;
-    case "less_or_equal": return leftNumber !== null && rightNumber !== null && leftNumber <= rightNumber;
+const {
+  inferType,
+} = require("./schemaBuilder");
+
+/**
+ * ==========================================================
+ * NORMALIZE FILTER VALUE
+ * ==========================================================
+ */
+
+function normalizeFilterValue(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map((item) =>
+        normalizeText(item)
+      )
+      .filter(Boolean)
+      .sort()
+      .join("|");
+  }
+
+  return normalizeText(value);
+}
+
+/**
+ * ==========================================================
+ * COMPARE ONE VALUE
+ * ==========================================================
+ *
+ * Supports:
+ *
+ * equals
+ * not_equals
+ * contains
+ * starts_with
+ * ends_with
+ * greater_than
+ * greater_or_equal
+ * less_than
+ * less_or_equal
+ * in
+ * not_in
+ */
+function compare(
+  actual,
+  expected,
+  operator = "equals"
+) {
+  const normalizedOperator =
+    String(
+      operator || "equals"
+    )
+      .trim()
+      .toLowerCase();
+
+  const leftText =
+    normalizeText(actual);
+
+  /**
+   * ========================================================
+   * MULTI-VALUE OPERATORS
+   * ========================================================
+   *
+   * Example:
+   *
+   * NAME IN [
+   *   "ROBERTO PERALES",
+   *   "VENER DLLIG"
+   * ]
+   */
+
+  if (
+    normalizedOperator === "in" ||
+    normalizedOperator === "not_in"
+  ) {
+    const expectedValues =
+      Array.isArray(expected)
+        ? expected
+        : [expected];
+
+    const matches =
+      expectedValues.some(
+        (value) =>
+          leftText ===
+          normalizeText(value)
+      );
+
+    return normalizedOperator ===
+      "in"
+      ? matches
+      : !matches;
+  }
+
+  const rightText =
+    normalizeText(expected);
+
+  const leftNumber =
+    parseNumber(actual);
+
+  const rightNumber =
+    parseNumber(expected);
+
+  switch (
+    normalizedOperator
+  ) {
+    case "not_equals":
+      return (
+        leftText !==
+        rightText
+      );
+
+    case "contains":
+      return leftText.includes(
+        rightText
+      );
+
+    case "starts_with":
+      return leftText.startsWith(
+        rightText
+      );
+
+    case "ends_with":
+      return leftText.endsWith(
+        rightText
+      );
+
+    case "greater_than":
+      return (
+        leftNumber !== null &&
+        rightNumber !== null &&
+        leftNumber >
+          rightNumber
+      );
+
+    case "greater_or_equal":
+      return (
+        leftNumber !== null &&
+        rightNumber !== null &&
+        leftNumber >=
+          rightNumber
+      );
+
+    case "less_than":
+      return (
+        leftNumber !== null &&
+        rightNumber !== null &&
+        leftNumber <
+          rightNumber
+      );
+
+    case "less_or_equal":
+      return (
+        leftNumber !== null &&
+        rightNumber !== null &&
+        leftNumber <=
+          rightNumber
+      );
+
     case "equals":
-    default: return leftText === rightText;
+    default:
+      return (
+        leftText ===
+        rightText
+      );
   }
 }
 
-function resolveFilters(rows, filters = []) {
-  return (Array.isArray(filters) ? filters : [])
+/**
+ * ==========================================================
+ * RESOLVE PLANNER FILTERS
+ * ==========================================================
+ *
+ * Converts planner column wording into
+ * actual worksheet column names.
+ *
+ * Supports scalar and array values.
+ */
+function resolveFilters(
+  rows,
+  filters = []
+) {
+  return (
+    Array.isArray(filters)
+      ? filters
+      : []
+  )
     .map((filter) => {
-      const column = findColumn(rows, filter?.column);
-      if (!column) return null;
+      const column =
+        findColumn(
+          rows,
+          filter?.column
+        );
+
+      if (!column) {
+        return null;
+      }
+
+      const operator =
+        String(
+          filter?.operator ||
+            "equals"
+        )
+          .trim()
+          .toLowerCase();
+
+      /**
+       * IN / NOT_IN must use arrays.
+       */
+      let value =
+        filter?.value;
+
+      if (
+        [
+          "in",
+          "not_in",
+        ].includes(
+          operator
+        )
+      ) {
+        value =
+          Array.isArray(
+            filter?.value
+          )
+            ? filter.value
+            : [
+                filter?.value,
+              ];
+
+        value =
+          value
+            .filter(
+              (item) =>
+                item !==
+                  null &&
+                item !==
+                  undefined &&
+                String(item)
+                  .trim() !==
+                  ""
+            );
+      }
+
       return {
         column,
-        operator: filter.operator || "equals",
-        value: filter.value,
+        operator,
+        value,
       };
     })
     .filter(Boolean);
 }
 
-function removeControlNumbers(question) {
-  let text = normalizeText(question);
-  text = text.replace(/\b(top|bottom|first|last)\s+\d{1,3}\b/g, "$1");
-  text = text.replace(
-    /\b\d{1,3}\s+(?=[\p{L}][\p{L}\s._%()/+-]*\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\b)/gu,
-    ""
-  );
-  text = text.replace(
-    /\b(?:show|list|give|display|return|get)\s+\d{1,3}\s+(?=[\p{L}])/g,
-    (match) => match.replace(/\d{1,3}/, "")
-  );
-  return text.replace(/\s+/g, " ").trim();
+/**
+ * ==========================================================
+ * REMOVE CONTROL NUMBERS
+ * ==========================================================
+ *
+ * Prevent numbers in questions such as:
+ *
+ * "top 5"
+ * "first 10"
+ *
+ * from becoming accidental data filters.
+ */
+function removeControlNumbers(
+  question
+) {
+  let text =
+    normalizeText(
+      question
+    );
+
+  text =
+    text.replace(
+      /\b(top|bottom|first|last)\s+\d{1,3}\b/g,
+      "$1"
+    );
+
+  text =
+    text.replace(
+      /\b\d{1,3}\s+(?=[\p{L}][\p{L}\s._%()/+-]*\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\b)/gu,
+      ""
+    );
+
+  text =
+    text.replace(
+      /\b(?:show|list|give|display|return|get)\s+\d{1,3}\s+(?=[\p{L}])/g,
+      (match) =>
+        match.replace(
+          /\d{1,3}/,
+          ""
+        )
+    );
+
+  return text
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim();
 }
 
-function inferValueFilters(rows, question, excludedColumns = []) {
-  const normalizedQuestion = removeControlNumbers(question);
-  const excluded = new Set(excludedColumns.filter(Boolean));
+/**
+ * ==========================================================
+ * INFER FILTER VALUES FROM QUESTION
+ * ==========================================================
+ *
+ * IMPORTANT CHANGE:
+ *
+ * Multiple matching values from the SAME column are
+ * converted into one IN filter.
+ *
+ * Example:
+ *
+ * Question:
+ * "salary of Roberto Perales and Vener Dllig"
+ *
+ * Instead of:
+ *
+ * NAME = Roberto
+ * AND
+ * NAME = Vener
+ *
+ * We generate:
+ *
+ * NAME IN [
+ *   Roberto,
+ *   Vener
+ * ]
+ */
+function inferValueFilters(
+  rows,
+  question,
+  excludedColumns = []
+) {
+  const normalizedQuestion =
+    removeControlNumbers(
+      question
+    );
+
+  const excluded =
+    new Set(
+      excludedColumns
+        .filter(Boolean)
+    );
+
   const matches = [];
 
-  for (const column of getColumns(rows)) {
-    if (excluded.has(column)) continue;
+  for (
+    const column of
+    getColumns(rows)
+  ) {
+    if (
+      excluded.has(column)
+    ) {
+      continue;
+    }
 
-    const type = inferType(rows, column);
-    const seen = new Set();
+    const type =
+      inferType(
+        rows,
+        column
+      );
 
-    for (const row of rows) {
-      const raw = row?.[column];
-      if (raw === null || raw === undefined || String(raw).trim() === "") continue;
+    const seen =
+      new Set();
 
-      const display = String(raw).trim();
-      const normalizedValue = normalizeText(display);
-      if (!normalizedValue || seen.has(normalizedValue)) continue;
-      seen.add(normalizedValue);
+    for (
+      const row of
+      rows
+    ) {
+      const raw =
+        row?.[column];
 
-      if (type === "number") {
-        const escaped = normalizedValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const boundaryPattern = new RegExp(`(^|\\D)${escaped}(\\D|$)`);
+      if (
+        raw === null ||
+        raw === undefined ||
+        String(raw).trim() ===
+          ""
+      ) {
+        continue;
+      }
 
-        if (boundaryPattern.test(normalizedQuestion)) {
+      const display =
+        String(raw)
+          .trim();
+
+      const normalizedValue =
+        normalizeText(
+          display
+        );
+
+      if (
+        !normalizedValue ||
+        seen.has(
+          normalizedValue
+        )
+      ) {
+        continue;
+      }
+
+      seen.add(
+        normalizedValue
+      );
+
+      if (
+        type === "number"
+      ) {
+        const escaped =
+          normalizedValue
+            .replace(
+              /[.*+?^${}()|[\]\\]/g,
+              "\\$&"
+            );
+
+        const boundaryPattern =
+          new RegExp(
+            `(^|\\D)${escaped}(\\D|$)`
+          );
+
+        if (
+          boundaryPattern.test(
+            normalizedQuestion
+          )
+        ) {
           matches.push({
             column,
-            operator: "equals",
-            value: display,
-            score: 1000 + normalizedValue.length,
+            operator:
+              "equals",
+            value:
+              display,
+
+            score:
+              1000 +
+              normalizedValue
+                .length,
           });
         }
       } else if (
-        normalizedValue.length >= 2 &&
-        normalizedQuestion.includes(normalizedValue)
+        normalizedValue
+          .length >= 2 &&
+        normalizedQuestion
+          .includes(
+            normalizedValue
+          )
       ) {
         matches.push({
           column,
-          operator: "equals",
-          value: display,
-          score: normalizedValue.length,
+          operator:
+            "equals",
+          value:
+            display,
+
+          score:
+            normalizedValue
+              .length,
         });
       }
     }
   }
 
-  matches.sort((a, b) => b.score - a.score);
+  matches.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  /**
+   * ========================================================
+   * GROUP MATCHES BY COLUMN
+   * ========================================================
+   *
+   * Previously only one value per column survived.
+   *
+   * Now:
+   *
+   * NAME:
+   * - Roberto
+   * - Vener
+   *
+   * becomes:
+   *
+   * NAME IN [Roberto, Vener]
+   */
+
+  const grouped =
+    new Map();
+
+  for (
+    const match of
+    matches
+  ) {
+    if (
+      !grouped.has(
+        match.column
+      )
+    ) {
+      grouped.set(
+        match.column,
+        []
+      );
+    }
+
+    const values =
+      grouped.get(
+        match.column
+      );
+
+    const alreadyExists =
+      values.some(
+        (item) =>
+          normalizeText(
+            item.value
+          ) ===
+          normalizeText(
+            match.value
+          )
+      );
+
+    if (
+      !alreadyExists
+    ) {
+      values.push(
+        match
+      );
+    }
+  }
 
   const selected = [];
-  const usedColumns = new Set();
 
-  for (const match of matches) {
-    if (!usedColumns.has(match.column)) {
-      usedColumns.add(match.column);
-      selected.push({
-        column: match.column,
-        operator: match.operator,
-        value: match.value,
-      });
+  for (
+    const [
+      column,
+      columnMatches,
+    ] of grouped.entries()
+  ) {
+    if (
+      !columnMatches.length
+    ) {
+      continue;
     }
+
+    /**
+     * One value:
+     *
+     * DIVISION = PMED
+     */
+    if (
+      columnMatches.length ===
+      1
+    ) {
+      selected.push({
+        column,
+
+        operator:
+          columnMatches[0]
+            .operator,
+
+        value:
+          columnMatches[0]
+            .value,
+      });
+
+      continue;
+    }
+
+    /**
+     * Multiple values:
+     *
+     * NAME IN [
+     *   Roberto,
+     *   Vener
+     * ]
+     */
+    selected.push({
+      column,
+
+      operator:
+        "in",
+
+      value:
+        columnMatches.map(
+          (item) =>
+            item.value
+        ),
+    });
   }
 
   return selected;
 }
 
-function inferDatasetValueFilters(datasets, question, excluded = {}) {
+/**
+ * ==========================================================
+ * FIND FILTER VALUES ACROSS ALL DATASETS
+ * ==========================================================
+ */
+function inferDatasetValueFilters(
+  datasets,
+  question,
+  excluded = {}
+) {
   const matches = [];
 
-  for (const [datasetName, rows] of Object.entries(datasets || {})) {
-    if (!Array.isArray(rows) || !rows.length) continue;
+  for (
+    const [
+      datasetName,
+      rows,
+    ] of Object.entries(
+      datasets || {}
+    )
+  ) {
+    if (
+      !Array.isArray(
+        rows
+      ) ||
+      !rows.length
+    ) {
+      continue;
+    }
 
-    const excludedColumns = Array.isArray(excluded?.[datasetName])
-      ? excluded[datasetName]
-      : [];
+    const excludedColumns =
+      Array.isArray(
+        excluded?.[
+          datasetName
+        ]
+      )
+        ? excluded[
+            datasetName
+          ]
+        : [];
 
-    const filters = inferValueFilters(rows, question, excludedColumns);
+    const filters =
+      inferValueFilters(
+        rows,
+        question,
+        excludedColumns
+      );
 
-    for (const filter of filters) {
+    for (
+      const filter of
+      filters
+    ) {
+      const valueLength =
+        Array.isArray(
+          filter.value
+        )
+          ? Math.max(
+              0,
+              ...filter.value.map(
+                (value) =>
+                  normalizeText(
+                    value
+                  ).length
+              )
+            )
+          : normalizeText(
+              filter.value
+            ).length;
+
       matches.push({
-        dataset: datasetName,
+        dataset:
+          datasetName,
+
         ...filter,
-        valueLength: normalizeText(filter.value).length,
+
+        valueLength,
       });
     }
   }
 
-  return matches.sort((a, b) => b.valueLength - a.valueLength);
+  return matches.sort(
+    (a, b) =>
+      b.valueLength -
+      a.valueLength
+  );
 }
 
-function mergeFilters(...groups) {
+/**
+ * ==========================================================
+ * MERGE FILTERS
+ * ==========================================================
+ *
+ * Handles array values safely.
+ */
+function mergeFilters(
+  ...groups
+) {
   const result = [];
-  const seen = new Set();
+  const seen =
+    new Set();
 
-  for (const filters of groups) {
-    for (const filter of filters || []) {
+  for (
+    const filters of
+    groups
+  ) {
+    for (
+      const filter of
+      filters || []
+    ) {
+      if (!filter) {
+        continue;
+      }
+
       const key = [
-        normalizeText(filter.column),
-        filter.operator,
-        normalizeText(filter.value),
+        normalizeText(
+          filter.column
+        ),
+
+        String(
+          filter.operator ||
+            "equals"
+        )
+          .trim()
+          .toLowerCase(),
+
+        normalizeFilterValue(
+          filter.value
+        ),
       ].join("|");
 
-      if (!seen.has(key)) {
+      if (
+        !seen.has(key)
+      ) {
         seen.add(key);
-        result.push(filter);
+
+        result.push(
+          filter
+        );
       }
     }
   }
@@ -165,13 +742,54 @@ function mergeFilters(...groups) {
   return result;
 }
 
-function applyFilters(rows, filters = []) {
-  if (!filters.length) return rows;
+/**
+ * ==========================================================
+ * APPLY FILTERS
+ * ==========================================================
+ *
+ * Different filter objects still use AND.
+ *
+ * Example:
+ *
+ * DIVISION = PMED
+ * AND
+ * STATUS = ACTIVE
+ *
+ * But an IN filter uses OR internally:
+ *
+ * NAME IN [
+ *   Roberto,
+ *   Vener
+ * ]
+ *
+ * means:
+ *
+ * Roberto OR Vener
+ */
+function applyFilters(
+  rows,
+  filters = []
+) {
+  if (
+    !filters.length
+  ) {
+    return rows;
+  }
 
-  return rows.filter((row) =>
-    filters.every((filter) =>
-      compare(row?.[filter.column], filter.value, filter.operator)
-    )
+  return rows.filter(
+    (row) =>
+      filters.every(
+        (filter) =>
+          compare(
+            row?.[
+              filter.column
+            ],
+
+            filter.value,
+
+            filter.operator
+          )
+      )
   );
 }
 
