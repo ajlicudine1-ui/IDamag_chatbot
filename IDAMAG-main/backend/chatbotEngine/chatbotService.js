@@ -31,7 +31,9 @@ const {
   generateNaturalResponse,
 } = require("./responseGenerator");
 
-
+const {
+  evaluatePlanConfidence,
+} = require("./confidenceEngine");
 
 /**
  * Main chatbot entry point.
@@ -301,6 +303,35 @@ async function answerQuestion(
       }
 
       plan = validation.plan;
+
+      // ==========================================================
+      // CONFIDENCE CHECK
+      // ==========================================================
+
+      const confidence =
+        evaluatePlanConfidence({
+          datasets,
+          plan,
+        });
+
+      if (!confidence.confident) {
+        return {
+          success: false,
+          source: "confidence",
+          operation: "clarify",
+
+          reason:
+            confidence.reason,
+
+          candidates:
+            confidence.candidates ||
+            [],
+
+          answer:
+            confidence.question ||
+            "I'm not completely sure what you mean. Could you clarify?",
+        };
+      }
 
       let result;
 
