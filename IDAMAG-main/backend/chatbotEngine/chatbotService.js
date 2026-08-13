@@ -31,9 +31,6 @@ const {
   generateNaturalResponse,
 } = require("./responseGenerator");
 
-const {
-  evaluatePlanConfidence,
-} = require("./confidenceEngine");
 
 /**
  * Main chatbot entry point.
@@ -92,43 +89,26 @@ function applyConversationContext(
   // keep ROBERTO PERALES.
   //
 
-  if (
-    resolvedPlan.route ===
-      "dataset" &&
-    context.lastEntity
-  ) {
-    const entityColumn =
-      context.lastEntity.column;
-
-    const alreadyHasEntity =
-      resolvedPlan.filters.some(
-        (filter) =>
-          String(
-            filter?.column || ""
-          )
-            .trim()
-            .toLowerCase() ===
-          String(
-            entityColumn || ""
-          )
-            .trim()
-            .toLowerCase()
-      );
-
-    if (!alreadyHasEntity) {
+      if (
+      resolvedPlan.route ===
+        "dataset" &&
+      resolvedPlan.filters.length ===
+        0 &&
+      context.lastEntity
+    ) {
       resolvedPlan.filters.push({
         column:
           context.lastEntity.column,
 
         operator:
-          context.lastEntity.operator ||
+          context.lastEntity
+            .operator ||
           "equals",
 
         value:
           context.lastEntity.value,
       });
     }
-  }
 
   // ==========================================================
   // 2. INHERIT PREVIOUS OUTPUT FIELD
@@ -321,34 +301,6 @@ async function answerQuestion(
 
       plan = validation.plan;
 
-      // ==========================================================
-      // CONFIDENCE CHECK
-      // ==========================================================
-
-      const confidence =
-        evaluatePlanConfidence({
-          datasets,
-          plan,
-        });
-
-      if (!confidence.confident) {
-        return {
-          success: false,
-          source: "confidence",
-          operation: "clarify",
-
-          reason:
-            confidence.reason,
-
-          candidates:
-            confidence.candidates ||
-            [],
-
-          answer:
-            confidence.question ||
-            "I'm not completely sure what you mean. Could you clarify?",
-        };
-      }
 
       let result;
 
