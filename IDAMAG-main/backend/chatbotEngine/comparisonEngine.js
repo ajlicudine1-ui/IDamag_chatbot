@@ -51,35 +51,143 @@ function formatNumber(value) {
 /**
  * Extract a usable numeric value from a
  * verified calculation result.
+ *
+ * IMPORTANT:
+ * For lookup operations, read the requested
+ * metric from result.results before falling
+ * back to count. This prevents comparing
+ * "1 matched row" instead of the actual value.
  */
-function extractNumericValue(result) {
+function extractNumericValue(
+  result,
+  metric = null
+) {
   if (!result) {
     return null;
   }
 
+  // ========================================================
+  // 1. LOOKUP RESULTS
+  // ========================================================
+
+  if (
+    String(
+      result.operation || ""
+    )
+      .trim()
+      .toLowerCase() ===
+      "lookup" &&
+    Array.isArray(
+      result.results
+    ) &&
+    result.results.length
+  ) {
+    const firstRow =
+      result.results[0];
+
+    if (
+      firstRow &&
+      typeof firstRow ===
+        "object"
+    ) {
+      if (metric) {
+        const requestedMetric =
+          Array.isArray(metric)
+            ? metric[0]
+            : metric;
+
+        const metricKey =
+          Object.keys(
+            firstRow
+          ).find(
+            (key) =>
+              normalizeText(key) ===
+              normalizeText(
+                requestedMetric
+              )
+          );
+
+        if (metricKey) {
+          const number =
+            toNumber(
+              firstRow[
+                metricKey
+              ]
+            );
+
+          if (
+            number !== null
+          ) {
+            return {
+              field:
+                metricKey,
+              value:
+                number,
+            };
+          }
+        }
+      }
+
+      for (
+        const [
+          key,
+          rawValue,
+        ] of Object.entries(
+          firstRow
+        )
+      ) {
+        const number =
+          toNumber(
+            rawValue
+          );
+
+        if (
+          number !== null
+        ) {
+          return {
+            field:
+              key,
+            value:
+              number,
+          };
+        }
+      }
+    }
+  }
+
+  // ========================================================
+  // 2. NORMAL NUMERIC OPERATIONS
+  // ========================================================
+
   const fields = [
     "value",
     "total",
-    "count",
     "average",
     "median",
     "minimum",
     "maximum",
+    "count",
   ];
 
-  for (const field of fields) {
+  for (
+    const field of fields
+  ) {
     if (
-      result[field] !== undefined
+      result[field] !==
+        undefined
     ) {
       const number =
         toNumber(
           result[field]
         );
 
-      if (number !== null) {
+      if (
+        number !== null
+      ) {
         return {
           field,
-          value: number,
+          value:
+            number,
         };
       }
     }
@@ -191,14 +299,22 @@ function areComparable(
   left,
   right
 ) {
+  const leftMetric =
+    getMetricLabel(left);
+
+  const rightMetric =
+    getMetricLabel(right);
+
   const leftNumeric =
     extractNumericValue(
-      left?.result
+      left?.result,
+      leftMetric
     );
 
   const rightNumeric =
     extractNumericValue(
-      right?.result
+      right?.result,
+      rightMetric
     );
 
   if (
@@ -211,12 +327,6 @@ function areComparable(
         "NON_NUMERIC_RESULTS",
     };
   }
-
-  const leftMetric =
-    getMetricLabel(left);
-
-  const rightMetric =
-    getMetricLabel(right);
 
   if (
     leftMetric &&
