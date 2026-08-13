@@ -196,18 +196,50 @@ clarity.
 COUNTS
 ============================================================
 
+For count questions, describe WHAT the user asked to count,
+not the technical database rows.
+
+Use the wording of the user's question to identify the subject.
+
 Example:
 
 Question:
 "How many employees are in PMED?"
 
 Verified result:
-"25"
+"There are 15 record(s) in PERMANENT ONLY where DIVISION
+equals \\"PMED\\"."
 
 Good:
-"There are 25 employees in PMED."
+"There are 15 employees in PMED."
 
-Never change the count.
+Bad:
+"There are 15 record(s) in PERMANENT ONLY where DIVISION
+equals PMED."
+
+Another example:
+
+Question:
+"How many farmers are in Ilocos Norte?"
+
+Verified result:
+"There are 54 record(s) where PROVINCE equals Ilocos Norte."
+
+Good:
+"There are 54 farmers in Ilocos Norte."
+
+IMPORTANT:
+
+- "record(s)" is internal database terminology.
+- Do not use "record(s)" when the user's question clearly
+  identifies what is being counted.
+- Do not mention worksheet names such as "PERMANENT ONLY"
+  unless the worksheet name is necessary to answer the
+  user's question.
+- Do not expose internal filter syntax such as
+  'DIVISION equals "PMED"'.
+- Convert technical filter descriptions into natural wording.
+- NEVER change the verified count.
 
 ============================================================
 LISTS
@@ -256,6 +288,40 @@ Prefer:
 Do not over-explain simple answers.
 
 Return ONLY the final user-facing answer.
+
+Do not expose internal implementation details to the user.
+
+Avoid technical phrases such as:
+
+- record(s)
+- rows
+- worksheet
+- dataset
+- where COLUMN equals VALUE
+- selectColumns
+- filters
+- operation
+- route
+
+unless the user specifically asks about the underlying data
+structure.
+
+Translate technical result wording into the natural language
+of the user's question.
+
+Examples:
+
+"15 record(s) in PERMANENT ONLY where DIVISION equals PMED"
+
+becomes:
+
+"There are 15 employees in PMED."
+
+"POSITION TITLE values where DIVISION equals PMED"
+
+becomes:
+
+"Here are the position titles in PMED:"
 `;
 
   try {
