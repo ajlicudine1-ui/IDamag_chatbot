@@ -15,6 +15,10 @@ const {
   updateConversation,
 } = require("./conversationManager");
 
+const {
+  normalizeQuestion,
+} = require("./questionNormalizer");
+
 /**
  * Main chatbot entry point.
  *
@@ -31,9 +35,14 @@ async function answerQuestion(
   question,
   sessionId = "default"
 ) {
-  const cleanQuestion = String(
+  const originalQuestion = String(
     question || ""
   ).trim();
+
+  const cleanQuestion =
+    normalizeQuestion(
+      originalQuestion
+    );
 
   if (!cleanQuestion) {
     return {
