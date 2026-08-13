@@ -31,6 +31,10 @@ const {
   generateNaturalResponse,
 } = require("./responseGenerator");
 
+const {
+  resolvePlanEntities,
+} = require("./entityResolver");
+
 
 /**
  * Main chatbot entry point.
@@ -303,6 +307,35 @@ async function answerQuestion(
 
 
       let result;
+
+      // ==========================================================
+      // RESOLVE REAL DATASET VALUES
+      // ==========================================================
+
+      const entityResolution =
+        resolvePlanEntities({
+          datasets,
+          plan,
+        });
+
+      plan =
+        entityResolution.plan;
+
+      if (
+        process.env.NODE_ENV !==
+          "production" &&
+        entityResolution.changes
+          ?.length
+      ) {
+        console.log(
+          "Chatbot entity corrections:",
+          JSON.stringify(
+            entityResolution.changes,
+            null,
+            2
+          )
+        );
+      }
 
       // --------------------------------------------------------
       // SCHEMA QUESTION
