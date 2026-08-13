@@ -10,12 +10,51 @@ import {
 } from "react-router-dom";
 
 import { getOffices } from "../../constants/offices";
-import * as Icons from "../icons/OfficeIcons";
 
 import {
   ChevronLeft,
   ChevronRight,
+  Wheat,
+  Sprout,
+  Users,
+  HeartPulse,
+  Banknote,
+  Construction,
+  FlaskConical,
+  Settings,
+  LayoutGrid,
 } from "lucide-react";
+
+
+const getCategoryIcon = (office) => {
+  const acronym = String(office?.acronym || "").trim().toUpperCase();
+  const name = String(office?.name || "").trim().toLowerCase();
+
+  const iconMap = {
+    AGPROD: Wheat,
+    AGPROG: Sprout,
+    ADMIN: Settings,
+    "FARM&BEN": Users,
+    AH: HeartPulse,
+    FINMAN: Banknote,
+    INFRA: Construction,
+    "R&T": FlaskConical,
+    OTHERS: LayoutGrid,
+  };
+
+  if (iconMap[acronym]) return iconMap[acronym];
+
+  if (name.includes("agricultural production")) return Wheat;
+  if (name.includes("agricultural programs")) return Sprout;
+  if (name.includes("administration")) return Settings;
+  if (name.includes("farmers") || name.includes("beneficiaries")) return Users;
+  if (name.includes("animal health")) return HeartPulse;
+  if (name.includes("financial management")) return Banknote;
+  if (name.includes("infrastructure")) return Construction;
+  if (name.includes("research") || name.includes("technical services")) return FlaskConical;
+
+  return LayoutGrid;
+};
 
 function Sidebar({
   activeOfficeId,
@@ -488,9 +527,7 @@ function Sidebar({
             {!officesLoading &&
               !officesError &&
               offices.map((office) => {
-                const IconComponent =
-                  Icons[office.iconName] ||
-                  Icons.IconWorld;
+                const IconComponent = getCategoryIcon(office);
 
                 const isActive =
                   Number(activeOfficeId) ===
