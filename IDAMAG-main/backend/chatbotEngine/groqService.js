@@ -154,6 +154,7 @@ function extractJsonObject(text) {
 async function createSchemaAwarePlan({
   question,
   schema,
+  context = null,
 }) {
   const compactSchema = schema.map((dataset) => ({
     name: dataset.name,
@@ -172,6 +173,37 @@ async function createSchemaAwarePlan({
       })
     ),
   }));
+
+  const safeContext = context
+  ? {
+      isFollowUp:
+        context.isFollowUp === true,
+
+      lastEntity:
+        context.lastEntity || null,
+
+      lastDataset:
+        context.lastDataset || null,
+
+      lastIntent:
+        context.lastIntent || null,
+
+      lastMetric:
+        context.lastMetric || null,
+
+      lastFilters:
+        Array.isArray(
+          context.lastFilters
+        )
+          ? context.lastFilters
+          : [],
+
+      lastPlan:
+        context.isFollowUp
+          ? context.lastPlan || null
+          : null,
+    }
+  : null;
 
   const systemPrompt = `
 You are a schema-aware query planner for a data chatbot.
@@ -791,6 +823,11 @@ No code block.
           `SCHEMA:\n${JSON.stringify(
             compactSchema
           )}\n\n` +
+
+          `CONVERSATION CONTEXT:\n${JSON.stringify(
+            safeContext
+          )}\n\n` +
+
           `QUESTION:\n${question}`,
       },
     ],

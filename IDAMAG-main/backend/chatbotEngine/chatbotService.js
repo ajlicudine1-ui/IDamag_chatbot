@@ -2,11 +2,18 @@ const { buildSchema } = require("./schemaBuilder");
 const { createPlan } = require("./intentParser");
 const { executePlan } = require("./calculationEngine");
 const { answerSchemaQuestion } = require("./schemaEngine");
+
 const {
   answerGeneralQuestion,
   createSchemaAwarePlan,
 } = require("./groqService");
+
 const { normalizeDatasets } = require("./utils");
+
+const {
+  getRelevantContext,
+  updateConversation,
+} = require("./conversationManager");
 
 /**
  * Main chatbot entry point.
@@ -14,11 +21,16 @@ const { normalizeDatasets } = require("./utils");
  * GROQ-FIRST, DATA-SAFE ARCHITECTURE
  * ----------------------------------
  * 1. Groq interprets flexible natural-language wording using the live schema.
- * 2. JavaScript validates and executes the structured plan using CURRENT rows.
- * 3. Groq never calculates, filters, joins, ranks, or invents dataset answers.
- * 4. If Groq is unavailable or returns a bad plan, the local parser is used.
+ * 2. Conversation context is supplied for follow-up questions.
+ * 3. JavaScript validates and executes the structured plan using CURRENT rows.
+ * 4. Groq never calculates, filters, joins, ranks, or invents dataset answers.
+ * 5. If Groq is unavailable or returns a bad plan, the local parser is used.
  */
-async function answerQuestion(input, question) {
+async function answerQuestion(
+  input,
+  question,
+  sessionId = "default"
+) {
   const cleanQuestion = String(
     question || ""
   ).trim();
@@ -34,9 +46,7 @@ async function answerQuestion(input, question) {
   const datasets =
     normalizeDatasets(input);
 
-  if (
-    !Object.keys(datasets).length
-  ) {
+  if (!Object.keys(datasets).length) {
     return {
       success: false,
       source: "system",
@@ -48,6 +58,48 @@ async function answerQuestion(input, question) {
   const schema =
     buildSchema(datasets);
 
+  /**
+   * Previous conversation information.
+   *
+   * Example:
+   *
+   * User:
+   * "What is the planting month of Aaron?"
+   *
+   * Next question:
+   * "How about his expected yield?"
+   *
+   * Context may contain:
+   *
+   * {
+   *   lastEntity: {
+   *     column: "Farmer",
+   *     value: "Aaron"
+   *   },
+   *   lastDataset: "farmer_details",
+   *   lastMetric: "Planting Month"
+   * }
+   */
+  const conversationContext =
+    getRelevantContext(
+      sessionId,
+      cleanQuestion
+    );
+
+  if (
+    process.env.NODE_ENV !==
+    "production"
+  ) {
+    console.log(
+      "Chatbot conversation context:",
+      JSON.stringify(
+        conversationContext,
+        null,
+        2
+      )
+    );
+  }
+
   // ==========================================================
   // EXECUTE A RESOLVED PLAN
   // ==========================================================
@@ -56,56 +108,72 @@ async function answerQuestion(input, question) {
     async (plan) => {
       if (
         !plan ||
-        typeof plan !==
-          "object"
+        typeof plan !== "object"
       ) {
         throw new Error(
           "The query planner returned an invalid plan."
         );
       }
 
-      if (
-        plan.route ===
-        "schema"
-      ) {
-        return answerSchemaQuestion({
-          datasets,
-          schema,
-          plan,
-          question:
-            cleanQuestion,
-        });
-      }
+      let result;
+
+      // --------------------------------------------------------
+      // SCHEMA QUESTION
+      // --------------------------------------------------------
 
       if (
-        plan.route ===
-        "dataset"
+        plan.route === "schema"
       ) {
-        return executePlan({
-          datasets,
-          schema,
-          plan,
-          question:
-            cleanQuestion,
-        });
+        result =
+          await answerSchemaQuestion({
+            datasets,
+            schema,
+            plan,
+            question:
+              cleanQuestion,
+          });
       }
 
-      if (
-        plan.route ===
-        "general"
+      // --------------------------------------------------------
+      // DATASET QUESTION
+      // --------------------------------------------------------
+
+      else if (
+        plan.route === "dataset"
       ) {
-        return await answerGeneralQuestion({
-          question:
-            cleanQuestion,
-          schema,
-        });
+        result =
+          await executePlan({
+            datasets,
+            schema,
+            plan,
+            question:
+              cleanQuestion,
+          });
       }
 
-      if (
-        plan.route ===
-        "clarify"
+      // --------------------------------------------------------
+      // GENERAL QUESTION
+      // --------------------------------------------------------
+
+      else if (
+        plan.route === "general"
       ) {
-        return {
+        result =
+          await answerGeneralQuestion({
+            question:
+              cleanQuestion,
+            schema,
+          });
+      }
+
+      // --------------------------------------------------------
+      // CLARIFICATION
+      // --------------------------------------------------------
+
+      else if (
+        plan.route === "clarify"
+      ) {
+        result = {
           success: false,
           source: "router",
           operation:
@@ -116,29 +184,48 @@ async function answerQuestion(input, question) {
         };
       }
 
-      throw new Error(
-        `Unsupported query route: ${String(
-          plan.route ||
-            "unknown"
-        )}`
-      );
+      // --------------------------------------------------------
+      // UNKNOWN ROUTE
+      // --------------------------------------------------------
+
+      else {
+        throw new Error(
+          `Unsupported query route: ${String(
+            plan.route ||
+              "unknown"
+          )}`
+        );
+      }
+
+      /**
+       * Save conversation state only when
+       * we received a usable result.
+       *
+       * We intentionally do not overwrite
+       * context after a clarification question.
+       */
+      if (
+        result &&
+        plan.route !== "clarify"
+      ) {
+        updateConversation(
+          sessionId,
+          {
+            question:
+              cleanQuestion,
+            plan,
+            result,
+          }
+        );
+      }
+
+      return result;
     };
 
   // ==========================================================
-  // 1. GROQ FIRST — UNDERSTAND FLEXIBLE WORDING
+  // 1. GROQ FIRST
   // ==========================================================
-  //
-  // Examples that Groq can interpret more naturally:
-  //
-  // "Madupayas commodities"
-  // "commodities Madupayas"
-  // "show crops found in Madupayas"
-  // "how much did this association spend"
-  // "top 5 farmers based on area"
-  //
-  // Groq creates only a PLAN.
-  // JavaScript still reads and calculates the real data.
-  //
+
   let groqPlan = null;
 
   try {
@@ -146,7 +233,20 @@ async function answerQuestion(input, question) {
       await createSchemaAwarePlan({
         question:
           cleanQuestion,
+
         schema,
+
+        /**
+         * NEW:
+         * Groq now receives previous
+         * conversational context.
+         *
+         * groqService.js will be updated
+         * in the next small change to
+         * actually use this property.
+         */
+        context:
+          conversationContext,
       });
 
     if (
@@ -163,13 +263,6 @@ async function answerQuestion(input, question) {
       );
     }
 
-    /*
-     * Execute Groq's structured plan immediately.
-     *
-     * If Groq selected a wrong/nonexistent field or produced a
-     * plan the calculation engine cannot execute, the catch block
-     * below safely falls back to the local parser.
-     */
     return await executeResolvedPlan(
       groqPlan
     );
@@ -183,21 +276,26 @@ async function answerQuestion(input, question) {
   // ==========================================================
   // 2. LOCAL PARSER FALLBACK
   // ==========================================================
-  //
-  // Keeps the chatbot working when:
-  //
-  // - GROQ_API_KEY is missing
-  // - Groq is temporarily unavailable
-  // - Groq returns malformed JSON
-  // - Groq creates a plan that cannot be executed safely
-  //
+
   try {
     const localPlan =
       await createPlan({
         question:
           cleanQuestion,
+
         schema,
+
         datasets,
+
+        /**
+         * Pass conversation context here
+         * as well.
+         *
+         * Your current intentParser may
+         * ignore it for now. That is fine.
+         */
+        context:
+          conversationContext,
       });
 
     if (

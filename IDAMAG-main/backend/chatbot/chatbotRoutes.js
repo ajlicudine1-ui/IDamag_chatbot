@@ -725,10 +725,13 @@ router.post("/chat", async (req, res) => {
       req.body.reportId
     );
 
+    const sessionId = String(
+      req.body.sessionId || ""
+    ).trim();
+
     if (!question) {
       return res.status(400).json({
         success: false,
-
         message:
           "Question is required.",
       });
@@ -737,20 +740,19 @@ router.post("/chat", async (req, res) => {
     if (!Number.isInteger(reportId)) {
       return res.status(400).json({
         success: false,
-
         message:
           "A valid report ID is required.",
       });
     }
 
-    /**
-     * Get:
-     *
-     * - report
-     * - Google Sheet URL
-     * - every configured worksheet
-     * - every worksheet GID
-     */
+    if (!sessionId) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "A chatbot session ID is required.",
+      });
+    }
+
     const {
       report,
       reportConfig,
@@ -759,9 +761,6 @@ router.post("/chat", async (req, res) => {
         reportId
       );
 
-    /**
-     * Load every configured worksheet.
-     */
     const reportData =
       await loadDivisionData(
         reportConfig
@@ -773,33 +772,22 @@ router.post("/chat", async (req, res) => {
       );
 
     if (
-      availableSheets.length ===
-      0
+      availableSheets.length === 0
     ) {
       return res.status(500).json({
         success: false,
-
         message:
           "The selected report did not return any Google Sheets data.",
       });
     }
 
-    /**
-     * Calculate the total rows across
-     * ALL worksheets.
-     */
     const totalRows =
       Object.values(
         reportData
       ).reduce(
-        (
-          total,
-          sheet
-        ) => {
+        (total, sheet) => {
           if (
-            Array.isArray(
-              sheet
-            )
+            Array.isArray(sheet)
           ) {
             return (
               total +
@@ -821,31 +809,16 @@ router.post("/chat", async (req, res) => {
     if (totalRows === 0) {
       return res.status(400).json({
         success: false,
-
         message:
           "The connected Google Sheets contain no readable rows.",
       });
     }
 
-    /**
-     * IMPORTANT:
-     *
-     * reportData now contains ALL worksheets:
-     *
-     * {
-     *    FIRST: [...],
-     *    Second: [...],
-     *    Gender: [...],
-     *    Production: [...]
-     * }
-     *
-     * Your chatbotService dynamically builds
-     * the schema from this object.
-     */
     const result =
       await answerQuestion(
         reportData,
-        question
+        question,
+        sessionId
       );
 
     return res.json({
@@ -858,6 +831,8 @@ router.post("/chat", async (req, res) => {
           : true,
 
       question,
+
+      sessionId,
 
       report: {
         id: Number(
@@ -898,7 +873,7 @@ router.post("/chat", async (req, res) => {
     return res
       .status(
         error.statusCode ||
-          500
+        500
       )
       .json({
         success: false,

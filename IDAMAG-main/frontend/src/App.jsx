@@ -62,6 +62,25 @@ async function readJsonResponse(response) {
   return response.json();
 }
 
+function getChatSessionId() {
+  let sessionId =
+    sessionStorage.getItem(
+      "idamag_chat_session"
+    );
+
+  if (!sessionId) {
+    sessionId =
+      crypto.randomUUID();
+
+    sessionStorage.setItem(
+      "idamag_chat_session",
+      sessionId
+    );
+  }
+
+  return sessionId;
+}
+
 function App() {
   const [isChatbotOpen, setIsChatbotOpen] =
     useState(false);
@@ -633,6 +652,9 @@ function App() {
             reportId: Number(
               selectedReport.id
             ),
+
+            sessionId:
+              getChatSessionId(),
           }),
         }
       );
