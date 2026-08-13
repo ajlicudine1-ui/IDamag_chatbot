@@ -582,6 +582,15 @@ function resolvePlanEntities({
       plan.filters.map(
         (filter) => ({
           ...filter,
+
+          value:
+            Array.isArray(
+              filter?.value
+            )
+              ? [
+                  ...filter.value,
+                ]
+              : filter?.value,
         })
       ),
   };
@@ -597,11 +606,6 @@ function resolvePlanEntities({
     const filter =
       nextPlan.filters[i];
 
-    /**
-     * Only resolve equality-style entity filters.
-     *
-     * Do not fuzzy-resolve numeric comparisons.
-     */
     const operator =
       String(
         filter.operator ||
@@ -610,6 +614,161 @@ function resolvePlanEntities({
         .trim()
         .toLowerCase();
 
+    // ========================================================
+    // MULTI-ENTITY FILTERS
+    // ========================================================
+    //
+    // Example:
+    //
+    // NAME IN [
+    //   "Roberto Perales",
+    //   "Vener Dllig"
+    // ]
+    //
+    // Resolve every value individually while preserving
+    // the IN / NOT_IN operator.
+    //
+    if (
+      operator === "in" ||
+      operator === "not_in"
+    ) {
+      const requestedValues =
+        Array.isArray(
+          filter.value
+        )
+          ? filter.value
+          : [
+              filter.value,
+            ];
+
+      const resolvedValues = [];
+
+      for (
+        const requestedRaw of
+        requestedValues
+      ) {
+        const requestedValue =
+          String(
+            requestedRaw ?? ""
+          ).trim();
+
+        if (!requestedValue) {
+          continue;
+        }
+
+        const resolution =
+          resolveEntityAcrossDatasets({
+            datasets,
+
+            requestedValue,
+
+            preferredDataset:
+              plan.dataset,
+
+            preferredColumn:
+              filter.column,
+          });
+
+        /**
+         * If no safe fuzzy resolution exists,
+         * preserve the original user value.
+         */
+        if (
+          !resolution.resolved
+        ) {
+          resolvedValues.push(
+            requestedRaw
+          );
+          continue;
+        }
+
+        const sameColumn =
+          normalizeText(
+            resolution.column
+          ) ===
+          normalizeText(
+            filter.column
+          );
+
+        if (!sameColumn) {
+          resolvedValues.push(
+            requestedRaw
+          );
+          continue;
+        }
+
+        resolvedValues.push(
+          resolution.resolvedValue
+        );
+
+        if (
+          String(requestedRaw) !==
+          String(
+            resolution.resolvedValue
+          )
+        ) {
+          changes.push({
+            dataset:
+              resolution.dataset,
+
+            column:
+              resolution.column,
+
+            from:
+              requestedRaw,
+
+            to:
+              resolution.resolvedValue,
+
+            score:
+              resolution.score,
+          });
+        }
+      }
+
+      /**
+       * Remove duplicate resolved values while
+       * keeping the first occurrence/order.
+       */
+      const uniqueValues = [];
+      const seenValues =
+        new Set();
+
+      for (
+        const value of
+        resolvedValues
+      ) {
+        const key =
+          normalizeValue(value);
+
+        if (
+          !key ||
+          seenValues.has(key)
+        ) {
+          continue;
+        }
+
+        seenValues.add(key);
+        uniqueValues.push(value);
+      }
+
+      nextPlan.filters[i] = {
+        ...filter,
+        operator,
+
+        value:
+          uniqueValues,
+      };
+
+      continue;
+    }
+
+    // ========================================================
+    // SINGLE-ENTITY EQUALITY FILTER
+    // ========================================================
+    //
+    // Keep the existing equals behavior.
+    //
     if (
       operator !==
       "equals"
@@ -676,12 +835,10 @@ function resolvePlanEntities({
     nextPlan.filters[i] = {
       ...filter,
 
-      /**
-       * Use the real column name discovered in
-       * the dataset as well.
-       */
       column:
         resolution.column,
+
+      operator,
 
       value:
         newValue,
@@ -712,8 +869,10 @@ function resolvePlanEntities({
 
   return {
     resolved: true,
+
     plan:
       nextPlan,
+
     changes,
   };
 }
