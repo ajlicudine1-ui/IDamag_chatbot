@@ -1955,6 +1955,9 @@ async function answerQuestion(
 
   let groqPlan = null;
 
+  // IMPORTANT: Only PLANNING failures may use the local parser.
+  // Once Groq has produced a plan, execution errors must be surfaced
+  // instead of silently replacing the plan with a local-parser plan.
   try {
     groqPlan =
       await createSchemaAwarePlan({
@@ -2010,14 +2013,47 @@ async function answerQuestion(
       );
     }
 
-    return await executeResolvedPlan(
-      groqPlan
-    );
   } catch (groqError) {
     console.error(
-      "Groq planning/execution failed; using local fallback:",
+      "Groq planning failed; using local fallback:",
       groqError
     );
+
+    groqPlan = null;
+  }
+
+  // ========================================================
+  // EXECUTE GROQ PLAN WITHOUT SILENT FALLBACK
+  // ========================================================
+
+  if (groqPlan) {
+    try {
+      const groqResult =
+        await executeResolvedPlan(
+          groqPlan
+        );
+
+      return {
+        ...groqResult,
+        plannerSource: "groq",
+      };
+    } catch (groqExecutionError) {
+      console.error(
+        "Groq plan execution failed. Local fallback intentionally NOT used:",
+        groqExecutionError
+      );
+
+      return {
+        success: false,
+        source: "system",
+        operation: "error",
+        plannerSource: "groq",
+        debugPlan: groqPlan,
+        answer:
+          groqExecutionError.message ||
+          "The Groq query plan could not be executed.",
+      };
+    }
   }
 
   // ========================================================
@@ -2087,9 +2123,15 @@ async function answerQuestion(
       );
     }
 
-    return await executeResolvedPlan(
-      localPlan
-    );
+    const localResult =
+      await executeResolvedPlan(
+        localPlan
+      );
+
+    return {
+      ...localResult,
+      plannerSource: "local-fallback",
+    };
   } catch (localError) {
     console.error(
       "Local chatbot fallback failed:",
