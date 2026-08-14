@@ -1502,12 +1502,17 @@ function detectMultiFieldLookup(question, schema, datasets) {
    * Deterministic multi-field lookup.
    *
    * Examples:
-   * - "municipality with registration number CN201708932 and commodities"
-   * - "name of farmer with farm id 1001 and planting month"
+   * - "what is the project id and project title of 64885"
+   * - "municipality and commodities of CN201708932"
+   * - "name of farmer and planting month for farm id 1001"
    *
    * RULE:
-   * Return ONLY columns explicitly requested by the user.
-   * The identifying column/value is used only as the filter.
+   * Return every REAL schema column explicitly requested
+   * in the output part of the question.
+   *
+   * The identifying column/value is used as the filter.
+   * If the user ALSO explicitly requests that identifying
+   * column as an output, it is allowed to be returned.
    */
 
   const identifierMatches =
@@ -1520,28 +1525,52 @@ function detectMultiFieldLookup(question, schema, datasets) {
     return null;
   }
 
-  const identifier =
-    identifierMatches[0];
+  /*
+   * Prefer the identifier match that leaves the strongest
+   * set of explicitly requested output columns.
+   *
+   * This avoids accidentally choosing an output field as the
+   * identifier merely because the identifier value resembles
+   * something in that field.
+   */
+  const allColumns =
+    getAllColumns(schema);
 
-  const questionTokens = new Set(
-    normalizeTarget(text)
-      .split(/\s+/)
-      .filter(Boolean)
-  );
+  /*
+   * Extract only the OUTPUT side of the request when possible.
+   *
+   * Examples:
+   *
+   * "what is the project id and project title of 64885"
+   * -> "project id and project title"
+   *
+   * "show municipality and commodities for CN201708932"
+   * -> "municipality and commodities"
+   *
+   * This prevents the identifier/filter wording from being
+   * mistaken for a requested output field.
+   */
+  const outputMatch =
+    text.match(
+      /^(?:what|which|who|show|give|tell me|get|find|lookup)?\s*(?:is|are|was|were)?\s*(?:the\s+)?(.+?)\s+(?:of|for|from|with|under|using|by)\s+.+$/i
+    );
 
-  const identifierColumnTokens =
+  const outputText =
+    normalizeTarget(
+      outputMatch?.[1] ||
+      text
+    );
+
+  const outputTokens =
     new Set(
-      normalizeTarget(
-        identifier.column
-      )
+      outputText
         .split(/\s+/)
         .filter(Boolean)
     );
 
-  const selectColumns = [];
-  const seen = new Set();
+  const explicitlyRequestedColumns = [];
 
-  for (const item of getAllColumns(schema)) {
+  for (const item of allColumns) {
     const columnTokens =
       normalizeTarget(
         item.name
@@ -1553,67 +1582,145 @@ function detectMultiFieldLookup(question, schema, datasets) {
       continue;
     }
 
-    const normalizedColumnName =
-      normalizeText(item.name);
-
-    const normalizedIdentifierColumn =
-      normalizeText(
-        identifier.column
-      );
-
     /*
-     * Never return the field being used only as the identifier/filter.
-     * Example: Registration Number should not be returned merely because
-     * the user said "with registration number CN201708932".
-     */
-    if (
-      normalizedColumnName ===
-      normalizedIdentifierColumn
-    ) {
-      continue;
-    }
-
-    /*
-     * A requested output column is selected only when ALL meaningful
-     * column tokens are explicitly present in the user's question.
+     * A column is considered explicitly requested only when
+     * all meaningful tokens from its real schema name are
+     * present in the OUTPUT portion of the user's question.
      *
      * Examples:
-     * "Farmer Name" -> farmer + name must both be present
-     * "Planting Month" -> planting + month must both be present
-     * "Municipality" -> municipality must be present
-     * "Commodities" -> commodity token matches commodities after singularize
-     *
-     * This prevents unrelated fields like:
-     * - IP
-     * - Date of Registration
-     * - Registration Number
+     * "Project ID"    -> project + id
+     * "Project Title" -> project + title
      */
     const explicitlyRequested =
       columnTokens.every(
         (token) =>
-          questionTokens.has(token)
+          outputTokens.has(token)
       );
 
     if (!explicitlyRequested) {
       continue;
     }
 
-    const key =
-      normalizedColumnName;
-
-    if (!seen.has(key)) {
-      seen.add(key);
-      selectColumns.push(
-        item.name
-      );
-    }
+    explicitlyRequestedColumns.push(
+      item
+    );
   }
 
   /*
-   * This helper is specifically for requests containing two or more
-   * requested outputs. Single-field questions continue through the
-   * normal cross-dataset lookup.
+   * This helper handles true MULTI-field requests only.
+   * Single-field questions continue through the existing
+   * lookup logic unchanged.
    */
+  if (
+    explicitlyRequestedColumns.length < 2
+  ) {
+    return null;
+  }
+
+  /*
+   * Choose the identifier match that is most compatible with
+   * the requested outputs.
+   *
+   * Prefer a worksheet that contains as many requested output
+   * fields as possible. calculationEngine.js can still bridge
+   * to other worksheets when necessary.
+   */
+  let bestIdentifier = null;
+
+  for (const candidate of identifierMatches) {
+    const localRequestedCount =
+      explicitlyRequestedColumns.filter(
+        (item) =>
+          item.dataset ===
+          candidate.dataset
+      ).length;
+
+    const score =
+      localRequestedCount * 10 +
+      Number(
+        candidate.score ||
+        candidate.confidence ||
+        0
+      );
+
+    if (
+      !bestIdentifier ||
+      score > bestIdentifier.score
+    ) {
+      bestIdentifier = {
+        candidate,
+        score,
+      };
+    }
+  }
+
+  const identifier =
+    bestIdentifier?.candidate ||
+    identifierMatches[0];
+
+  if (!identifier) {
+    return null;
+  }
+
+  /*
+   * Preserve the user's requested order when possible.
+   *
+   * Rank by where each real column name first appears in the
+   * output text. Columns not found by direct normalized phrase
+   * matching keep schema order after the directly found ones.
+   */
+  const orderedRequested =
+    explicitlyRequestedColumns
+      .map((item, index) => {
+        const normalizedName =
+          normalizeTarget(
+            item.name
+          );
+
+        const position =
+          outputText.indexOf(
+            normalizedName
+          );
+
+        return {
+          ...item,
+          originalIndex: index,
+          position:
+            position >= 0
+              ? position
+              : Number.MAX_SAFE_INTEGER,
+        };
+      })
+      .sort(
+        (a, b) =>
+          a.position - b.position ||
+          a.originalIndex -
+            b.originalIndex
+      );
+
+  const selectColumns = [];
+  const seen = new Set();
+
+  for (const item of orderedRequested) {
+    const key =
+      normalizeText(
+        item.name
+      );
+
+    if (
+      !key ||
+      seen.has(key)
+    ) {
+      continue;
+    }
+
+    seen.add(key);
+
+    selectColumns.push(
+      item.name
+    );
+  }
+
   if (selectColumns.length < 2) {
     return null;
   }
@@ -1622,9 +1729,9 @@ function detectMultiFieldLookup(question, schema, datasets) {
     route: "dataset",
 
     /*
-     * Start from the worksheet that contains the identifying value.
-     * calculationEngine.js can merge requested fields from other
-     * worksheets through its dynamic shared-column lookup.
+     * Start from the worksheet containing the identifying
+     * value. calculationEngine.js already supports merging
+     * requested fields from related worksheets.
      */
     dataset:
       identifier.dataset,
@@ -1632,6 +1739,11 @@ function detectMultiFieldLookup(question, schema, datasets) {
     operation:
       "lookup",
 
+    /*
+     * Multi-field lookups use selectColumns.
+     * Keeping column null prevents one requested field from
+     * accidentally replacing the others downstream.
+     */
     column:
       null,
 
@@ -1667,7 +1779,7 @@ function detectMultiFieldLookup(question, schema, datasets) {
       detectShowAll(question),
 
     confidence:
-      0.999,
+      1,
   };
 }
 
