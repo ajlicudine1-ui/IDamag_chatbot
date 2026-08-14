@@ -64,6 +64,239 @@ const {
   buildRetrievalContext,
 } = require("./dataRetriever");
 
+
+function normalizeExplicitColumnText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function compactExplicitColumnText(value) {
+  return normalizeExplicitColumnText(value)
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+/**
+ * Detect a REAL schema column explicitly named by the user.
+ *
+ * This is intentionally deterministic and dataset-agnostic.
+ *
+ * Example:
+ * schema column: "RainfedTotal Area Planted"
+ * question:      "What is the total of Rainfed Total Area Planted?"
+ *
+ * The compact forms match:
+ * "rainfedtotalareaplanted"
+ *
+ * This prevents a planner/fallback parser from replacing an
+ * explicitly requested real field with a similar field.
+ */
+function findExplicitSchemaColumn({
+  schema,
+  question,
+  preferredDataset = null,
+}) {
+  const normalizedQuestion =
+    normalizeExplicitColumnText(question);
+
+  const compactQuestion =
+    compactExplicitColumnText(question);
+
+  if (
+    !normalizedQuestion ||
+    !compactQuestion
+  ) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (const dataset of schema || []) {
+    if (
+      preferredDataset &&
+      String(dataset?.name || "") !==
+        String(preferredDataset)
+    ) {
+      continue;
+    }
+
+    for (const column of dataset?.columns || []) {
+      const name =
+        column?.name;
+
+      if (!name) {
+        continue;
+      }
+
+      const normalizedColumn =
+        normalizeExplicitColumnText(name);
+
+      const compactColumn =
+        compactExplicitColumnText(name);
+
+      if (
+        !normalizedColumn ||
+        !compactColumn
+      ) {
+        continue;
+      }
+
+      let score = 0;
+
+      if (
+        normalizedQuestion ===
+        normalizedColumn
+      ) {
+        score = 100;
+      } else if (
+        compactQuestion ===
+        compactColumn
+      ) {
+        score = 99;
+      } else if (
+        normalizedQuestion.includes(
+          normalizedColumn
+        )
+      ) {
+        score =
+          95 +
+          normalizedColumn.length / 10000;
+      } else if (
+        compactQuestion.includes(
+          compactColumn
+        )
+      ) {
+        score =
+          94 +
+          compactColumn.length / 10000;
+      }
+
+      if (score > 0) {
+        candidates.push({
+          dataset:
+            dataset.name,
+
+          column:
+            name,
+
+          score,
+
+          length:
+            compactColumn.length,
+        });
+      }
+    }
+  }
+
+  if (
+    !candidates.length &&
+    preferredDataset
+  ) {
+    return findExplicitSchemaColumn({
+      schema,
+      question,
+      preferredDataset: null,
+    });
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score - a.score ||
+      b.length - a.length
+  );
+
+  return candidates[0] || null;
+}
+
+function operationUsesMetricColumn(
+  operation
+) {
+  return new Set([
+    "sum",
+    "average",
+    "median",
+    "minimum",
+    "maximum",
+    "non_empty_count",
+    "distinct_count",
+    "list",
+    "rank_rows",
+    "rank_groups",
+    "group_sum",
+    "group_average",
+    "group_minimum",
+    "group_maximum",
+  ]).has(
+    String(operation || "")
+      .trim()
+      .toLowerCase()
+  );
+}
+
+/**
+ * Last planner-independent safeguard.
+ *
+ * If the user explicitly names a real schema column, preserve
+ * that exact column even when Groq or the local fallback chose
+ * a similar one.
+ */
+function enforceExplicitQuestionColumn({
+  plan,
+  schema,
+  question,
+}) {
+  if (
+    !plan ||
+    plan.route !== "dataset" ||
+    !operationUsesMetricColumn(
+      plan.operation
+    )
+  ) {
+    return plan;
+  }
+
+  const match =
+    findExplicitSchemaColumn({
+      schema,
+      question,
+
+      preferredDataset:
+        plan.dataset || null,
+    });
+
+  if (!match) {
+    return plan;
+  }
+
+  const resolved = {
+    ...plan,
+
+    column:
+      match.column,
+
+    dataset:
+      match.dataset ||
+      plan.dataset,
+  };
+
+  if (
+    String(plan.operation || "")
+      .trim()
+      .toLowerCase() === "list"
+  ) {
+    resolved.selectColumns = [
+      match.column,
+    ];
+  }
+
+  return resolved;
+}
+
 /**
  * ==========================================================
  * APPLY CONVERSATION CONTEXT
@@ -1938,26 +2171,17 @@ async function answerQuestion(
   // ========================================================
   // 1. GROQ FIRST
   // ========================================================
-  //
-  // Groq interprets flexible language and creates only
-  // a structured query plan.
-  //
-  // JavaScript remains responsible for:
-  //
-  // - filtering
-  // - joining
-  // - counting
-  // - sums
-  // - averages
-  // - rankings
-  // - comparisons
-  //
 
   let groqPlan = null;
+  let groqPlanningError = null;
 
-  // IMPORTANT: Only PLANNING failures may use the local parser.
-  // Once Groq has produced a plan, execution errors must be surfaced
-  // instead of silently replacing the plan with a local-parser plan.
+  /**
+   * IMPORTANT:
+   * Only GROQ PLANNING is inside this try/catch.
+   *
+   * If Groq successfully returns a plan, execution errors must
+   * not silently cause a second planner to choose another field.
+   */
   try {
     groqPlan =
       await createSchemaAwarePlan({
@@ -1971,11 +2195,17 @@ async function answerQuestion(
 
         retrievalContext,
       });
+  } catch (error) {
+    groqPlanningError =
+      error;
 
-    // ======================================================
-    // APPLY FOLLOW-UP CONTEXT
-    // ======================================================
+    console.error(
+      "Groq planning failed; local fallback will be used:",
+      error
+    );
+  }
 
+  if (groqPlan) {
     groqPlan =
       applyConversationContext(
         groqPlan,
@@ -1999,6 +2229,20 @@ async function answerQuestion(
           cleanQuestion,
       });
 
+    /**
+     * Planner-independent exact-column safeguard.
+     */
+    groqPlan =
+      enforceExplicitQuestionColumn({
+        plan:
+          groqPlan,
+
+        schema,
+
+        question:
+          cleanQuestion,
+      });
+
     if (
       process.env.NODE_ENV !==
         "production"
@@ -2013,45 +2257,42 @@ async function answerQuestion(
       );
     }
 
-  } catch (groqError) {
-    console.error(
-      "Groq planning failed; using local fallback:",
-      groqError
-    );
-
-    groqPlan = null;
-  }
-
-  // ========================================================
-  // EXECUTE GROQ PLAN WITHOUT SILENT FALLBACK
-  // ========================================================
-
-  if (groqPlan) {
     try {
-      const groqResult =
+      const result =
         await executeResolvedPlan(
           groqPlan
         );
 
       return {
-        ...groqResult,
-        plannerSource: "groq",
+        ...result,
+
+        plannerSource:
+          "groq",
       };
     } catch (groqExecutionError) {
       console.error(
-        "Groq plan execution failed. Local fallback intentionally NOT used:",
+        "Groq plan was created successfully, but execution failed. Local parser was NOT used:",
         groqExecutionError
       );
 
       return {
         success: false,
-        source: "system",
-        operation: "error",
-        plannerSource: "groq",
-        debugPlan: groqPlan,
+
+        source:
+          "system",
+
+        operation:
+          "error",
+
+        plannerSource:
+          "groq",
+
         answer:
           groqExecutionError.message ||
-          "The Groq query plan could not be executed.",
+          "The Groq plan could not be executed.",
+
+        debugPlan:
+          groqPlan,
       };
     }
   }
@@ -2060,12 +2301,7 @@ async function answerQuestion(
   // 2. LOCAL PARSER FALLBACK
   // ========================================================
   //
-  // Used when:
-  //
-  // - GROQ_API_KEY is unavailable
-  // - Groq request fails
-  // - Groq returns malformed JSON
-  // - Groq creates an invalid plan
+  // Used ONLY when Groq could not create a plan.
   //
 
   try {
@@ -2081,10 +2317,6 @@ async function answerQuestion(
         context:
           conversationContext,
       });
-
-    // ======================================================
-    // APPLY SAME FOLLOW-UP CONTEXT TO LOCAL PLAN
-    // ======================================================
 
     localPlan =
       applyConversationContext(
@@ -2109,6 +2341,22 @@ async function answerQuestion(
           cleanQuestion,
       });
 
+    /**
+     * Critical fallback safeguard:
+     * even if the local parser chooses a similar field, an
+     * explicitly named REAL schema column wins.
+     */
+    localPlan =
+      enforceExplicitQuestionColumn({
+        plan:
+          localPlan,
+
+        schema,
+
+        question:
+          cleanQuestion,
+      });
+
     if (
       process.env.NODE_ENV !==
         "production"
@@ -2123,14 +2371,25 @@ async function answerQuestion(
       );
     }
 
-    const localResult =
+    const result =
       await executeResolvedPlan(
         localPlan
       );
 
     return {
-      ...localResult,
-      plannerSource: "local-fallback",
+      ...result,
+
+      plannerSource:
+        "local-fallback",
+
+      /**
+       * Temporary debugging only.
+       * This tells us WHY Groq was unavailable without changing
+       * the dataset answer.
+       */
+      groqPlanningError:
+        groqPlanningError?.message ||
+        null,
     };
   } catch (localError) {
     console.error(
@@ -2147,11 +2406,19 @@ async function answerQuestion(
       operation:
         "error",
 
+      plannerSource:
+        "local-fallback",
+
+      groqPlanningError:
+        groqPlanningError?.message ||
+        null,
+
       answer:
         localError.message ||
         "The chatbot could not process the question.",
     };
   }
+
 }
 
 module.exports = {
