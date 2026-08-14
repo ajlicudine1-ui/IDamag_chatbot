@@ -291,6 +291,275 @@ function shouldForceQuestionColumn({ plan, exactColumnMatch }) {
   ]).has(operation);
 }
 
+
+function compactPlannerSchema(schema) {
+  return (schema || []).map((dataset) => ({
+    name: dataset.name,
+    rowCount: dataset.rowCount,
+    columns: (dataset.columns || []).map((column) => ({
+      name: column.name,
+      type: column.type,
+      examples: Array.isArray(column.examples)
+        ? column.examples.slice(0, 2)
+        : [],
+    })),
+  }));
+}
+
+function compactSemanticHintsForQuestion({
+  semanticHints,
+  question,
+  schema,
+}) {
+  const q = normalizeColumnMatchText(question);
+  const schemaColumns = new Set();
+
+  for (const dataset of schema || []) {
+    for (const column of dataset?.columns || []) {
+      if (column?.name) {
+        schemaColumns.add(
+          normalizeColumnMatchText(column.name)
+        );
+      }
+    }
+  }
+
+  const scored = (semanticHints || [])
+    .map((hint) => {
+      const column = String(hint?.column || "");
+      const aliases = Array.isArray(hint?.aliases)
+        ? hint.aliases
+        : [];
+
+      let score = 0;
+
+      const normalizedColumn =
+        normalizeColumnMatchText(column);
+
+      if (
+        normalizedColumn &&
+        q.includes(normalizedColumn)
+      ) {
+        score += 10;
+      }
+
+      for (const alias of aliases) {
+        const normalizedAlias =
+          normalizeColumnMatchText(alias);
+
+        if (
+          normalizedAlias &&
+          q.includes(normalizedAlias)
+        ) {
+          score += 8;
+        }
+      }
+
+      return {
+        column,
+        aliases: aliases.slice(0, 6),
+        score,
+      };
+    })
+    .filter((item) => item.column)
+    .sort((a, b) => b.score - a.score);
+
+  const relevant = scored.filter(
+    (item) => item.score > 0
+  );
+
+  const fallback =
+    relevant.length
+      ? relevant
+      : scored.slice(0, 12);
+
+  return fallback
+    .filter((item) =>
+      schemaColumns.has(
+        normalizeColumnMatchText(item.column)
+      )
+    )
+    .slice(0, 16)
+    .map(({ column, aliases }) => ({
+      column,
+      aliases,
+    }));
+}
+
+function compactRetrievalContextForPlanner(
+  retrievalContext
+) {
+  if (!Array.isArray(retrievalContext)) {
+    return [];
+  }
+
+  return retrievalContext
+    .filter(
+      (dataset) =>
+        dataset &&
+        typeof dataset === "object"
+    )
+    .slice(0, 4)
+    .map((dataset) => ({
+      dataset:
+        dataset.dataset || null,
+
+      matchedValues:
+        Array.isArray(
+          dataset.matchedValues
+        )
+          ? dataset.matchedValues
+              .slice(0, 12)
+              .map((item) => {
+                if (
+                  item &&
+                  typeof item === "object"
+                ) {
+                  return {
+                    column:
+                      item.column || null,
+                    value:
+                      item.value ?? null,
+                  };
+                }
+
+                return item;
+              })
+          : [],
+
+      rows:
+        Array.isArray(
+          dataset.rows
+        )
+          ? dataset.rows
+              .slice(0, 3)
+              .map((row) => {
+                if (
+                  !row ||
+                  typeof row !== "object"
+                ) {
+                  return row;
+                }
+
+                const compactRow = {};
+
+                for (
+                  const [
+                    key,
+                    value,
+                  ] of Object.entries(row)
+                ) {
+                  if (
+                    Object.keys(compactRow)
+                      .length >= 12
+                  ) {
+                    break;
+                  }
+
+                  compactRow[key] =
+                    value;
+                }
+
+                return compactRow;
+              })
+          : [],
+    }));
+}
+
+function compactConversationContext(
+  context
+) {
+  if (!context) {
+    return null;
+  }
+
+  const lastPlan =
+    context.isFollowUp &&
+    context.lastPlan &&
+    typeof context.lastPlan ===
+      "object"
+      ? {
+          route:
+            context.lastPlan.route ||
+            null,
+          dataset:
+            context.lastPlan.dataset ||
+            null,
+          operation:
+            context.lastPlan.operation ||
+            null,
+          column:
+            context.lastPlan.column ||
+            null,
+          labelColumn:
+            context.lastPlan
+              .labelColumn ||
+            null,
+          groupBy:
+            context.lastPlan.groupBy ||
+            null,
+          aggregation:
+            context.lastPlan
+              .aggregation ||
+            null,
+          direction:
+            context.lastPlan.direction ||
+            null,
+          filters:
+            Array.isArray(
+              context.lastPlan.filters
+            )
+              ? context.lastPlan.filters
+                  .slice(0, 6)
+              : [],
+          selectColumns:
+            Array.isArray(
+              context.lastPlan
+                .selectColumns
+            )
+              ? context.lastPlan
+                  .selectColumns
+                  .slice(0, 8)
+              : [],
+          outputRequested:
+            context.lastPlan
+              .outputRequested === true,
+          showAll:
+            context.lastPlan
+              .showAll === true,
+          limit:
+            context.lastPlan.limit ||
+            null,
+        }
+      : null;
+
+  return {
+    isFollowUp:
+      context.isFollowUp === true,
+
+    lastEntity:
+      context.lastEntity || null,
+
+    lastDataset:
+      context.lastDataset || null,
+
+    lastIntent:
+      context.lastIntent || null,
+
+    lastMetric:
+      context.lastMetric || null,
+
+    lastFilters:
+      Array.isArray(
+        context.lastFilters
+      )
+        ? context.lastFilters.slice(0, 6)
+        : [],
+
+    lastPlan,
+  };
+}
+
 /**
  * Uses Groq only as a language interpreter.
  *
@@ -310,23 +579,10 @@ async function createSchemaAwarePlan({
   context = null,
   retrievalContext = null,
 }) {
-  const compactSchema = schema.map((dataset) => ({
-    name: dataset.name,
-    rowCount: dataset.rowCount,
-
-    columns: (dataset.columns || []).map(
-      (column) => ({
-        name: column.name,
-        type: column.type,
-
-        examples: Array.isArray(
-          column.examples
-        )
-          ? column.examples.slice(0, 5)
-          : [],
-      })
-    ),
-  }));
+  const compactSchema =
+    compactPlannerSchema(
+      schema
+    );
 
   const exactQuestionColumnMatch =
     getExactQuestionColumnMatch({
@@ -335,38 +591,19 @@ async function createSchemaAwarePlan({
     });
 
   const semanticHints =
-  buildSemanticHints(schema);
+    compactSemanticHintsForQuestion({
+      semanticHints:
+        buildSemanticHints(schema),
 
-  const safeContext = context
-  ? {
-      isFollowUp:
-        context.isFollowUp === true,
+      question,
 
-      lastEntity:
-        context.lastEntity || null,
+      schema,
+    });
 
-      lastDataset:
-        context.lastDataset || null,
-
-      lastIntent:
-        context.lastIntent || null,
-
-      lastMetric:
-        context.lastMetric || null,
-
-      lastFilters:
-        Array.isArray(
-          context.lastFilters
-        )
-          ? context.lastFilters
-          : [],
-
-      lastPlan:
-        context.isFollowUp
-          ? context.lastPlan || null
-          : null,
-    }
-  : null;
+  const safeContext =
+    compactConversationContext(
+      context
+    );
 
   // ============================================================
   // VERIFIED RETRIEVAL CONTEXT
@@ -381,32 +618,9 @@ async function createSchemaAwarePlan({
   // and verification engine.
   //
   const safeRetrievalContext =
-    Array.isArray(retrievalContext)
-      ? retrievalContext
-          .filter(
-            (dataset) =>
-              dataset &&
-              typeof dataset === "object"
-          )
-          .map((dataset) => ({
-            dataset:
-              dataset.dataset || null,
-
-            matchedValues:
-              Array.isArray(
-                dataset.matchedValues
-              )
-                ? dataset.matchedValues
-                : [],
-
-            rows:
-              Array.isArray(
-                dataset.rows
-              )
-                ? dataset.rows
-                : [],
-          }))
-      : [];
+    compactRetrievalContextForPlanner(
+      retrievalContext
+    );
 
   const systemPrompt = `
 You are a schema-aware query planner for a data chatbot.
