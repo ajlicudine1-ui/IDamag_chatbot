@@ -142,6 +142,72 @@ function extractJsonObject(text) {
   );
 }
 
+
+function normalizeColumnMatchText(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getExactQuestionColumnMatch({ question, schema }) {
+  const q = normalizeColumnMatchText(question);
+  if (!q) return null;
+
+  const matches = [];
+
+  for (const dataset of schema || []) {
+    for (const column of dataset?.columns || []) {
+      const name = column?.name;
+      if (!name) continue;
+
+      const normalized = normalizeColumnMatchText(name);
+      if (!normalized) continue;
+
+      if (q === normalized || q.includes(normalized)) {
+        matches.push({
+          dataset: dataset.name,
+          column: name,
+          normalizedLength: normalized.length,
+          exact: q === normalized,
+        });
+      }
+    }
+  }
+
+  if (!matches.length) return null;
+
+  matches.sort((a, b) => {
+    if (a.exact !== b.exact) return a.exact ? -1 : 1;
+    return b.normalizedLength - a.normalizedLength;
+  });
+
+  return matches[0];
+}
+
+function shouldForceQuestionColumn({ plan, exactColumnMatch }) {
+  if (!plan || plan.route !== "dataset" || !exactColumnMatch) {
+    return false;
+  }
+
+  const operation = String(plan.operation || "").trim().toLowerCase();
+
+  return new Set([
+    "sum",
+    "average",
+    "median",
+    "minimum",
+    "maximum",
+    "non_empty_count",
+    "distinct_count",
+    "list",
+    "rank_rows",
+  ]).has(operation);
+}
+
 /**
  * Uses Groq only as a language interpreter.
  *
@@ -178,6 +244,12 @@ async function createSchemaAwarePlan({
       })
     ),
   }));
+
+  const exactQuestionColumnMatch =
+    getExactQuestionColumnMatch({
+      question,
+      schema,
+    });
 
   const semanticHints =
   buildSemanticHints(schema);
@@ -482,6 +554,15 @@ GENERAL RULES
 - Use ONLY worksheet names that exist in the supplied schema.
 
 - Use ONLY column names that exist in the supplied schema.
+
+- EXACT USER COLUMN WORDING HAS HIGHEST PRIORITY:
+  If the user's question contains the complete name of a real schema
+  column after normalizing case, punctuation, whitespace, and line
+  breaks, select that exact schema column instead of a merely similar
+  column. This applies dynamically to every dataset and column.
+
+- If two real columns differ by an important word and the user explicitly
+  names one complete column, preserve that distinguishing word.
 
 - Do NOT invent worksheet names.
 
@@ -1185,6 +1266,43 @@ No code block.
 
   const plan =
     extractJsonObject(response);
+
+  // ==========================================================
+  // EXACT SCHEMA COLUMN SAFETY NET
+  // ==========================================================
+  //
+  // If the user literally typed a complete real schema column
+  // name, prefer that exact column over a semantically similar
+  // column selected by Groq. No dataset-specific names are
+  // hardcoded here.
+  //
+  if (
+    shouldForceQuestionColumn({
+      plan,
+      exactColumnMatch:
+        exactQuestionColumnMatch,
+    })
+  ) {
+    plan.column =
+      exactQuestionColumnMatch.column;
+
+    if (
+      exactQuestionColumnMatch.dataset
+    ) {
+      plan.dataset =
+        exactQuestionColumnMatch.dataset;
+    }
+
+    if (
+      String(plan.operation || "")
+        .trim()
+        .toLowerCase() === "list"
+    ) {
+      plan.selectColumns = [
+        exactQuestionColumnMatch.column,
+      ];
+    }
+  }
 
   // ==========================================================
   // NORMALIZE PLAN
