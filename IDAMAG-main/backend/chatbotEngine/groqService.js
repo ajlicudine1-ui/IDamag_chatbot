@@ -153,37 +153,120 @@ function normalizeColumnMatchText(value) {
     .trim();
 }
 
-function getExactQuestionColumnMatch({ question, schema }) {
-  const q = normalizeColumnMatchText(question);
-  if (!q) return null;
+function compactColumnMatchText(value) {
+  return normalizeColumnMatchText(value)
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function getExactQuestionColumnMatch({
+  question,
+  schema,
+}) {
+  const normalizedQuestion =
+    normalizeColumnMatchText(
+      question
+    );
+
+  const compactQuestion =
+    compactColumnMatchText(
+      question
+    );
+
+  if (
+    !normalizedQuestion ||
+    !compactQuestion
+  ) {
+    return null;
+  }
 
   const matches = [];
 
   for (const dataset of schema || []) {
     for (const column of dataset?.columns || []) {
-      const name = column?.name;
-      if (!name) continue;
+      const name =
+        column?.name;
 
-      const normalized = normalizeColumnMatchText(name);
-      if (!normalized) continue;
+      if (!name) {
+        continue;
+      }
 
-      if (q === normalized || q.includes(normalized)) {
+      const normalizedColumn =
+        normalizeColumnMatchText(
+          name
+        );
+
+      const compactColumn =
+        compactColumnMatchText(
+          name
+        );
+
+      if (
+        !normalizedColumn ||
+        !compactColumn
+      ) {
+        continue;
+      }
+
+      let score = 0;
+
+      if (
+        normalizedQuestion ===
+        normalizedColumn
+      ) {
+        score = 100;
+      } else if (
+        compactQuestion ===
+        compactColumn
+      ) {
+        score = 99;
+      } else if (
+        normalizedQuestion.includes(
+          normalizedColumn
+        )
+      ) {
+        score =
+          95 +
+          normalizedColumn.length /
+            10000;
+      } else if (
+        compactQuestion.includes(
+          compactColumn
+        )
+      ) {
+        score =
+          94 +
+          compactColumn.length /
+            10000;
+      }
+
+      if (score > 0) {
         matches.push({
-          dataset: dataset.name,
-          column: name,
-          normalizedLength: normalized.length,
-          exact: q === normalized,
+          dataset:
+            dataset.name,
+
+          column:
+            name,
+
+          score,
+
+          normalizedLength:
+            normalizedColumn.length,
         });
       }
     }
   }
 
-  if (!matches.length) return null;
+  if (!matches.length) {
+    return null;
+  }
 
-  matches.sort((a, b) => {
-    if (a.exact !== b.exact) return a.exact ? -1 : 1;
-    return b.normalizedLength - a.normalizedLength;
-  });
+  matches.sort(
+    (a, b) =>
+      b.score - a.score ||
+      b.normalizedLength -
+        a.normalizedLength
+  );
 
   return matches[0];
 }
