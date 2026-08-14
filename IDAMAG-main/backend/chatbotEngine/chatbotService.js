@@ -79,9 +79,235 @@ const {
  * "What is Roberto's position?"
  * "What about Vener?"
  */
+function getSchemaColumns(
+  schema,
+  preferredDataset = null
+) {
+  const results = [];
+
+  for (const dataset of schema || []) {
+    if (
+      preferredDataset &&
+      String(dataset?.name || "") !==
+        String(preferredDataset)
+    ) {
+      continue;
+    }
+
+    for (const column of dataset?.columns || []) {
+      if (!column?.name) continue;
+
+      results.push({
+        dataset:
+          dataset.name,
+
+        column:
+          column.name,
+      });
+    }
+  }
+
+  return results;
+}
+
+function inferRequestedColumnFromQuestion({
+  schema,
+  question,
+  preferredDataset = null,
+  excludedColumns = [],
+}) {
+  const normalizedQuestion =
+    normalizeText(question);
+
+  if (!normalizedQuestion) {
+    return null;
+  }
+
+  const excluded =
+    new Set(
+      (excludedColumns || [])
+        .filter(Boolean)
+        .map(
+          (column) =>
+            normalizeText(column)
+        )
+    );
+
+  const preferred =
+    getSchemaColumns(
+      schema,
+      preferredDataset
+    );
+
+  const fallback =
+    preferred.length
+      ? preferred
+      : getSchemaColumns(
+          schema,
+          null
+        );
+
+  let best = null;
+
+  for (const candidate of fallback) {
+    const normalizedColumn =
+      normalizeText(
+        candidate.column
+      );
+
+    if (
+      !normalizedColumn ||
+      excluded.has(
+        normalizedColumn
+      )
+    ) {
+      continue;
+    }
+
+    let score =
+      similarity(
+        normalizedQuestion,
+        normalizedColumn
+      );
+
+    /**
+     * Strong exact phrase signal.
+     *
+     * Example:
+     * "how about actual salary"
+     * contains the real column label
+     * "ACTUAL SALARY".
+     */
+    if (
+      normalizedQuestion.includes(
+        normalizedColumn
+      )
+    ) {
+      score =
+        Math.max(
+          score,
+          1
+        );
+    } else {
+      /**
+       * Also compare shorter question phrases against
+       * the column name so wording such as:
+       *
+       * "how about the actual salary"
+       *
+       * still resolves dynamically.
+       */
+      const words =
+        normalizedQuestion
+          .split(/\s+/)
+          .filter(Boolean);
+
+      const columnWords =
+        normalizedColumn
+          .split(/\s+/)
+          .filter(Boolean);
+
+      const maxSize =
+        Math.min(
+          Math.max(
+            columnWords.length,
+            1
+          ),
+          words.length
+        );
+
+      for (
+        let size = 1;
+        size <= maxSize;
+        size += 1
+      ) {
+        for (
+          let i = 0;
+          i <= words.length - size;
+          i += 1
+        ) {
+          const phrase =
+            words
+              .slice(
+                i,
+                i + size
+              )
+              .join(" ");
+
+          score =
+            Math.max(
+              score,
+              similarity(
+                phrase,
+                normalizedColumn
+              )
+            );
+        }
+      }
+    }
+
+    if (
+      !best ||
+      score > best.score
+    ) {
+      best = {
+        dataset:
+          candidate.dataset,
+
+        column:
+          candidate.column,
+
+        score,
+      };
+    }
+  }
+
+  /**
+   * Be conservative.
+   *
+   * Exact/near-exact column wording should pass.
+   * Weak guesses should not silently change context.
+   */
+  if (
+    !best ||
+    best.score < 0.72
+  ) {
+    return null;
+  }
+
+  return best;
+}
+
+/**
+ * ==========================================================
+ * APPLY CONVERSATION CONTEXT
+ * ==========================================================
+ *
+ * Dynamic follow-up resolution.
+ *
+ * No employee name, field name, worksheet name, division,
+ * province, municipality, or other dataset value is hardcoded.
+ *
+ * Supports:
+ *
+ * 1. Same entity + new field
+ *    "authorized salary of [person]"
+ *    "how about actual salary"
+ *
+ * 2. New entity + same field
+ *    "position of [person A]"
+ *    "what about [person B]"
+ *
+ * 3. Pronoun follow-ups
+ *    "what is his position title?"
+ */
 function applyConversationContext(
   plan,
-  context
+  context,
+  {
+    schema = [],
+    question = "",
+  } = {}
 ) {
   if (
     !plan ||
@@ -99,9 +325,20 @@ function applyConversationContext(
       Array.isArray(
         plan.filters
       )
-        ? [
-            ...plan.filters,
-          ]
+        ? plan.filters.map(
+            (filter) => ({
+              ...filter,
+
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [
+                      ...filter.value,
+                    ]
+                  : filter?.value,
+            })
+          )
         : [],
 
     selectColumns:
@@ -114,76 +351,219 @@ function applyConversationContext(
         : [],
   };
 
-  // ========================================================
-  // 1. INHERIT LAST ENTITY
-  // ========================================================
-  //
-  // Previous:
-  // Roberto Perales
-  //
-  // Current:
-  // "What is his position title?"
-  //
-  // If the current plan does not already contain the
-  // entity column, inherit Roberto.
-  //
+  const lastEntity =
+    context.lastEntity || null;
 
+  const lastDataset =
+    context.lastDataset || null;
+
+  const lastEntityColumn =
+    lastEntity?.column || null;
+
+  /**
+   * Determine whether the CURRENT follow-up explicitly asks
+   * for a new output field.
+   *
+   * First trust Groq if it already supplied one.
+   * Otherwise infer the field dynamically from the live schema
+   * and the current question.
+   */
+  let requestedColumns =
+    resolvedPlan.selectColumns
+      .filter(Boolean);
+
+  if (
+    requestedColumns.length === 0 &&
+    resolvedPlan.route === "schema" &&
+    resolvedPlan.column
+  ) {
+    requestedColumns = [
+      resolvedPlan.column,
+    ];
+  }
+
+  const inferredRequested =
+    inferRequestedColumnFromQuestion({
+      schema,
+
+      question,
+
+      preferredDataset:
+        resolvedPlan.dataset ||
+        lastDataset,
+
+      excludedColumns:
+        [
+          lastEntityColumn,
+        ],
+    });
+
+  if (
+    requestedColumns.length === 0 &&
+    inferredRequested?.column
+  ) {
+    requestedColumns = [
+      inferredRequested.column,
+    ];
+  }
+
+  // ========================================================
+  // 1. RECOVER DATASET LOOKUP FOR FIELD-ONLY FOLLOW-UPS
+  // ========================================================
+  //
+  // A short follow-up such as:
+  //
+  // "how about actual salary"
+  //
+  // can sometimes be classified by Groq as schema/general
+  // because no entity is written in the current sentence.
+  //
+  // If conversation memory has a real previous entity and
+  // the current question dynamically identifies a real schema
+  // field, convert it back to a dataset lookup.
+  //
+  if (
+    lastEntity &&
+    lastDataset &&
+    requestedColumns.length > 0 &&
+    resolvedPlan.route !== "dataset"
+  ) {
+    resolvedPlan.route =
+      "dataset";
+
+    resolvedPlan.dataset =
+      lastDataset;
+
+    resolvedPlan.operation =
+      "lookup";
+
+    resolvedPlan.column =
+      requestedColumns.length === 1
+        ? requestedColumns[0]
+        : null;
+
+    resolvedPlan.groupBy =
+      null;
+
+    resolvedPlan.aggregation =
+      null;
+
+    resolvedPlan.direction =
+      null;
+
+    resolvedPlan.selectColumns = [
+      ...requestedColumns,
+    ];
+
+    resolvedPlan.outputRequested =
+      true;
+
+    resolvedPlan.transform =
+      null;
+
+    resolvedPlan.showAll =
+      false;
+
+    resolvedPlan.limit =
+      Number.isInteger(
+        Number(
+          resolvedPlan.limit
+        )
+      ) &&
+      Number(
+        resolvedPlan.limit
+      ) > 0
+        ? Number(
+            resolvedPlan.limit
+          )
+        : 10;
+
+    resolvedPlan.filters = [];
+  }
+
+  // ========================================================
+  // 2. INHERIT LAST ENTITY
+  // ========================================================
+  //
+  // Same entity, new field:
+  //
+  // "authorized salary of [person]"
+  // "how about actual salary"
+  //
   if (
     resolvedPlan.route ===
       "dataset" &&
-    context.lastEntity
+    lastEntity
   ) {
-    const entityColumn =
-      context.lastEntity.column;
-
     const alreadyHasEntity =
       resolvedPlan.filters.some(
         (filter) =>
-          String(
-            filter?.column || ""
+          normalizeText(
+            filter?.column
+          ) ===
+          normalizeText(
+            lastEntity.column
           )
-            .trim()
-            .toLowerCase() ===
-          String(
-            entityColumn || ""
-          )
-            .trim()
-            .toLowerCase()
       );
 
     if (!alreadyHasEntity) {
       resolvedPlan.filters.push({
         column:
-          context.lastEntity.column,
+          lastEntity.column,
 
         operator:
-          context.lastEntity
-            .operator ||
+          lastEntity.operator ||
           "equals",
 
         value:
-          context.lastEntity.value,
+          Array.isArray(
+            lastEntity.value
+          )
+            ? [
+                ...lastEntity.value,
+              ]
+            : lastEntity.value,
       });
     }
   }
 
   // ========================================================
-  // 2. INHERIT PREVIOUS OUTPUT FIELD
+  // 3. PRESERVE THE CURRENTLY REQUESTED FIELD
   // ========================================================
   //
-  // Previous:
-  // "What is Roberto's position title?"
+  // If this follow-up explicitly names a new field, it must
+  // take priority over the previous metric.
   //
-  // Current:
-  // "What about Vener?"
-  //
-  // New entity:
-  // Vener
-  //
-  // Previous output:
-  // POSITION TITLE
-  //
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    resolvedPlan.operation ===
+      "lookup" &&
+    requestedColumns.length > 0
+  ) {
+    resolvedPlan.selectColumns = [
+      ...requestedColumns,
+    ];
 
+    resolvedPlan.column =
+      requestedColumns.length === 1
+        ? requestedColumns[0]
+        : resolvedPlan.column;
+
+    resolvedPlan.outputRequested =
+      true;
+  }
+
+  // ========================================================
+  // 4. INHERIT PREVIOUS OUTPUT FIELD ONLY WHEN NO NEW FIELD
+  //    WAS REQUESTED
+  // ========================================================
+  //
+  // New entity, same metric:
+  //
+  // "What is [person A]'s position?"
+  // "What about [person B]?"
+  //
   if (
     resolvedPlan.route ===
       "dataset" &&
@@ -191,6 +571,7 @@ function applyConversationContext(
       "lookup" &&
     resolvedPlan.selectColumns
       .length === 0 &&
+    !inferredRequested &&
     context.lastMetric
   ) {
     if (
@@ -212,16 +593,23 @@ function applyConversationContext(
   }
 
   // ========================================================
-  // 3. INHERIT PREVIOUS OPERATION
+  // 5. INHERIT PREVIOUS DATASET WHEN THE CURRENT DATASET IS
+  //    MISSING
   // ========================================================
-  //
-  // Example:
-  //
-  // "What is the total production of Ilocos Norte?"
-  // "How about Ilocos Sur?"
-  //
-  // The second question may inherit SUM.
-  //
+
+  if (
+    resolvedPlan.route ===
+      "dataset" &&
+    !resolvedPlan.dataset &&
+    lastDataset
+  ) {
+    resolvedPlan.dataset =
+      lastDataset;
+  }
+
+  // ========================================================
+  // 6. INHERIT PREVIOUS OPERATION ONLY WHEN NEEDED
+  // ========================================================
 
   if (
     resolvedPlan.route ===
@@ -235,6 +623,10 @@ function applyConversationContext(
     context.lastIntent !==
       "general"
   ) {
+    /**
+     * Do not overwrite an explicit lookup that already has a
+     * requested output field.
+     */
     if (
       resolvedPlan.selectColumns
         .length === 0
@@ -1584,7 +1976,13 @@ async function answerQuestion(
     groqPlan =
       applyConversationContext(
         groqPlan,
-        conversationContext
+        conversationContext,
+        {
+          schema,
+
+          question:
+            cleanQuestion,
+        }
       );
 
     groqPlan =
@@ -1655,7 +2053,13 @@ async function answerQuestion(
     localPlan =
       applyConversationContext(
         localPlan,
-        conversationContext
+        conversationContext,
+        {
+          schema,
+
+          question:
+            cleanQuestion,
+        }
       );
 
     localPlan =
