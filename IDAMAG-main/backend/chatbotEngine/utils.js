@@ -11,33 +11,90 @@ function normalizeText(value) {
 function parseNumber(value) {
   if (
     value === null ||
-    value === undefined ||
-    String(value).trim() === ""
+    value === undefined
   ) {
     return null;
   }
 
-  let text = String(value).trim();
+  if (
+    typeof value === "number"
+  ) {
+    return Number.isFinite(value)
+      ? value
+      : null;
+  }
+
+  let text =
+    String(value).trim();
+
+  if (!text) {
+    return null;
+  }
+
   const negative =
-    text.startsWith("(") && text.endsWith(")");
+    text.startsWith("(") &&
+    text.endsWith(")");
+
+  if (negative) {
+    text = text
+      .slice(1, -1)
+      .trim();
+  }
+
+  /**
+   * Accept normal spreadsheet numeric formats only.
+   *
+   * Examples accepted:
+   * 123
+   * -123
+   * +123
+   * 123.45
+   * 1,234
+   * 1,234.50
+   * 25%
+   *
+   * Text that only contains a number somewhere inside it
+   * will NOT be converted.
+   */
+  const numericPattern =
+    /^[+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?$/;
+
+  if (
+    !numericPattern.test(text)
+  ) {
+    return null;
+  }
+
+  const isPercent =
+    text.endsWith("%");
 
   text = text
     .replace(/,/g, "")
-    .replace(/%/g, "")
-    .replace(/[^\d.+-]/g, "")
-    .trim();
+    .replace(/%$/, "");
 
-  if (!text || ["-", "+", "."].includes(text)) {
+  const number =
+    Number(text);
+
+  if (
+    !Number.isFinite(number)
+  ) {
     return null;
   }
 
-  const number = Number(text);
+  const result =
+    negative
+      ? -Math.abs(number)
+      : number;
 
-  if (!Number.isFinite(number)) {
-    return null;
+  /**
+   * Keep existing chatbot behavior:
+   * "25%" is returned as 25, not 0.25.
+   */
+  if (isPercent) {
+    return result;
   }
 
-  return negative ? -Math.abs(number) : number;
+  return result;
 }
 
 function formatNumber(value) {
