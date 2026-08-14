@@ -857,12 +857,31 @@ function applyConversationContext(
       "general"
   ) {
     /**
-     * Do not overwrite an explicit lookup that already has a
-     * requested output field.
+     * For analytical follow-ups, inherit the previous operation
+     * even when the current question explicitly names a new metric.
+     *
+     * Example:
+     * total Irrigated -> "How about Rainfed?"
+     * keeps operation = sum and changes only the metric column.
      */
     if (
-      resolvedPlan.selectColumns
-        .length === 0
+      context.lastIntent !== "lookup"
+    ) {
+      resolvedPlan.operation =
+        context.lastIntent;
+
+      if (
+        requestedColumns.length > 0
+      ) {
+        resolvedPlan.column =
+          requestedColumns[0];
+
+        resolvedPlan.selectColumns = [];
+        resolvedPlan.outputRequested =
+          false;
+      }
+    } else if (
+      resolvedPlan.selectColumns.length === 0
     ) {
       resolvedPlan.operation =
         context.lastIntent;
