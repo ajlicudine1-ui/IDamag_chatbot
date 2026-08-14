@@ -49,8 +49,120 @@ function median(values) {
     : (sorted[middle - 1] + sorted[middle]) / 2;
 }
 
+
+function normalizeColumnKey(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[’']/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function compactColumnKey(value) {
+  return normalizeColumnKey(value)
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+/**
+ * Resolve a column deterministically.
+ *
+ * Priority:
+ * 1. exact JavaScript key match
+ * 2. normalized exact match
+ * 3. compact exact match (ignores spaces/line breaks/punctuation)
+ * 4. fuzzy matcher ONLY as the final fallback
+ *
+ * Once Groq/planning has already produced a real column name,
+ * execution will therefore preserve that exact field instead of
+ * remapping it to a similar column.
+ */
+function resolveColumnExactFirst(
+  rows,
+  requested
+) {
+  if (
+    !requested ||
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return null;
+  }
+
+  const columns =
+    getColumns(rows);
+
+  const requestedText =
+    String(requested).trim();
+
+  // 1. Exact key
+  const exact =
+    columns.find(
+      (column) =>
+        String(column) ===
+        requestedText
+    );
+
+  if (exact) {
+    return exact;
+  }
+
+  // 2. Normalized exact
+  const normalizedRequested =
+    normalizeColumnKey(
+      requestedText
+    );
+
+  const normalizedMatches =
+    columns.filter(
+      (column) =>
+        normalizeColumnKey(
+          column
+        ) ===
+        normalizedRequested
+    );
+
+  if (
+    normalizedMatches.length === 1
+  ) {
+    return normalizedMatches[0];
+  }
+
+  // 3. Compact exact
+  const compactRequested =
+    compactColumnKey(
+      requestedText
+    );
+
+  const compactMatches =
+    columns.filter(
+      (column) =>
+        compactColumnKey(
+          column
+        ) ===
+        compactRequested
+    );
+
+  if (
+    compactMatches.length === 1
+  ) {
+    return compactMatches[0];
+  }
+
+  // 4. Fuzzy fallback only if exact forms truly do not exist.
+  return findColumn(
+    rows,
+    requested
+  );
+}
+
 function requireColumn(rows, requested, label) {
-  const column = findColumn(rows, requested);
+  const column = resolveColumnExactFirst(
+    rows,
+    requested
+  );
 
   if (!column) {
     throw new Error(
@@ -311,7 +423,7 @@ function tryCrossDatasetLookup({
     let failed = false;
 
     for (const requested of requestedColumns) {
-      const localColumn = findColumn(source.rows, requested);
+      const localColumn = resolveColumnExactFirst(source.rows, requested);
 
       if (localColumn) {
         resolvers.push({
@@ -849,7 +961,7 @@ function executePlannedCrossDatasetLookup({
 
   for (const requested of requestedColumns) {
     const exactTargetColumn =
-      findColumn(
+      resolveColumnExactFirst(
         targetRows,
         requested
       );
@@ -1463,10 +1575,10 @@ function executePlan({
 
   const rows = datasets[datasetName];
   const column = plan.column
-    ? findColumn(rows, plan.column)
+    ? resolveColumnExactFirst(rows, plan.column)
     : null;
   const groupBy = plan.groupBy
-    ? findColumn(rows, plan.groupBy)
+    ? resolveColumnExactFirst(rows, plan.groupBy)
     : null;
 
   const explicitFilters = resolveFilters(
@@ -1516,7 +1628,7 @@ function executePlan({
     const requestedColumns = getRequestedColumnNames(plan);
 
     const selectedColumnsHere = requestedColumns
-      .map((item) => findColumn(rows, item))
+      .map((item) => resolveColumnExactFirst(rows, item))
       .filter(Boolean);
 
     const hasUsefulLocalFilter =
@@ -1724,7 +1836,7 @@ function executePlan({
       Array.isArray(plan.selectColumns) &&
       plan.selectColumns.length
         ? plan.selectColumns
-            .map((item) => findColumn(rows, item))
+            .map((item) => resolveColumnExactFirst(rows, item))
             .filter(Boolean)
         : plan.outputRequested
           ? []
