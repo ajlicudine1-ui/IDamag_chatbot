@@ -2082,9 +2082,17 @@ function executePlan({
     .filter((item) => item.value !== null);
 
   if (!numericRows.length) {
-    throw new Error(
-      `No numeric values were found in "${numericColumn}"${filterText}.`
-    );
+    return {
+      success: false,
+      source: "router",
+      operation: "clarify",
+      dataset: datasetName,
+      column: numericColumn,
+      filters,
+      answer:
+        "I’m not sure I understood your question correctly. " +
+        "Could you please rephrase it or make it a little clearer?",
+    };
   }
 
   if (
