@@ -59,6 +59,11 @@ const {
   inferValueFilters,
 } = require("./filterEngine");
 
+const {
+  retrieveRelevantData,
+  buildRetrievalContext,
+} = require("./dataRetriever");
+
 /**
  * ==========================================================
  * APPLY CONVERSATION CONTEXT
@@ -1063,6 +1068,45 @@ async function answerQuestion(
   }
 
   // ========================================================
+  // STEP 2 — RETRIEVE RELEVANT REAL DATA
+  // ========================================================
+  //
+  // Searches the ACTUAL currently loaded datasets using
+  // dataRetriever.js.
+  //
+  // IMPORTANT:
+  // This does NOT change planning or answers yet.
+  // Step 3 will pass this retrievalContext into Groq.
+  //
+
+  const retrieval =
+    retrieveRelevantData({
+      datasets,
+
+      question:
+        cleanQuestion,
+    });
+
+  const retrievalContext =
+    buildRetrievalContext(
+      retrieval
+    );
+
+  if (
+    process.env.NODE_ENV !==
+      "production"
+  ) {
+    console.log(
+      "Chatbot retrieval context:",
+      JSON.stringify(
+        retrievalContext,
+        null,
+        2
+      )
+    );
+  }
+
+  // ========================================================
   // BUILD LIVE SCHEMA
   // ========================================================
 
@@ -1529,6 +1573,8 @@ async function answerQuestion(
 
         context:
           conversationContext,
+
+        retrievalContext,
       });
 
     // ======================================================

@@ -159,6 +159,7 @@ async function createSchemaAwarePlan({
   question,
   schema,
   context = null,
+  retrievalContext = null,
 }) {
   const compactSchema = schema.map((dataset) => ({
     name: dataset.name,
@@ -211,6 +212,46 @@ async function createSchemaAwarePlan({
           : null,
     }
   : null;
+
+  // ============================================================
+  // VERIFIED RETRIEVAL CONTEXT
+  // ============================================================
+  //
+  // These are relevant REAL rows/values found dynamically by
+  // dataRetriever.js from the currently loaded datasets.
+  //
+  // Groq may use them to identify the correct worksheet, entity,
+  // filter column, and exact filter values. Groq must NOT calculate
+  // answers from these rows; JavaScript remains the calculation
+  // and verification engine.
+  //
+  const safeRetrievalContext =
+    Array.isArray(retrievalContext)
+      ? retrievalContext
+          .filter(
+            (dataset) =>
+              dataset &&
+              typeof dataset === "object"
+          )
+          .map((dataset) => ({
+            dataset:
+              dataset.dataset || null,
+
+            matchedValues:
+              Array.isArray(
+                dataset.matchedValues
+              )
+                ? dataset.matchedValues
+                : [],
+
+            rows:
+              Array.isArray(
+                dataset.rows
+              )
+                ? dataset.rows
+                : [],
+          }))
+      : [];
 
   const systemPrompt = `
 You are a schema-aware query planner for a data chatbot.
@@ -396,6 +437,43 @@ IMPORTANT:
 - The selected column must still exist in the supplied schema.
 - If the user explicitly requests multiple different fields,
   preserve all of them.
+
+============================================================
+RETRIEVED REAL DATA
+============================================================
+
+You may receive RETRIEVED REAL DATA.
+
+This context was dynamically found by JavaScript from the
+currently loaded worksheets. It is not hardcoded application data.
+
+Use RETRIEVED REAL DATA only to improve query planning:
+
+- identify exact worksheet names
+- identify exact column names
+- identify exact entity/filter values
+- preserve multiple entities named by the user
+- choose the correct filter column when the schema alone is unclear
+
+IMPORTANT:
+
+- RETRIEVED REAL DATA contains actual dataset rows, but you are
+  still a QUERY PLANNER only.
+- Do NOT calculate totals, averages, counts, differences, rankings,
+  percentages, minimums, or maximums from these rows.
+- Do NOT answer the user's dataset question yourself.
+- JavaScript will execute and verify the final plan.
+- Never invent a value that is absent from both the user's question
+  and the supplied retrieved/schema context.
+- If multiple retrieved values from the SAME column correspond to
+  multiple entities explicitly requested by the user, preserve all
+  of them using one "in" filter.
+- Do not discard a second or third requested entity merely because
+  one entity is a stronger match.
+- Retrieved rows are evidence for planning, not permission to add
+  unrelated filters or output fields.
+- If retrieval returns no useful match, rely on the schema and the
+  user's wording as before.
 
 ============================================================
 GENERAL RULES
@@ -1086,6 +1164,10 @@ No code block.
 
           `SEMANTIC HINTS:\n${JSON.stringify(
             semanticHints
+          )}\n\n` +
+
+          `RETRIEVED REAL DATA:\n${JSON.stringify(
+            safeRetrievalContext
           )}\n\n` +
 
           `CONVERSATION CONTEXT:\n${JSON.stringify(
