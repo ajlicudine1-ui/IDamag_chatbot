@@ -3,13 +3,393 @@ const {
 } = require("./groqService");
 
 /**
- * Returns the original verified answer if
- * natural-response generation fails.
+ * ============================================================
+ * LOCAL NATURAL RESPONSE FALLBACK
+ * ============================================================
+ *
+ * This function is used when Groq is unavailable,
+ * rate-limited, or fails.
+ *
+ * IMPORTANT:
+ *
+ * It NEVER recalculates anything.
+ * It NEVER changes result.value.
+ * It only changes how the verified answer is presented.
  */
-function fallbackAnswer(result) {
-  return String(
+function buildLocalNaturalAnswer({
+  question,
+  plan,
+  result,
+}) {
+  const originalAnswer = String(
     result?.answer || ""
   ).trim();
+
+  if (!originalAnswer) {
+    return "";
+  }
+
+  const operation = String(
+    result?.operation ||
+    plan?.operation ||
+    ""
+  )
+    .toLowerCase()
+    .trim();
+
+  const column = String(
+    result?.column ||
+    plan?.column ||
+    ""
+  ).trim();
+
+  const questionText = String(
+    question || ""
+  ).trim();
+
+  /**
+   * ==========================================================
+   * SUM
+   * ==========================================================
+   *
+   * Prefer the structured verified value instead of trying
+   * to extract/recalculate anything from the answer text.
+   */
+  if (
+    operation === "sum" &&
+    result?.value !== undefined &&
+    result?.value !== null
+  ) {
+    const value =
+      formatVerifiedValue(
+        result.value
+      );
+
+    if (column) {
+      return `The total ${column} is ${value}.`;
+    }
+
+    return `The total is ${value}.`;
+  }
+
+  /**
+   * ==========================================================
+   * AVERAGE
+   * ==========================================================
+   */
+  if (
+    (
+      operation === "average" ||
+      operation === "avg" ||
+      operation === "mean"
+    ) &&
+    result?.value !== undefined &&
+    result?.value !== null
+  ) {
+    const value =
+      formatVerifiedValue(
+        result.value
+      );
+
+    if (column) {
+      return `The average ${column} is ${value}.`;
+    }
+
+    return `The average is ${value}.`;
+  }
+
+  /**
+   * ==========================================================
+   * MINIMUM
+   * ==========================================================
+   */
+  if (
+    (
+      operation === "min" ||
+      operation === "minimum" ||
+      operation === "lowest"
+    ) &&
+    result?.value !== undefined &&
+    result?.value !== null
+  ) {
+    const value =
+      formatVerifiedValue(
+        result.value
+      );
+
+    if (column) {
+      return `The lowest ${column} is ${value}.`;
+    }
+
+    return `The lowest value is ${value}.`;
+  }
+
+  /**
+   * ==========================================================
+   * MAXIMUM
+   * ==========================================================
+   */
+  if (
+    (
+      operation === "max" ||
+      operation === "maximum" ||
+      operation === "highest"
+    ) &&
+    result?.value !== undefined &&
+    result?.value !== null
+  ) {
+    const value =
+      formatVerifiedValue(
+        result.value
+      );
+
+    if (column) {
+      return `The highest ${column} is ${value}.`;
+    }
+
+    return `The highest value is ${value}.`;
+  }
+
+  /**
+   * ==========================================================
+   * COUNT
+   * ==========================================================
+   */
+  if (
+    operation === "count" &&
+    result?.value !== undefined &&
+    result?.value !== null
+  ) {
+    const value =
+      formatVerifiedValue(
+        result.value
+      );
+
+    const subject =
+      inferCountSubject(
+        questionText
+      );
+
+    if (subject) {
+      return `There are ${value} ${subject}.`;
+    }
+
+    return `The total count is ${value}.`;
+  }
+
+  /**
+   * ==========================================================
+   * STRUCTURED LOOKUP VALUE
+   * ==========================================================
+   *
+   * If calculationEngine provides a direct value, use it.
+   */
+  if (
+    (
+      operation === "lookup" ||
+      operation === "value"
+    ) &&
+    result?.value !== undefined &&
+    result?.value !== null
+  ) {
+    const value =
+      formatVerifiedValue(
+        result.value
+      );
+
+    if (column) {
+      return `${humanizeColumnName(column)} is ${value}.`;
+    }
+
+    return String(value);
+  }
+
+  /**
+   * ==========================================================
+   * GENERIC SAFE CLEANUP
+   * ==========================================================
+   *
+   * For result types that do not have structured handling,
+   * clean the existing VERIFIED answer.
+   *
+   * We are NOT changing values.
+   */
+  return cleanTechnicalAnswer(
+    originalAnswer
+  );
+}
+
+/**
+ * Format an already verified value.
+ *
+ * This does NOT calculate anything.
+ */
+function formatVerifiedValue(
+  value
+) {
+  if (
+    typeof value === "number" &&
+    Number.isFinite(value)
+  ) {
+    return new Intl.NumberFormat(
+      "en-US",
+      {
+        maximumFractionDigits: 2,
+      }
+    ).format(value);
+  }
+
+  return String(
+    value ?? ""
+  ).trim();
+}
+
+/**
+ * Makes database-style column names more readable
+ * without changing their meaning.
+ */
+function humanizeColumnName(
+  column
+) {
+  return String(
+    column || ""
+  )
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Try to identify what the user is counting.
+ *
+ * Examples:
+ *
+ * "How many employees are in PMED?"
+ * -> "employees in PMED"
+ *
+ * "How many farmers are in Ilocos Norte?"
+ * -> "farmers in Ilocos Norte"
+ */
+function inferCountSubject(
+  question
+) {
+  const text = String(
+    question || ""
+  )
+    .replace(/[?!.]+$/g, "")
+    .trim();
+
+  if (!text) {
+    return "";
+  }
+
+  const howManyMatch =
+    text.match(
+      /^how many\s+(.+)$/i
+    );
+
+  if (howManyMatch) {
+    return String(
+      howManyMatch[1] || ""
+    )
+      .trim()
+      .replace(
+        /^(?:is|are)\s+/i,
+        ""
+      );
+  }
+
+  const numberOfMatch =
+    text.match(
+      /(?:number|count)\s+of\s+(.+)$/i
+    );
+
+  if (numberOfMatch) {
+    return String(
+      numberOfMatch[1] || ""
+    ).trim();
+  }
+
+  return "";
+}
+
+/**
+ * ============================================================
+ * GENERIC TECHNICAL ANSWER CLEANER
+ * ============================================================
+ *
+ * Used only if we cannot create a structured local response.
+ *
+ * It removes obvious internal terminology while preserving
+ * the verified content.
+ */
+function cleanTechnicalAnswer(
+  answer
+) {
+  let text = String(
+    answer || ""
+  ).trim();
+
+  if (!text) {
+    return "";
+  }
+
+  /**
+   * Example:
+   *
+   * "The sum Irrigated Total Area Planted in Sheet1 is
+   * 199,134, based on 124 record(s)."
+   *
+   * becomes:
+   *
+   * "The sum Irrigated Total Area Planted is 199,134."
+   */
+
+  text = text.replace(
+    /\s+in\s+Sheet\d+\s+is\s+/gi,
+    " is "
+  );
+
+  /**
+   * Other generic worksheet naming.
+   *
+   * Be conservative here so real user-facing names
+   * are not accidentally removed.
+   */
+  text = text.replace(
+    /,\s*based on\s+\d+\s+record\(s\)\.?/gi,
+    "."
+  );
+
+  text = text.replace(
+    /\s+based on\s+\d+\s+record\(s\)\.?/gi,
+    "."
+  );
+
+  /**
+   * Clean duplicated spaces.
+   */
+  text = text
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return text;
+}
+
+/**
+ * Returns a human-friendly LOCAL answer if
+ * Groq natural-response generation fails.
+ */
+function fallbackAnswer({
+  question,
+  plan,
+  result,
+}) {
+  return buildLocalNaturalAnswer({
+    question,
+    plan,
+    result,
+  });
 }
 
 /**
@@ -32,7 +412,8 @@ function shouldNaturalize(
 
   if (
     !result.answer ||
-    typeof result.answer !== "string"
+    typeof result.answer !==
+      "string"
   ) {
     return false;
   }
@@ -54,16 +435,10 @@ function shouldNaturalize(
  * Produce a human-friendly answer using ONLY
  * the already verified result.
  *
- * IMPORTANT:
- * Groq is NOT given the complete dataset.
- * It receives only:
+ * Groq is a LANGUAGE FORMATTER only.
  *
- * - original question
- * - verified result
- * - operation metadata
- *
- * Therefore it is being used as a language
- * formatter, not as the calculation engine.
+ * JavaScript remains responsible for all
+ * calculations.
  */
 async function generateNaturalResponse({
   question,
@@ -71,7 +446,11 @@ async function generateNaturalResponse({
   result,
 }) {
   const fallback =
-    fallbackAnswer(result);
+    fallbackAnswer({
+      question,
+      plan,
+      result,
+    });
 
   if (
     !shouldNaturalize(
@@ -118,6 +497,33 @@ You MUST NOT:
 You are a LANGUAGE FORMATTER only.
 
 ============================================================
+INTERNAL DATA NAMES
+============================================================
+
+Never expose internal worksheet or dataset names unless the
+user specifically asks about them.
+
+Examples of internal names that should normally NOT appear:
+
+- Sheet1
+- Sheet2
+- PERMANENT ONLY
+- worksheet names
+- dataset names
+
+Do not mention how many database records were used unless the
+user specifically asks.
+
+Bad:
+
+"The sum Irrigated Total Area Planted in Sheet1 is 199,134,
+based on 124 record(s)."
+
+Good:
+
+"The total Irrigated Total Area Planted is 199,134."
+
+============================================================
 NUMBERS
 ============================================================
 
@@ -158,10 +564,6 @@ Verified result:
 
 Good:
 "Roberto Perales' actual salary is 167,129.00."
-
-Bad:
-"According to the data provided, the actual salary recorded
-for Roberto Perales appears to be approximately 167,129."
 
 Do not use unnecessary phrases such as:
 
@@ -233,13 +635,35 @@ IMPORTANT:
 - "record(s)" is internal database terminology.
 - Do not use "record(s)" when the user's question clearly
   identifies what is being counted.
-- Do not mention worksheet names such as "PERMANENT ONLY"
-  unless the worksheet name is necessary to answer the
-  user's question.
-- Do not expose internal filter syntax such as
-  'DIVISION equals "PMED"'.
-- Convert technical filter descriptions into natural wording.
+- Do not mention worksheet names unless necessary.
+- Do not expose internal filter syntax.
 - NEVER change the verified count.
+
+============================================================
+AGGREGATES
+============================================================
+
+Use natural aggregate wording.
+
+Instead of:
+
+"The sum Irrigated Total Area Planted in Sheet1 is 199,134,
+based on 124 record(s)."
+
+Say:
+
+"The total Irrigated Total Area Planted is 199,134."
+
+Instead of:
+
+"The sum Rainfed Total Area Planted in Sheet1 is 111,553,
+based on 119 record(s)."
+
+Say:
+
+"The total Rainfed Total Area Planted is 111,553."
+
+Never change the verified numeric value.
 
 ============================================================
 LISTS
@@ -252,9 +676,6 @@ If the verified result contains a list:
 - do not invent additional items
 - do not silently remove items
 - use a readable numbered or bulleted list when appropriate
-
-If the list is long, it is acceptable to introduce it with
-one short sentence.
 
 ============================================================
 RANKINGS
@@ -277,79 +698,55 @@ Use natural conversational English.
 
 Be concise.
 
-Avoid robotic database language when possible.
+Avoid robotic database language.
 
-Do not say:
-"The value of POSITION TITLE where NAME equals Roberto is..."
-
-Prefer:
-"Roberto's position title is Director IV."
-
-Do not over-explain simple answers.
-
-Return ONLY the final user-facing answer.
-
-Do not expose internal implementation details to the user.
-
-Avoid technical phrases such as:
+Do not expose:
 
 - record(s)
 - rows
 - worksheet
 - dataset
+- Sheet1
+- Sheet2
 - where COLUMN equals VALUE
 - selectColumns
 - filters
 - operation
 - route
 
-unless the user specifically asks about the underlying data
-structure.
+unless the user specifically asks about the underlying
+data structure.
 
-Translate technical result wording into the natural language
-of the user's question.
-
-Examples:
-
-"15 record(s) in PERMANENT ONLY where DIVISION equals PMED"
-
-becomes:
-
-"There are 15 employees in PMED."
-
-"POSITION TITLE values where DIVISION equals PMED"
-
-becomes:
-
-"Here are the position titles in PMED:"
+Return ONLY the final user-facing answer.
 `;
 
   try {
     const response =
-        await callGroq(
-            [
-            {
-                role: "system",
-                content: systemPrompt,
-            },
+      await callGroq(
+        [
+          {
+            role: "system",
+            content:
+              systemPrompt,
+          },
 
-            {
-                role: "user",
-                content:
-                `QUESTION:\n${question}\n\n` +
-                `OPERATION:\n${String(
-                    plan?.operation || ""
-                )}\n\n` +
-                `VERIFIED RESULT:\n${JSON.stringify(
-                    result
-                )}`,
-            },
-            ],
-            {
-            temperature: 0.1,
-            maxTokens: 1200,
-            }
-        );
+          {
+            role: "user",
+            content:
+              `QUESTION:\n${question}\n\n` +
+              `OPERATION:\n${String(
+                plan?.operation || ""
+              )}\n\n` +
+              `VERIFIED RESULT:\n${JSON.stringify(
+                result
+              )}`,
+          },
+        ],
+        {
+          temperature: 0.1,
+          maxTokens: 1200,
+        }
+      );
 
     const naturalAnswer =
       String(
@@ -368,10 +765,11 @@ becomes:
     );
 
     /**
-     * Very important:
+     * Groq failed, but we DO NOT return the
+     * ugly calculationEngine response anymore.
      *
-     * If Groq fails, the verified JavaScript
-     * answer is still returned.
+     * Instead we use the verified structured
+     * result to create a local natural answer.
      */
     return fallback;
   }
