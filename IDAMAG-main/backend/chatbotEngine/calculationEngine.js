@@ -2073,8 +2073,10 @@ function executePlan({
   );
 
   const numericRows = filteredRows
-    .map((row) => ({
+    .map((row, index) => ({
       row,
+      rowIndex: index + 1,
+      rawValue: row?.[numericColumn],
       value: parseNumber(row?.[numericColumn]),
     }))
     .filter((item) => item.value !== null);
@@ -2110,6 +2112,26 @@ function executePlan({
       value,
       recordsUsed: values.length,
       filters,
+
+      /**
+       * TEMPORARY DIAGNOSTIC ONLY
+       *
+       * This does NOT change filtering, column selection,
+       * parsing, or arithmetic.
+       *
+       * It only exposes the exact raw/parsed values already
+       * used by the current calculation so we can identify
+       * the source of any discrepancy.
+       */
+      debugNumericValues:
+        operation === "sum"
+          ? numericRows.map((item) => ({
+              rowIndex: item.rowIndex,
+              rawValue: item.rawValue,
+              parsedValue: item.value,
+            }))
+          : undefined,
+
       answer:
         `The ${operation} ${numericColumn} in ${datasetName}${filterText} ` +
         `is ${formatNumber(value)}, based on ` +
