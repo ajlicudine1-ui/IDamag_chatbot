@@ -5,6 +5,7 @@ const {
   Division,
   Office,
   DashboardWorksheet,
+  ChatbotConversation,
 } = require("../models/index");
 
 const {
@@ -14,6 +15,11 @@ const {
 const {
   answerQuestion,
 } = require("../chatbotEngine/chatbotService");
+
+const {
+  getConversation,
+  clearConversation,
+} = require("../chatbotEngine/conversationManager");
 
 const router = express.Router();
 
@@ -700,129 +706,546 @@ router.get(
 
 /**
  * ============================================================
- * CHAT
+ * PERSISTENT CHATBOT CONVERSATION STATE
  * ============================================================
  *
- * POST /api/chatbot/chat
- *
- * Request:
- *
- * {
- *   "reportId": 1,
- *   "question": "What is the total expected yield?"
- * }
- *
- * The reportId here is reports.id,
- * NOT reports.reportId.
+ * The chatbot engine may still use its fast in-memory Map during
+ * one request, but PostgreSQL is the source of truth between
+ * requests/containers.
  */
-router.post("/chat", async (req, res) => {
-  try {
-    const question = String(
-      req.body.question || ""
-    ).trim();
 
-    const reportId = Number(
-      req.body.reportId
+function getConversationTtlHours() {
+  const configured =
+    Number(
+      process.env
+        .CHATBOT_SESSION_TTL_HOURS
     );
 
-    const sessionId = String(
-      req.body.sessionId || ""
+  return (
+    Number.isFinite(
+      configured
+    ) &&
+    configured > 0
+  )
+    ? configured
+    : 24;
+}
+
+
+function buildConversationKey(
+  sessionId,
+  reportId
+) {
+  return (
+    `${String(sessionId).trim()}` +
+    `::report:${Number(reportId)}`
+  );
+}
+
+
+function cloneSerializableState(
+  value
+) {
+  return JSON.parse(
+    JSON.stringify(
+      value || {}
+    )
+  );
+}
+
+
+async function hydrateConversationState({
+  sessionId,
+  reportId,
+}) {
+  const conversationKey =
+    buildConversationKey(
+      sessionId,
+      reportId
+    );
+
+  const stored =
+    await ChatbotConversation.findOne({
+      where: {
+        sessionKey:
+          conversationKey,
+      },
+    });
+
+  if (
+    stored?.expiresAt &&
+    new Date(
+      stored.expiresAt
+    ).getTime() <=
+      Date.now()
+  ) {
+    await stored.destroy();
+
+    clearConversation(
+      conversationKey
+    );
+
+    return {
+      conversationKey,
+      restored:
+        false,
+    };
+  }
+
+  if (
+    stored?.state &&
+    typeof stored.state ===
+      "object"
+  ) {
+    const context =
+      getConversation(
+        conversationKey
+      );
+
+    /**
+     * Replace the process-local copy with the persisted state.
+     * This prevents stale context from another request from winning.
+     */
+    for (
+      const key of
+      Object.keys(context)
+    ) {
+      delete context[key];
+    }
+
+    Object.assign(
+      context,
+      cloneSerializableState(
+        stored.state
+      )
+    );
+
+    return {
+      conversationKey,
+      restored:
+        true,
+    };
+  }
+
+  return {
+    conversationKey,
+    restored:
+      false,
+  };
+}
+
+
+async function persistConversationState({
+  sessionId,
+  reportId,
+  conversationKey,
+}) {
+  const context =
+    getConversation(
+      conversationKey
+    );
+
+  const ttlHours =
+    getConversationTtlHours();
+
+  const expiresAt =
+    new Date(
+      Date.now() +
+      ttlHours *
+        60 *
+        60 *
+        1000
+    );
+
+  const state =
+    cloneSerializableState(
+      context
+    );
+
+  await ChatbotConversation.upsert({
+    sessionKey:
+      conversationKey,
+
+    sessionId:
+      String(
+        sessionId
+      ).trim(),
+
+    reportId:
+      Number(
+        reportId
+      ),
+
+    state,
+
+    expiresAt,
+  });
+}
+
+
+// ============================================================
+// CHAT
+// ============================================================
+//
+// POST /api/chatbot/chat
+//
+// {
+//   "reportId": 1,
+//   "question": "What is the total expected yield?",
+//   "sessionId": "abc123"
+// }
+// ============================================================
+
+router.post("/chat-test", async (req, res) => {
+  try {
+    return res.json({
+      success: true,
+      body: req.body,
+      groqKeyExists: Boolean(process.env.GROQ_API_KEY),
+      groqModel: process.env.GROQ_MODEL || null
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+router.post("/chat", async (req, res) => {
+
+  console.log(
+    "============================================================"
+  );
+
+  console.log(
+    "CHATBOT REQUEST STARTED"
+  );
+
+  console.log(
+    "Request body:",
+    req.body
+  );
+
+  console.log(
+    "GROQ_API_KEY available:",
+    Boolean(process.env.GROQ_API_KEY)
+  );
+
+  console.log(
+    "GROQ_MODEL:",
+    process.env.GROQ_MODEL || "NOT SET"
+  );
+
+  console.log(
+    "============================================================"
+  );
+
+
+  try {
+
+    // ========================================================
+    // READ REQUEST
+    // ========================================================
+
+    const question = String(
+      req.body?.question || ""
     ).trim();
 
+
+    const reportId = Number(
+      req.body?.reportId
+    );
+
+
+    const sessionId = String(
+      req.body?.sessionId || ""
+    ).trim();
+
+
+    console.log(
+      "Parsed request:",
+      {
+        reportId,
+        question,
+        sessionId
+      }
+    );
+
+
+    // ========================================================
+    // VALIDATION
+    // ========================================================
+
     if (!question) {
+
       return res.status(400).json({
         success: false,
-        message:
-          "Question is required.",
+        message: "Question is required."
       });
+
     }
+
 
     if (!Number.isInteger(reportId)) {
+
       return res.status(400).json({
         success: false,
-        message:
-          "A valid report ID is required.",
+        message: "A valid report ID is required."
       });
+
     }
 
+
     if (!sessionId) {
+
       return res.status(400).json({
         success: false,
-        message:
-          "A chatbot session ID is required.",
+        message: "A chatbot session ID is required."
       });
+
     }
+
+
+    // ========================================================
+    // LOAD REPORT CONFIGURATION
+    // ========================================================
+
+    console.log(
+      "STEP 1: Loading report dataset..."
+    );
+
 
     const {
       report,
-      reportConfig,
-    } =
-      await getReportDataset(
-        reportId
-      );
+      worksheets,
+      reportConfig
+    } = await getReportDataset(
+      reportId
+    );
+
+
+    console.log(
+      "STEP 1 SUCCESS"
+    );
+
+
+    console.log(
+      "Report:",
+      {
+        id: report?.id,
+        title: report?.title,
+        sheetUrlExists:
+          Boolean(report?.sheetUrl)
+      }
+    );
+
+
+    console.log(
+      "Configured worksheets:",
+      worksheets?.map(
+        worksheet => ({
+          id:
+            worksheet.worksheetId,
+
+          name:
+            worksheet.worksheetName,
+
+          gid:
+            worksheet.gid
+        })
+      )
+    );
+
+
+    console.log(
+      "Report config:",
+      reportConfig
+    );
+
+
+    // ========================================================
+    // LOAD GOOGLE SHEETS
+    // ========================================================
+
+    console.log(
+      "STEP 2: Loading Google Sheets..."
+    );
+
 
     const reportData =
       await loadDivisionData(
         reportConfig
       );
 
+
+    console.log(
+      "STEP 2 SUCCESS"
+    );
+
+
+    if (
+      !reportData ||
+      typeof reportData !== "object"
+    ) {
+
+      return res.status(500).json({
+        success: false,
+        message:
+          "Google Sheets service returned invalid data."
+      });
+
+    }
+
+
     const availableSheets =
       Object.keys(
         reportData
       );
 
+
+    console.log(
+      "Available sheets:",
+      availableSheets
+    );
+
+
     if (
       availableSheets.length === 0
     ) {
+
       return res.status(500).json({
         success: false,
+
         message:
-          "The selected report did not return any Google Sheets data.",
+          "The selected report did not return any Google Sheets data."
       });
+
     }
 
-    const totalRows =
-      Object.values(
-        reportData
-      ).reduce(
-        (total, sheet) => {
-          if (
-            Array.isArray(sheet)
-          ) {
-            return (
-              total +
-              sheet.length
-            );
-          }
 
-          return (
-            total +
-            (
-              sheet?.rows
-                ?.length || 0
-            )
-          );
-        },
-        0
-      );
+    // ========================================================
+    // COUNT ROWS
+    // ========================================================
 
-    if (totalRows === 0) {
+    let totalRows = 0;
+
+
+    for (
+      const sheetName
+      of availableSheets
+    ) {
+
+      const sheet =
+        reportData[
+          sheetName
+        ];
+
+
+      if (
+        Array.isArray(sheet)
+      ) {
+
+        totalRows +=
+          sheet.length;
+
+      } else if (
+        Array.isArray(
+          sheet?.rows
+        )
+      ) {
+
+        totalRows +=
+          sheet.rows.length;
+
+      }
+
+    }
+
+
+    console.log(
+      "Total readable rows:",
+      totalRows
+    );
+
+
+    if (
+      totalRows === 0
+    ) {
+
       return res.status(400).json({
         success: false,
+
         message:
-          "The connected Google Sheets contain no readable rows.",
+          "The connected Google Sheets contain no readable rows."
       });
+
     }
+
+
+    // ========================================================
+    // ASK CHATBOT ENGINE
+    // ========================================================
+
+    console.log(
+      "STEP 3: Calling chatbot engine..."
+    );
+
+
+    /**
+     * Restore chatbot memory from PostgreSQL before answering.
+     *
+     * The internal conversation key also includes reportId so one
+     * dashboard's follow-up context cannot leak into another dashboard.
+     */
+    const {
+      conversationKey,
+      restored:
+        conversationRestored,
+    } =
+      await hydrateConversationState({
+        sessionId,
+        reportId,
+      });
+
+    console.log(
+      "Conversation state restored:",
+      conversationRestored
+    );
 
     const result =
       await answerQuestion(
         reportData,
         question,
-        sessionId
+        conversationKey
       );
 
-    return res.json({
-      ...result,
+    /**
+     * Save VERIFIED post-execution conversation state.
+     */
+    await persistConversationState({
+      sessionId,
+      reportId,
+      conversationKey,
+    });
+
+
+    console.log(
+      "STEP 3 SUCCESS"
+    );
+
+
+    console.log(
+      "Chatbot result type:",
+      typeof result
+    );
+
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
+
+    const responsePayload = {
 
       success:
         typeof result?.success ===
@@ -830,59 +1253,179 @@ router.post("/chat", async (req, res) => {
           ? result.success
           : true,
 
+
+      ...(result &&
+      typeof result === "object"
+        ? result
+        : {
+            answer:
+              String(
+                result || ""
+              )
+          }),
+
+
       question,
 
       sessionId,
 
+
       report: {
-        id: Number(
-          report.id
-        ),
+
+        id:
+          Number(
+            report.id
+          ),
 
         title:
           report.title,
 
-        divisionId: Number(
-          report.divisionId
-        ),
+        divisionId:
+          Number(
+            report.divisionId
+          ),
 
         office:
           report.division
-            ?.name || null,
+            ?.name ||
+          null,
 
         division:
           report.division
-            ?.office?.name ||
-          null,
+            ?.office
+            ?.name ||
+          null
+
       },
+
 
       worksheetCount:
         availableSheets.length,
 
+
       worksheets:
         availableSheets,
 
-      totalRows,
-    });
-  } catch (error) {
-    console.error(
-      "Chatbot question error:",
-      error
+
+      totalRows
+
+    };
+
+
+    console.log(
+      "CHATBOT REQUEST SUCCESS"
     );
 
-    return res
-      .status(
-        error.statusCode ||
-        500
-      )
-      .json({
-        success: false,
 
-        message:
-          error.message ||
-          "The chatbot was unable to answer the question.",
-      });
+    return res.json(
+      responsePayload
+    );
+
+  } catch (error) {
+
+    console.error(
+      "============================================================"
+    );
+
+    console.error(
+      "CHATBOT REQUEST FAILED"
+    );
+
+    console.error(
+      "Error name:",
+      error?.name
+    );
+
+    console.error(
+      "Error message:",
+      error?.message
+    );
+
+    console.error(
+      "Error stack:",
+      error?.stack
+    );
+
+
+    if (
+      error?.response
+    ) {
+
+      console.error(
+        "External response status:",
+        error.response.status
+      );
+
+      console.error(
+        "External response data:",
+        error.response.data
+      );
+
+    }
+
+
+    console.error(
+      "============================================================"
+    );
+
+
+    // Always use a valid HTTP status.
+    const requestedStatus =
+      Number(
+        error?.statusCode
+      );
+
+
+    const statusCode =
+      Number.isInteger(
+        requestedStatus
+      ) &&
+      requestedStatus >= 400 &&
+      requestedStatus <= 599
+        ? requestedStatus
+        : 500;
+
+
+    try {
+
+      return res
+        .status(
+          statusCode
+        )
+        .json({
+          success: false,
+
+          message:
+            error?.message ||
+            "The chatbot was unable to answer the question.",
+
+          stage:
+            "chatbot-request"
+        });
+
+    } catch (
+      responseError
+    ) {
+
+      console.error(
+        "FAILED TO SEND CHATBOT ERROR RESPONSE:",
+        responseError
+      );
+
+
+      return res.end(
+        JSON.stringify({
+          success: false,
+          message:
+            "Internal chatbot error."
+        })
+      );
+
+    }
+
   }
+
 });
 
 module.exports = router;
+module.exports.default = router;

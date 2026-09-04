@@ -450,6 +450,160 @@ function compareVerifiedResults({
   }
 
   if (
+    normalizedMode ===
+      "percentage_higher" ||
+    normalizedMode ===
+      "percentage_lower" ||
+    normalizedMode ===
+      "percentage_difference"
+  ) {
+    const higherEntry =
+      leftValue >= rightValue
+        ? {
+            label:
+              leftLabel,
+            value:
+              leftValue,
+          }
+        : {
+            label:
+              rightLabel,
+            value:
+              rightValue,
+          };
+
+    const lowerEntry =
+      leftValue <= rightValue
+        ? {
+            label:
+              leftLabel,
+            value:
+              leftValue,
+          }
+        : {
+            label:
+              rightLabel,
+            value:
+              rightValue,
+          };
+
+    let percentage = null;
+    let answer = "";
+
+    if (
+      normalizedMode ===
+        "percentage_higher"
+    ) {
+      const denominator =
+        Math.abs(
+          lowerEntry.value
+        );
+
+      if (denominator === 0) {
+        return {
+          success: false,
+          source:
+            "comparison",
+          operation:
+            "clarify",
+          reason:
+            "ZERO_BASELINE",
+          answer:
+            `I can't calculate how many percent higher ${higherEntry.label} is because the comparison baseline is zero.`,
+        };
+      }
+
+      percentage =
+        difference /
+        denominator *
+        100;
+
+      answer =
+        `${higherEntry.label} is ${formatNumber(
+          percentage
+        )}% higher than ${lowerEntry.label} for ${check.metric}.`;
+    } else if (
+      normalizedMode ===
+        "percentage_lower"
+    ) {
+      const denominator =
+        Math.abs(
+          higherEntry.value
+        );
+
+      if (denominator === 0) {
+        return {
+          success: false,
+          source:
+            "comparison",
+          operation:
+            "clarify",
+          reason:
+            "ZERO_BASELINE",
+          answer:
+            `I can't calculate how many percent lower ${lowerEntry.label} is because the comparison baseline is zero.`,
+        };
+      }
+
+      percentage =
+        difference /
+        denominator *
+        100;
+
+      answer =
+        `${lowerEntry.label} is ${formatNumber(
+          percentage
+        )}% lower than ${higherEntry.label} for ${check.metric}.`;
+    } else {
+      const denominator =
+        (
+          Math.abs(
+            leftValue
+          ) +
+          Math.abs(
+            rightValue
+          )
+        ) / 2;
+
+      if (denominator === 0) {
+        percentage = 0;
+      } else {
+        percentage =
+          difference /
+          denominator *
+          100;
+      }
+
+      answer =
+        `The percentage difference between ${leftLabel} and ${rightLabel} for ${check.metric} is ${formatNumber(
+          percentage
+        )}%.`;
+    }
+
+    return {
+      success: true,
+      source:
+        "comparison",
+      operation:
+        normalizedMode,
+
+      metric:
+        check.metric,
+
+      leftLabel,
+      rightLabel,
+
+      leftValue,
+      rightValue,
+
+      difference,
+      percentage,
+
+      answer,
+    };
+  }
+
+  if (
     leftValue === rightValue
   ) {
     return {

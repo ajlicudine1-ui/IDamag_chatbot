@@ -1,31 +1,37 @@
 const { Sequelize } = require("sequelize");
-const mysql2 = require("mysql2");
+const pg = require("pg");
+
 require("dotenv").config();
 
 let sequelize;
 
 const commonOptions = {
-  dialect: process.env.DB_DIALECT || "mysql",
-  dialectModule: mysql2,
+  dialect: "postgres",
+
+  dialectModule: pg,
+
   logging: false,
+
   pool: {
     max: 5,
     min: 0,
     acquire: 30000,
     idle: 10000,
   },
+
+  dialectOptions: {
+    ssl: {
+      require: true,
+      rejectUnauthorized: false,
+    },
+  },
 };
 
 if (process.env.DATABASE_URL) {
-  sequelize = new Sequelize(process.env.DATABASE_URL, {
-    ...commonOptions,
-    dialectOptions: {
-      ssl: {
-        require: true,
-        rejectUnauthorized: false,
-      },
-    },
-  });
+  sequelize = new Sequelize(
+    process.env.DATABASE_URL,
+    commonOptions
+  );
 } else {
   sequelize = new Sequelize(
     process.env.DB_NAME,
@@ -33,19 +39,15 @@ if (process.env.DATABASE_URL) {
     process.env.DB_PASSWORD,
     {
       ...commonOptions,
-      host: process.env.DB_HOST || "localhost",
-      port: Number(process.env.DB_PORT || 3306),
-      dialectOptions:
-        process.env.DB_SSL === "true"
-          ? {
-              ssl: {
-                require: true,
-                rejectUnauthorized: false,
-              },
-            }
-          : {},
+
+      host: process.env.DB_HOST,
+      port: Number(
+        process.env.DB_PORT || 5432
+      ),
     }
   );
 }
 
+// Support both normal CommonJS and Vercel's bundled module interop.
 module.exports = sequelize;
+module.exports.default = sequelize;

@@ -35,7 +35,7 @@ import FeedbackManagement from "./pages/admin/FeedbackManagement";
  */
 const RAW_API_URL = (
   import.meta.env.VITE_API_URL ||
-  "https://i-damag-chatbot-61hx.vercel.app"
+  ""
 ).replace(/\/+$/, "");
 
 const API_URL = RAW_API_URL.endsWith("/api")
@@ -79,6 +79,49 @@ function getChatSessionId() {
   }
 
   return sessionId;
+}
+
+
+/**
+ * Safely render the small Markdown subset used by chatbot answers.
+ *
+ * Supported:
+ *   **bold**
+ *   line breaks / numbered lists / bullets are preserved by
+ *   the existing whitespace-pre-wrap class.
+ *
+ * This deliberately avoids dangerouslySetInnerHTML and does not require
+ * an additional frontend package.
+ */
+function renderChatMessage(text) {
+  const value = String(text ?? "");
+
+  if (!value) {
+    return "";
+  }
+
+  const parts = value.split(/(\*\*[^*]+\*\*)/g);
+
+  return parts.map((part, index) => {
+    const boldMatch = part.match(/^\*\*(.+)\*\*$/s);
+
+    if (boldMatch) {
+      return (
+        <strong
+          key={`chat-bold-${index}`}
+          className="font-bold"
+        >
+          {boldMatch[1]}
+        </strong>
+      );
+    }
+
+    return (
+      <React.Fragment key={`chat-text-${index}`}>
+        {part}
+      </React.Fragment>
+    );
+  });
 }
 
 function App() {
@@ -1466,7 +1509,7 @@ function App() {
                               : "rounded-tl-md border border-[#D7E7D5] bg-white text-slate-700 shadow-sm"
                           }`}
                         >
-                          {message.text}
+                          {renderChatMessage(message.text)}
                         </div>
                       </div>
                     )

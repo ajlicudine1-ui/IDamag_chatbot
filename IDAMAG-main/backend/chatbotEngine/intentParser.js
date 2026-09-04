@@ -5,6 +5,7 @@ const {
 } = require("./utils");
 const {
   inferValueFilters,
+  inferCoherentFilters,
   inferDatasetValueFilters,
   mergeFilters,
 } = require("./filterEngine");
@@ -97,6 +98,62 @@ function normalizeTarget(value) {
     .join(" ")
     .trim();
 }
+
+
+/**
+ * Preserve every independent identifier field from the same
+ * worksheet instead of collapsing record identity to the first
+ * match only.
+ *
+ * Example:
+ *   FIRST NAME = DORIS JOY
+ *   LAST NAME  = GARCIA
+ *
+ * Both filters execute with AND.
+ */
+function getDatasetIdentifierFilters(
+  identifierMatches,
+  datasetName
+) {
+  const selected = [];
+  const seen = new Set();
+
+  for (const match of identifierMatches || []) {
+    if (
+      match?.dataset !==
+      datasetName ||
+      !match?.column
+    ) {
+      continue;
+    }
+
+    const key =
+      normalizeText(
+        match.column
+      );
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+
+    selected.push({
+      column:
+        match.column,
+
+      operator:
+        match.operator ||
+        "equals",
+
+      value:
+        match.value,
+    });
+  }
+
+  return selected;
+}
+
 
 function extractTargetPhrase(question) {
   const text = normalizeText(question);
@@ -637,133 +694,503 @@ function detectRequestedOutputColumns(
 }
 
 
+
+function isNumericLikeSchemaColumn(
+  column
+) {
+  if (!column) {
+    return false;
+  }
+
+  if (column.type === "number") {
+    return true;
+  }
+
+  const examples =
+    Array.isArray(column.examples)
+      ? column.examples
+      : [];
+
+  if (!examples.length) {
+    return false;
+  }
+
+  let usable = 0;
+  let numeric = 0;
+
+  for (const value of examples) {
+    if (
+      value === null ||
+      value === undefined ||
+      String(value).trim() === ""
+    ) {
+      continue;
+    }
+
+    usable += 1;
+
+    const cleaned =
+      String(value)
+        .trim()
+        .replace(/[,₱$€£¥%]/g, "")
+        .replace(/\s+/g, "");
+
+    if (
+      cleaned !== "" &&
+      Number.isFinite(
+        Number(cleaned)
+      )
+    ) {
+      numeric += 1;
+    }
+  }
+
+  return (
+    usable > 0 &&
+    numeric / usable >= 0.6
+  );
+}
+
+
 function extractRankingRequest(
   question,
   schema,
   datasetName
 ) {
-  const text = normalizeText(question);
+  const text =
+    normalizeText(question);
 
   const hasDescendingMetric =
-    /\b(highest|largest|biggest|greatest|most)\b/.test(text);
+    /\b(highest|largest|biggest|greatest|most|maximum|max|top)\b/.test(
+      text
+    );
+
   const hasAscendingMetric =
-    /\b(lowest|smallest|least)\b/.test(text);
+    /\b(lowest|smallest|least|minimum|min|bottom)\b/.test(
+      text
+    );
 
   const direction =
     hasAscendingMetric
       ? "asc"
       : hasDescendingMetric
         ? "desc"
-        : /\b(bottom|last)\b/.test(text)
-          ? "asc"
-          : /\b(top|first)\b/.test(text)
-            ? "desc"
-            : null;
+        : null;
 
   if (!direction) {
     return null;
   }
 
-  const limit = detectLimit(question, 10);
+  const explicitN =
+    text.match(
+      /\b(?:top|bottom|first|last)\s+(\d{1,3})\b/
+    ) ||
+    text.match(
+      /\b(\d{1,3})\s+(?:highest|lowest|largest|smallest)\b/
+    );
+
+  const limit =
+    explicitN?.[1]
+      ? Math.min(
+          Math.max(
+            Number(explicitN[1]),
+            1
+          ),
+          100
+        )
+      : 1;
 
   let labelTarget = null;
   let metricTarget = null;
+
+  /**
+   * Detect aggregate intent from the ORIGINAL normalized question.
+   *
+   * IMPORTANT:
+   * normalizeTarget() intentionally removes operation words such as
+   * "average", "total", and "count". If aggregation is detected only
+   * after metricTarget has been normalized, those words are already
+   * gone and a grouped ranking can incorrectly fall back to rank_rows.
+   *
+   * Example:
+   *   "Which division has the highest average actual salary?"
+   *
+   * Must become:
+   *   operation   = rank_groups
+   *   aggregation = average
+   *   groupBy     = DIVISION
+   */
   let aggregation = null;
 
-  // Examples:
-  // top 10 farmers by area
-  // bottom 5 municipalities by production
-  let match = text.match(
-    /\b(?:top|bottom|first|last)\s+\d{1,3}\s+(.+?)\s+(?:by|based on|according to)\s+(.+)$/
-  );
-
-  if (match) {
-    labelTarget = normalizeTarget(match[1]);
-    metricTarget = normalizeTarget(match[2]);
-  }
-
-  // Examples:
-  // top 5 farmers with the biggest area
-  // 10 farmers with highest expected yield
-  if (!match) {
-    match = text.match(
-      /\b(?:top|bottom|first|last)?\s*(?:\d{1,3})?\s*(.+?)\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+)$/
-    );
-
-    if (match) {
-      labelTarget = normalizeTarget(match[1]);
-      metricTarget = normalizeTarget(match[2]);
-    }
-  }
-
-  // Examples:
-  // highest area farmers
-  // lowest yield municipalities
-  if (!labelTarget || !metricTarget) {
-    match = text.match(
-      /\b(?:highest|lowest|largest|smallest|biggest|greatest|most|least)\s+(.+?)\s+(?:for|among)\s+(.+)$/
-    );
-
-    if (match) {
-      metricTarget = normalizeTarget(match[1]);
-      labelTarget = normalizeTarget(match[2]);
-    }
-  }
-
-  if (!labelTarget || !metricTarget) {
-    return null;
-  }
-
-  // If the metric explicitly asks for an aggregate, preserve that intent.
-  if (/\b(total|sum|combined|overall)\b/.test(metricTarget)) {
+  if (
+    /\b(total|sum|combined|overall|altogether|in all)\b/.test(
+      text
+    )
+  ) {
     aggregation = "sum";
-  } else if (/\b(average|avg|mean)\b/.test(metricTarget)) {
+  } else if (
+    /\b(average|avg|mean)\b/.test(
+      text
+    )
+  ) {
     aggregation = "average";
-  } else if (/\b(count|number)\b/.test(metricTarget)) {
+  } else if (
+    /\b(count|how many|number of)\b/.test(
+      text
+    )
+  ) {
     aggregation = "count";
   }
 
-  metricTarget = metricTarget
-    .replace(/\b(total|sum|combined|overall|average|avg|mean|count|number)\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  /**
+   * WHO has the highest/lowest METRIC ...
+   *
+   * "who" is semantic identity language. The actual label
+   * field is inferred dynamically from the current schema.
+   */
+  let match = text.match(
+    /\bwho\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
+  );
 
-  const labelCandidates = rankColumns(
-    labelTarget,
-    schema,
-    datasetName
-  )
-    .filter((item) => item.type !== "number")
-    .sort((a, b) => b.score - a.score);
+  if (match?.[1]) {
+    labelTarget =
+      "person name employee";
 
-  const metricCandidates = rankColumns(
-    metricTarget,
-    schema,
-    datasetName
-  )
-    .filter((item) => item.type === "number")
-    .sort((a, b) => b.score - a.score);
+    metricTarget =
+      normalizeTarget(
+        match[1]
+      );
+  }
+
+  /**
+   * WHICH/WHAT ENTITY has the highest/lowest METRIC ...
+   *
+   * Examples:
+   * - which municipality has the highest production
+   * - what position title has the highest actual salary
+   */
+  if (
+    !labelTarget ||
+    !metricTarget
+  ) {
+    match = text.match(
+      /\b(?:which|what)\s+(.+?)\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
+    );
+
+    if (
+      match?.[1] &&
+      match?.[2]
+    ) {
+      labelTarget =
+        normalizeTarget(
+          match[1]
+        );
+
+      metricTarget =
+        normalizeTarget(
+          match[2]
+        );
+    }
+  }
+
+  /**
+   * top/bottom N LABEL by METRIC
+   */
+  if (
+    !labelTarget ||
+    !metricTarget
+  ) {
+    match = text.match(
+      /\b(?:top|bottom|first|last)\s+\d{1,3}\s+(.+?)\s+(?:by|based on|according to)\s+(.+)$/
+    );
+
+    if (match) {
+      labelTarget =
+        normalizeTarget(
+          match[1]
+        );
+
+      metricTarget =
+        normalizeTarget(
+          match[2]
+        );
+    }
+  }
+
+  /**
+   * LABEL with highest/lowest METRIC
+   */
+  if (
+    !labelTarget ||
+    !metricTarget
+  ) {
+    match = text.match(
+      /\b(?:top|bottom|first|last)?\s*(?:\d{1,3})?\s*(.+?)\s+(?:with|having)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+)$/
+    );
+
+    if (match) {
+      labelTarget =
+        normalizeTarget(
+          match[1]
+        );
+
+      metricTarget =
+        normalizeTarget(
+          match[2]
+        );
+    }
+  }
+
+  /**
+   * highest/lowest METRIC for/among LABEL
+   */
+  if (
+    !labelTarget ||
+    !metricTarget
+  ) {
+    match = text.match(
+      /\b(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)\s+(?:for|among)\s+(.+)$/
+    );
+
+    if (match) {
+      metricTarget =
+        normalizeTarget(
+          match[1]
+        );
+
+      labelTarget =
+        normalizeTarget(
+          match[2]
+        );
+    }
+  }
+
+  if (
+    !labelTarget ||
+    !metricTarget
+  ) {
+    return null;
+  }
+
+
+  metricTarget =
+    metricTarget
+      .replace(
+        /\b(total|sum|combined|overall|average|avg|mean|count|number)\b/g,
+        ""
+      )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const asksWho =
+    /\bwho\b/.test(text);
+
+  const labelCandidates =
+    rankColumns(
+      labelTarget,
+      schema,
+      datasetName
+    )
+      .filter(
+        (item) =>
+          !isNumericLikeSchemaColumn(
+            item
+          )
+      )
+      .map((item) => {
+        let score =
+          item.score;
+
+        if (asksWho) {
+          const normalizedName =
+            normalizeText(
+              item.name
+            );
+
+          if (
+            /\b(full name|name|first name|last name|surname|employee|staff|person|respondent|beneficiary|owner|operator|applicant|client|customer|student|teacher|member)\b/.test(
+              normalizedName
+            )
+          ) {
+            score += 1.2;
+          }
+
+          const examples =
+            Array.isArray(
+              item.examples
+            )
+              ? item.examples
+              : [];
+
+          if (
+            examples.some(
+              (value) =>
+                /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
+                  String(
+                    value
+                  ).trim()
+                )
+            )
+          ) {
+            score += 0.3;
+          }
+        }
+
+        return {
+          ...item,
+          score,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.score - a.score
+      );
+
+  /**
+   * Rank numeric metric columns by:
+   *
+   * 1. How completely the REAL column contains the requested
+   *    metric words.
+   * 2. Existing semantic score.
+   * 3. Fewer unrelated/extra column words.
+   * 4. Shorter column name as a final deterministic tie-breaker.
+   *
+   * This is generic and prevents a loosely similar numeric field
+   * from beating a field that actually contains the user's words.
+   */
+  const metricTargetTokens =
+    normalizeTarget(
+      metricTarget
+    )
+      .split(/\s+/)
+      .filter(Boolean);
+
+  const metricCandidates =
+    rankColumns(
+      metricTarget,
+      schema,
+      datasetName
+    )
+      .filter(
+        (item) =>
+          isNumericLikeSchemaColumn(
+            item
+          )
+      )
+      .map(
+        (item) => {
+          const columnTokens =
+            normalizeTarget(
+              item.name
+            )
+              .split(/\s+/)
+              .filter(Boolean);
+
+          const matchedTargetTokens =
+            metricTargetTokens.filter(
+              (token) =>
+                columnTokens.includes(
+                  token
+                )
+            ).length;
+
+          const targetCoverage =
+            metricTargetTokens.length
+              ? matchedTargetTokens /
+                metricTargetTokens.length
+              : 0;
+
+          const extraTokens =
+            Math.max(
+              0,
+              columnTokens.length -
+              matchedTargetTokens
+            );
+
+          return {
+            ...item,
+            targetCoverage,
+            extraTokens,
+          };
+        }
+      )
+      .sort(
+        (a, b) =>
+          b.targetCoverage -
+            a.targetCoverage ||
+          b.score -
+            a.score ||
+          a.extraTokens -
+            b.extraTokens ||
+          String(a.name).length -
+            String(b.name).length
+      );
 
   const labelColumn =
-    labelCandidates[0]?.score >= 0.75
+    labelCandidates[0]?.score >=
+    0.55
       ? labelCandidates[0]
       : null;
 
   const metricColumn =
-    metricCandidates[0]?.score >= 0.75
+    metricCandidates[0] &&
+    metricCandidates[0].score >=
+      0.55 &&
+    (
+      metricTargetTokens.length === 0 ||
+      metricCandidates[0]
+        .targetCoverage > 0
+    )
       ? metricCandidates[0]
       : null;
 
-  if (!labelColumn || !metricColumn) {
+  if (
+    !labelColumn ||
+    !metricColumn
+  ) {
     return null;
   }
 
+  /**
+   * IMPORTANT:
+   *
+   * "number of X" does not always mean COUNT ROWS.
+   *
+   * If the requested metric resolves to a REAL numeric schema field,
+   * rank the numeric values directly.
+   *
+   * Examples:
+   *   "Which association has the most number of members?"
+   *     -> No. of members (numeric)
+   *     -> rank_rows
+   *     -> NOT count rows per association
+   *
+   *   "Which municipality has the highest number of farmers?"
+   *     -> if a numeric farmer-count field exists, rank that value.
+   *
+   * True entity-count questions such as:
+   *   "Which province has the most associations?"
+   * are still handled as grouped counts when there is no matching
+   * numeric metric field for "associations".
+   */
+  const effectiveAggregation =
+    aggregation === "count" &&
+    metricColumn
+      ? null
+      : aggregation;
+
   return {
-    labelColumn: labelColumn.name,
-    metricColumn: metricColumn.name,
+    labelColumn:
+      labelColumn.name,
+
+    metricColumn:
+      metricColumn.name,
+
     direction,
     limit,
-    aggregation,
+
+    aggregation:
+      effectiveAggregation,
   };
 }
 
@@ -828,19 +1255,32 @@ function detectCrossDatasetLookup(question, schema, datasets) {
     }
 
     if (identifier.dataset === output.dataset) {
+      const identifierFilters =
+        getDatasetIdentifierFilters(
+          identifierMatches,
+          output.dataset
+        );
+
       return {
         route: "dataset",
         dataset: output.dataset,
         operation: "lookup",
         column: output.column,
         groupBy: null,
-        filters: [
-          {
-            column: identifier.column,
-            operator: identifier.operator || "equals",
-            value: identifier.value,
-          },
-        ],
+        filters:
+          identifierFilters.length
+            ? identifierFilters
+            : [
+                {
+                  column:
+                    identifier.column,
+                  operator:
+                    identifier.operator ||
+                    "equals",
+                  value:
+                    identifier.value,
+                },
+              ],
         selectColumns: [output.column],
         transform: null,
         outputRequested: true,
@@ -1051,11 +1491,96 @@ function detectFilteredFieldLookup(
     return null;
   }
 
-  const outputCandidates =
+  /**
+   * First try the existing exact/live-data column matcher.
+   */
+  const exactOutputCandidates =
     findDatasetsContainingColumn(
       datasets,
       requestedText
     );
+
+  /**
+   * Generic fuzzy schema fallback.
+   *
+   * This matters for natural wording that does not exactly match a
+   * punctuation-heavy header.
+   *
+   * Example:
+   *   user:   "climate related risks"
+   *   schema: "Climate-related Risks/Hazards"
+   *
+   * The worksheet should be selected from the requested FIELD plus the
+   * identifying value, not from the worksheet name alone.
+   */
+  const fuzzyOutputCandidates =
+    getAllColumns(
+      schema
+    )
+      .map(
+        (item) => ({
+          dataset:
+            item.dataset,
+
+          column:
+            item.name,
+
+          score:
+            scoreColumnTarget(
+              requestedText,
+              item.name
+            ),
+        })
+      )
+      .filter(
+        (item) =>
+          item.score >= 0.5
+      )
+      .sort(
+        (a, b) =>
+          b.score -
+          a.score
+      );
+
+  const outputCandidates = [];
+
+  const seenOutputCandidates =
+    new Set();
+
+  for (
+    const candidate
+    of [
+      ...exactOutputCandidates.map(
+        (item) => ({
+          ...item,
+          score:
+            Number(
+              item.score
+            ) || 2,
+        })
+      ),
+      ...fuzzyOutputCandidates,
+    ]
+  ) {
+    const key =
+      `${candidate.dataset}::${candidate.column}`;
+
+    if (
+      seenOutputCandidates.has(
+        key
+      )
+    ) {
+      continue;
+    }
+
+    seenOutputCandidates.add(
+      key
+    );
+
+    outputCandidates.push(
+      candidate
+    );
+  }
 
   if (!outputCandidates.length) {
     return null;
@@ -1071,12 +1596,32 @@ function detectFilteredFieldLookup(
     return null;
   }
 
+  outputCandidates.sort(
+    (a, b) =>
+      (
+        Number(
+          b.score
+        ) || 0
+      ) -
+      (
+        Number(
+          a.score
+        ) || 0
+      )
+  );
+
   for (const output of outputCandidates) {
     /*
      * Prefer the worksheet that already contains both:
      * - the requested output column
      * - the identifying value/filter
      */
+    const sameDatasetIdentifiers =
+      getDatasetIdentifierFilters(
+        identifierMatches,
+        output.dataset
+      );
+
     const sameDatasetIdentifier =
       identifierMatches.find(
         (item) =>
@@ -1084,7 +1629,10 @@ function detectFilteredFieldLookup(
           output.dataset
       );
 
-    if (sameDatasetIdentifier) {
+    if (
+      sameDatasetIdentifiers.length ||
+      sameDatasetIdentifier
+    ) {
       const asksForList =
         /*
          * Generic list intent:
@@ -1100,6 +1648,14 @@ function detectFilteredFieldLookup(
         /^(?:what|which)\s+are\b/.test(text) ||
         /\bunder\b/.test(text);
 
+      const coherentFilters =
+        inferCoherentFilters(
+          datasets[
+            output.dataset
+          ] || [],
+          identifierText
+        );
+
       return {
         route: "dataset",
         dataset: output.dataset,
@@ -1109,21 +1665,27 @@ function detectFilteredFieldLookup(
             : "lookup",
         column: output.column,
         groupBy: null,
-        filters: [
-          {
-            column:
-              sameDatasetIdentifier.column,
-            operator:
-              sameDatasetIdentifier.operator ||
-              "equals",
-            value:
-              sameDatasetIdentifier.value,
-          },
+        filters:
+          coherentFilters.length
+            ? coherentFilters
+            : (
+                sameDatasetIdentifiers.length
+                  ? sameDatasetIdentifiers
+                  : [
+                      {
+                        column:
+                          sameDatasetIdentifier.column,
+                        operator:
+                          sameDatasetIdentifier.operator ||
+                          "equals",
+                        value:
+                          sameDatasetIdentifier.value,
+                      },
+                    ]
+              ),
+        selectColumns: [
+          output.column,
         ],
-        selectColumns:
-          asksForList
-            ? []
-            : [output.column],
         transform: null,
         outputRequested: true,
         limit: detectLimit(question),
@@ -1495,6 +2057,210 @@ function detectTextCountWithFilter(
 }
 
 
+
+function splitExplicitEntitySegments(
+  question
+) {
+  const text =
+    normalizeText(question);
+
+  if (!text) {
+    return [];
+  }
+
+  const tailMatch =
+    text.match(
+      /\b(?:of|for)\b\s+(.+)$/
+    );
+
+  if (!tailMatch?.[1]) {
+    return [];
+  }
+
+  const entityText =
+    tailMatch[1]
+      .replace(/[?.!]+$/g, "")
+      .trim();
+
+  const segments =
+    entityText
+      .split(
+        /\s+(?:and|vs\.?|versus)\s+/i
+      )
+      .map(
+        (part) =>
+          part.trim()
+      )
+      .filter(Boolean);
+
+  return segments.length >= 2
+    ? segments
+    : [];
+}
+
+function detectMultiEntityLookup(
+  question,
+  schema,
+  datasets
+) {
+  const segments =
+    splitExplicitEntitySegments(
+      question
+    );
+
+  if (segments.length < 2) {
+    return null;
+  }
+
+  const candidates = [];
+
+  for (
+    const [
+      datasetName,
+      rows,
+    ] of Object.entries(
+      datasets || {}
+    )
+  ) {
+    if (
+      !Array.isArray(rows) ||
+      !rows.length
+    ) {
+      continue;
+    }
+
+    const groups =
+      segments.map(
+        (segment) =>
+          inferCoherentFilters(
+            rows,
+            segment
+          )
+      );
+
+    if (
+      groups.some(
+        (filters) =>
+          !filters.length
+      )
+    ) {
+      continue;
+    }
+
+    const excludedColumns =
+      [...new Set(
+        groups
+          .flat()
+          .map(
+            (filter) =>
+              filter.column
+          )
+      )];
+
+    const output =
+      detectRequestedOutputColumns(
+        question,
+        schema,
+        datasetName,
+        excludedColumns
+      );
+
+    const selectColumns =
+      Array.isArray(
+        output?.selectColumns
+      )
+        ? output.selectColumns
+        : [];
+
+    if (!selectColumns.length) {
+      continue;
+    }
+
+    candidates.push({
+      dataset:
+        datasetName,
+      groups,
+      selectColumns,
+      transform:
+        output?.transform ||
+        null,
+      score:
+        groups.reduce(
+          (sum, filters) =>
+            sum + filters.length,
+          0
+        ) * 1000 +
+        selectColumns.length,
+    });
+  }
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  const best =
+    candidates[0];
+
+  return {
+    route:
+      "dataset",
+
+    dataset:
+      best.dataset,
+
+    operation:
+      "lookup",
+
+    column:
+      best.selectColumns.length === 1
+        ? best.selectColumns[0]
+        : null,
+
+    groupBy:
+      null,
+
+    filters:
+      [],
+
+    filterGroups:
+      best.groups.map(
+        (filters) => ({
+          logic:
+            "and",
+          filters,
+        })
+      ),
+
+    filterGroupLogic:
+      "or",
+
+    selectColumns:
+      best.selectColumns,
+
+    transform:
+      best.transform,
+
+    outputRequested:
+      true,
+
+    limit:
+      detectLimit(question),
+
+    showAll:
+      true,
+
+    confidence:
+      0.999,
+  };
+}
+
+
 function detectMultiFieldLookup(question, schema, datasets) {
   const text = normalizeText(question);
 
@@ -1638,19 +2404,34 @@ function detectMultiFieldLookup(question, schema, datasets) {
     groupBy:
       null,
 
-    filters: [
-      {
-        column:
-          identifier.column,
+    filters:
+      (
+        inferCoherentFilters(
+          datasets[
+            identifier.dataset
+          ] || [],
+          text
+        ).length
+          ? inferCoherentFilters(
+              datasets[
+                identifier.dataset
+              ] || [],
+              text
+            )
+          : [
+              {
+                column:
+                  identifier.column,
 
-        operator:
-          identifier.operator ||
-          "equals",
+                operator:
+                  identifier.operator ||
+                  "equals",
 
-        value:
-          identifier.value,
-      },
-    ],
+                value:
+                  identifier.value,
+              },
+            ]
+      ),
 
     selectColumns,
 
@@ -1675,6 +2456,7 @@ function createLocalPlan({
   question,
   schema,
   datasets = {},
+  context = null,
 }) {
   const schemaPlan =
     detectSchemaPlan(question, schema);
@@ -1713,6 +2495,19 @@ function createLocalPlan({
 
   if (groupedListRequest) {
     return groupedListRequest;
+  }
+
+  // Resolve explicit multi-entity lookups before ordinary
+  // multi-field/single-entity lookup logic.
+  const multiEntityLookup =
+    detectMultiEntityLookup(
+      question,
+      schema,
+      datasets
+    );
+
+  if (multiEntityLookup) {
+    return multiEntityLookup;
   }
 
   // Resolve TRUE multi-field lookups BEFORE any single-field lookup.
@@ -1783,6 +2578,35 @@ function createLocalPlan({
     datasetName = schema[0].name;
   } else if (bestDataset?.score >= 0.25) {
     datasetName = bestDataset.dataset;
+  }
+
+  /**
+   * Generic conversational dataset inheritance.
+   *
+   * Short referential questions such as:
+   *   "what are those?"
+   * contain no worksheet vocabulary, so rankDatasets() cannot
+   * choose between multiple worksheets.
+   *
+   * When this is a verified follow-up, reuse the previous worksheet
+   * if it still exists in the live schema.
+   */
+  if (
+    !datasetName &&
+    context?.isFollowUp === true &&
+    context?.lastDataset &&
+    schema.some(
+      (item) =>
+        String(
+          item?.name || ""
+        ) ===
+        String(
+          context.lastDataset
+        )
+    )
+  ) {
+    datasetName =
+      context.lastDataset;
   }
 
   const currentRows =
@@ -2041,11 +2865,13 @@ async function createPlan({
   question,
   schema,
   datasets = {},
+  context = null,
 }) {
   return createLocalPlan({
     question,
     schema,
     datasets,
+    context,
   });
 }
 
@@ -2055,6 +2881,7 @@ module.exports = {
   extractTargetPhrase,
   extractGroupingPhrase,
   detectCrossDatasetLookup,
+  detectMultiEntityLookup,
   detectMultiFieldLookup,
   detectTextCountWithFilter,
   detectFilteredFieldLookup,

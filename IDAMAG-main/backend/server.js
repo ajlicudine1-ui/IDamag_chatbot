@@ -1,31 +1,175 @@
 const express = require("express");
-const cors = require("cors");
+
+const corsModule = require("cors");
+const cors = corsModule.default || corsModule;
+
 const dotenv = require("dotenv");
 const bcrypt = require("bcryptjs");
+const { google } = require("googleapis");
 
-const chatbotRoutes = require("./chatbot/chatbotRoutes");
+// Load environment variables before database/model modules.
+dotenv.config();
 
-const {
-  sequelize,
-  Office,
-  Division,
-  Report,
-  DashboardWorksheet,
-  User,
-  ActivityLog,
-  DashboardFeedback,
-  WebsiteFeedback,
-} = require("./models/index");
+const app = express();
+const PORT = process.env.PORT || 5000;
+
+// ============================================================
+// CHATBOT ROUTER LOADER
+// ============================================================
+
+function resolveRouter(moduleValue) {
+  let current = moduleValue;
+
+  for (let i = 0; i < 5; i++) {
+    if (typeof current === "function") {
+      return current;
+    }
+
+    if (current && typeof current.router === "function") {
+      return current.router;
+    }
+
+    if (current && current.default) {
+      current = current.default;
+      continue;
+    }
+
+    break;
+  }
+
+  return current;
+}
+
+let chatbotRoutes = null;
+
+try {
+  const chatbotRoutesModule = require("./chatbot/chatbotRoutes");
+  chatbotRoutes = resolveRouter(chatbotRoutesModule);
+
+  console.log(
+    "chatbotRoutes module keys:",
+    Object.keys(chatbotRoutesModule || {})
+  );
+} catch (error) {
+  console.error("Unable to load chatbot routes:", error);
+}
+
+// ============================================================
+// DATABASE MODELS
+// ============================================================
+
+function unwrapModel(mod) {
+  if (!mod) {
+    return mod;
+  }
+
+  // Already a Sequelize model
+  if (
+    typeof mod.findAll === "function" ||
+    typeof mod.findOne === "function" ||
+    typeof mod.create === "function"
+  ) {
+    return mod;
+  }
+
+  // Wrapped as default export
+  if (
+    mod.default &&
+    (
+      typeof mod.default.findAll === "function" ||
+      typeof mod.default.findOne === "function" ||
+      typeof mod.default.create === "function"
+    )
+  ) {
+    return mod.default;
+  }
+
+  return mod.default || mod;
+}
+
+const modelsModule = require("./models/index");
+
+const sequelize =
+  modelsModule.sequelize?.default ||
+  modelsModule.sequelize ||
+  require("./config/database");
+
+const Office = unwrapModel(
+  modelsModule.Office ||
+  require("./models/Office")
+);
+
+const Division = unwrapModel(
+  modelsModule.Division ||
+  require("./models/Division")
+);
+
+const Report = unwrapModel(
+  modelsModule.Report ||
+  require("./models/Report")
+);
+
+const DashboardWorksheet = unwrapModel(
+  modelsModule.DashboardWorksheet ||
+  require("./models/DashboardWorksheet")
+);
+
+const User = unwrapModel(
+  modelsModule.User ||
+  require("./models/User")
+);
+
+const ActivityLog = unwrapModel(
+  modelsModule.ActivityLog ||
+  require("./models/ActivityLog")
+);
+
+const DashboardFeedback = unwrapModel(
+  modelsModule.DashboardFeedback ||
+  require("./models/DashboardFeedback")
+);
+
+const WebsiteFeedback = unwrapModel(
+  modelsModule.WebsiteFeedback ||
+  require("./models/WebsiteFeedback")
+);
+
+const ChatbotConversation = unwrapModel(
+  modelsModule.ChatbotConversation ||
+  require("./models/ChatbotConversation")
+);
 
 const {
   sendWelcomeEmail,
   generateSecurePassword,
 } = require("./utils/emailService");
 
-dotenv.config();
+console.log(
+  "models/index keys:",
+  Object.keys(modelsModule || {})
+);
 
-const app = express();
-const PORT = process.env.PORT || 5000;
+console.log(
+  "typeof sequelize.define:",
+  typeof sequelize?.define
+);
+
+console.log(
+  "typeof Office.findAll:",
+  typeof Office?.findAll
+);
+
+console.log(
+  "typeof Division.findAll:",
+  typeof Division?.findAll
+);
+
+console.log("typeof cors:", typeof cors);
+
+console.log(
+  "typeof chatbotRoutes:",
+  typeof chatbotRoutes
+);
 
 // ============================================================
 // MIDDLEWARE
@@ -33,17 +177,25 @@ const PORT = process.env.PORT || 5000;
 
 const allowedOrigins = [
   "http://localhost:5173",
+  "http://192.168.56.1:5173",
+  "https://i-damag-part2.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
 app.use(
   cors({
     origin(origin, callback) {
+      console.log("Request origin:", origin);
+
       if (!origin || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
-      return callback(new Error("Not allowed by CORS"));
+      console.warn("Blocked CORS origin:", origin);
+
+      return callback(
+        new Error(`Not allowed by CORS: ${origin}`)
+      );
     },
 
     methods: [
@@ -63,9 +215,22 @@ app.use(
   })
 );
 
+
 app.use(express.json());
 
-app.use("/api/chatbot", chatbotRoutes);
+// Mount chatbot only if the router loaded correctly.
+// A chatbot bundling issue must not crash the rest of the API.
+if (typeof chatbotRoutes === "function") {
+  app.use("/api/chatbot", chatbotRoutes);
+
+  console.log(
+    "Chatbot routes loaded successfully."
+  );
+} else {
+  console.warn(
+    "Chatbot routes were not loaded. Other API routes will continue working."
+  );
+}
 
 // ============================================================
 // LOGGING HELPER
@@ -218,15 +383,207 @@ app.post("/api/login", async (req, res) => {
   }
 });
 
+
+// ============================================================
+// GOOGLE OAUTH TOKEN HELPER
+// Temporary setup helper for obtaining a Google refresh token.
+// Remove these routes after GOOGLE_REFRESH_TOKEN is saved in Vercel.
+// ============================================================
+
+function getGoogleOAuthClient() {
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const redirectUri =
+    process.env.GOOGLE_REDIRECT_URI ||
+    "https://i-damag-part2.vercel.app/api/google/callback";
+
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured in the server environment."
+    );
+  }
+
+  return new google.auth.OAuth2(
+    clientId,
+    clientSecret,
+    redirectUri
+  );
+}
+
+app.get("/api/google/connect", (req, res) => {
+  try {
+    const oauth2Client = getGoogleOAuthClient();
+
+    const authUrl = oauth2Client.generateAuthUrl({
+      access_type: "offline",
+      prompt: "consent",
+      scope: [
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+      ],
+    });
+
+    return res.redirect(authUrl);
+  } catch (error) {
+    console.error("GOOGLE OAUTH CONNECT ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: error.message,
+    });
+  }
+});
+
+app.get("/api/google/callback", async (req, res) => {
+  try {
+    const code = String(req.query.code || "").trim();
+
+    if (!code) {
+      return res.status(400).send(
+        "Google did not return an authorization code."
+      );
+    }
+
+    const oauth2Client = getGoogleOAuthClient();
+    const { tokens } = await oauth2Client.getToken(code);
+
+    if (!tokens.refresh_token) {
+      return res
+        .status(400)
+        .type("html")
+        .send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>I-DAMAG Google Authorization</title>
+</head>
+<body style="font-family:Arial,sans-serif;padding:40px;line-height:1.6">
+  <h1>No refresh token was returned</h1>
+  <p>
+    Open <strong>/api/google/connect</strong> again and make sure you approve
+    access. The route already requests <code>prompt=consent</code>.
+  </p>
+  <p>
+    If the Google account previously authorized this OAuth client, revoke the
+    I-DAMAG connection in your Google Account permissions and try again.
+  </p>
+</body>
+</html>`);
+    }
+
+    // Intentionally do NOT log the refresh token to Vercel logs.
+    // It is shown once in the browser so the administrator can copy it
+    // directly into Vercel Environment Variables.
+    const escapedToken = String(tokens.refresh_token)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+
+    return res
+      .status(200)
+      .type("html")
+      .send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>I-DAMAG Google Authorization</title>
+  <style>
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      background: #f5f7f6;
+      color: #1f2937;
+      margin: 0;
+      padding: 32px;
+    }
+    main {
+      max-width: 820px;
+      margin: 30px auto;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      padding: 32px;
+    }
+    h1 { color: #176b3a; }
+    code, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      font-family: Consolas, monospace;
+    }
+    textarea {
+      min-height: 130px;
+      padding: 12px;
+      resize: vertical;
+    }
+    .warning {
+      background: #fff8e1;
+      border-left: 4px solid #d69e2e;
+      padding: 12px 14px;
+      margin: 18px 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Google authorization completed</h1>
+    <p>
+      Copy the refresh token below directly into Vercel as
+      <strong>GOOGLE_REFRESH_TOKEN</strong>.
+    </p>
+    <div class="warning">
+      Treat this token like a password. Do not send it in chat, email, screenshots,
+      or source control. After saving it in Vercel and confirming the live Sheets
+      reader works, remove these temporary OAuth helper routes.
+    </div>
+    <textarea readonly onclick="this.select()">${escapedToken}</textarea>
+    <p>
+      Also make sure Vercel contains <strong>GOOGLE_CLIENT_ID</strong>,
+      <strong>GOOGLE_CLIENT_SECRET</strong>, and
+      <strong>GOOGLE_REDIRECT_URI</strong>.
+    </p>
+  </main>
+</body>
+</html>`);
+  } catch (error) {
+    console.error(
+      "GOOGLE OAUTH CALLBACK ERROR:",
+      error?.message || error
+    );
+
+    return res
+      .status(500)
+      .type("html")
+      .send(
+        `<h1>Google authorization failed</h1><p>${String(
+          error?.message || "Unknown OAuth error"
+        )
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")}</p>`
+      );
+  }
+});
+
+
 // ============================================================
 // TEST CONNECTION
 // ============================================================
 
-app.get("/api/test", (req, res) => {
-  res.json({
-    message:
-      "Backend is connected to MySQL and running!",
-  });
+app.get("/api/test", async (req, res) => {
+  try {
+    await sequelize.authenticate();
+
+    res.json({
+      success: true,
+      message: "Backend is connected to Supabase PostgreSQL!",
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
 });
 
 // ============================================================
@@ -2057,7 +2414,7 @@ app.get("/api/feedback/dashboard", async (req, res) => {
       message: "Unable to load dashboard feedback.",
     });
   }
-});0
+});
 
 app.get("/api/feedback/website", async (req, res) => {
   try {
@@ -2100,6 +2457,19 @@ const initializeDatabase =
     try {
       await sequelize.authenticate();
 
+      /**
+       * Create the chatbot conversation-state table if it does
+       * not exist yet.
+       *
+       * We sync ONLY this model. Existing application tables are
+       * not altered.
+       */
+      await ChatbotConversation.sync();
+
+      console.log(
+        "Chatbot conversation storage ready."
+      );
+
       console.log(
         "Database connected successfully."
       );
@@ -2121,26 +2491,45 @@ const initializeDatabase =
 // LOCAL DEVELOPMENT
 // ============================================================
 
-if (!process.env.VERCEL) {
-  initializeDatabase()
-    .then(() => {
-      app.listen(
-        PORT,
-        "0.0.0.0",
-        () => {
-          console.log(
-            `Server running on http://localhost:${PORT}`
-          );
-        }
-      );
-    })
-    .catch(() => {
-      process.exit(1);
-    });
-}
+const startServer = async () => {
+  try {
+    await initializeDatabase();
 
-// ============================================================
-// VERCEL
-// ============================================================
+    app.listen(
+      PORT,
+      "0.0.0.0",
+      () => {
+        console.log(
+          `Server running on port ${PORT}`
+        );
+      }
+    );
+  } catch (error) {
+    console.error(
+      "Server startup failed:",
+      error
+    );
+
+    process.exit(1);
+  }
+};
+
+/**
+ * ============================================================
+ * RUNTIME BOOTSTRAP
+ * ============================================================
+ *
+ * Local / traditional Node hosting:
+ *   - Start the HTTP server ourselves with app.listen().
+ *
+ * Vercel Functions / Vercel Services:
+ *   - DO NOT call app.listen().
+ *   - Vercel imports and invokes the exported Express app.
+ *
+ * VERCEL is automatically provided by Vercel during deployment.
+ */
+if (!process.env.VERCEL) {
+  startServer();
+}
 
 module.exports = app;

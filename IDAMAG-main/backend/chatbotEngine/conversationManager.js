@@ -11,10 +11,55 @@ function createEmptyContext() {
     lastEntity: null,
     lastDataset: null,
     lastIntent: null,
+    lastQuestion: null,
+
+    /**
+     * Last question that explicitly named the subject being counted/listed.
+     *
+     * This survives elliptical follow-ups such as:
+     *   "How many associations are in Pangasinan?"
+     *   "What about La Union?"
+     *   "What are those?"
+     *
+     * lastQuestion becomes "What about La Union?", but
+     * lastSubjectQuestion remains the explicit association question.
+     */
+    lastSubjectQuestion: null,
+
     lastMetric: null,
+
+    /**
+     * Generic entity/output field remembered from the previous
+     * successful dataset question.
+     *
+     * Example:
+     *   "How many associations are in La Union?"
+     *   -> subject column = "Name of Association"
+     *
+     * Then:
+     *   "What are those?"
+     *   -> list that same subject column using the same filters.
+     *
+     * This is schema-driven; no dataset or column name is hardcoded.
+     */
+    lastSubjectColumn: null,
+
     lastFilters: [],
     lastPlan: null,
     lastResult: null,
+
+    /**
+     * Last VERIFIED analytical state.
+     *
+     * This is intentionally structured rather than prose so later
+     * questions can transform only one part of the prior analysis:
+     *
+     * average -> total
+     * top 1   -> top 5
+     * highest -> lowest
+     * metric A -> metric B
+     */
+    analyticalContext: null,
 
     // Used for comparison follow-ups.
     recentResults: [],
@@ -77,6 +122,24 @@ function isFollowUpQuestion(
     /\bhim\b/i,
     /\bthem\b/i,
 
+    // Plural references to previously returned results.
+    /\bthose\b/i,
+    /\bthese\b/i,
+    /\bthe two\b/i,
+
+    /\bthose persons?\b/i,
+    /\bthose employees?\b/i,
+    /\bthose people\b/i,
+    /\bthose records?\b/i,
+    /\bthose rows?\b/i,
+    /\bthose municipalities\b/i,
+    /\bthose provinces\b/i,
+    /\bthose projects?\b/i,
+    /\bthose offices?\b/i,
+    /\bthose divisions?\b/i,
+    /\bthose associations?\b/i,
+    /\bthose farmers?\b/i,
+
     /\bthat person\b/i,
     /\bthat farmer\b/i,
     /\bthat association\b/i,
@@ -93,6 +156,22 @@ function isFollowUpQuestion(
 
     /^what about the total\b/i,
     /^how about the total\b/i,
+    /^what about the average\b/i,
+    /^how about the average\b/i,
+    /^what about the count\b/i,
+    /^how about the count\b/i,
+
+    /^(?:show|give|list)\s+(?:me\s+)?(?:the\s+)?(?:top|bottom)\s+\d{1,3}\b/i,
+    /\bsecond\s+(?:highest|lowest)\b/i,
+    /\b(?:top|bottom)\s+\d{1,3}\s+instead\b/i,
+    /\bwhat percentage (?:higher|lower)\b/i,
+    /\bwhat percent (?:higher|lower)\b/i,
+    /\bpercentage difference\b/i,
+    /\bpercent(?:age)? (?:higher|lower)\b/i,
+    /\bhow many percent (?:higher|lower)\b/i,
+
+    /\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+(?:highest|lowest|largest|smallest)\b/i,
+    /\b\d{1,2}(?:st|nd|rd|th)\s+(?:highest|lowest|largest|smallest)\b/i,
 
     // ======================================================
     // COMPARISON FOLLOW-UPS
@@ -240,6 +319,49 @@ function extractMetric(
   return null;
 }
 
+
+/**
+ * Clone nested planner filter groups.
+ *
+ * Multi-row conversational follow-ups reuse these filters, so
+ * conversation memory must not retain mutable references to a plan
+ * that may later be normalized or entity-resolved in place.
+ */
+function cloneFilterGroups(
+  filterGroups
+) {
+  return Array.isArray(
+    filterGroups
+  )
+    ? filterGroups.map(
+        (group) => ({
+          ...group,
+
+          filters:
+            Array.isArray(
+              group?.filters
+            )
+              ? group.filters.map(
+                  (filter) => ({
+                    ...filter,
+
+                    value:
+                      Array.isArray(
+                        filter?.value
+                      )
+                        ? [
+                            ...filter.value,
+                          ]
+                        : filter?.value,
+                  })
+                )
+              : [],
+        })
+      )
+    : [];
+}
+
+
 /**
  * Save a compact VERIFIED result for
  * future comparison questions.
@@ -333,6 +455,11 @@ function addRecentResult(
               ...plan.selectColumns,
             ]
           : [],
+
+      filterGroups:
+        cloneFilterGroups(
+          plan.filterGroups
+        ),
     },
 
     /**
@@ -362,6 +489,207 @@ function addRecentResult(
   }
 }
 
+
+/**
+ * ==========================================================
+ * VERIFIED ANALYTICAL CONTEXT
+ * ==========================================================
+ *
+ * Keep only execution-relevant structured state.
+ * No Groq prose is stored here.
+ */
+
+function cloneFilters(
+  filters
+) {
+  return Array.isArray(filters)
+    ? filters.map(
+        (filter) => ({
+          ...filter,
+
+          value:
+            Array.isArray(
+              filter?.value
+            )
+              ? [
+                  ...filter.value,
+                ]
+              : filter?.value,
+        })
+      )
+    : [];
+}
+
+
+function isAnalyticalOperation(
+  operation
+) {
+  return new Set([
+    "sum",
+    "average",
+    "median",
+    "minimum",
+    "maximum",
+
+    "group_sum",
+    "group_average",
+    "group_minimum",
+    "group_maximum",
+    "group_count",
+
+    "rank_rows",
+    "rank_groups",
+  ]).has(
+    String(
+      operation || ""
+    )
+      .trim()
+      .toLowerCase()
+  );
+}
+
+
+function buildAnalyticalContext({
+  question,
+  plan,
+  result,
+}) {
+  if (
+    !plan ||
+    !result ||
+    result.success === false ||
+    plan.route !== "dataset" ||
+    !isAnalyticalOperation(
+      result.operation ||
+      plan.operation
+    )
+  ) {
+    return null;
+  }
+
+  const compactResults =
+    Array.isArray(
+      result.results
+    )
+      ? result.results
+          .slice(0, 100)
+          .map(
+            (item) => {
+              if (
+                !item ||
+                typeof item !==
+                  "object"
+              ) {
+                return item;
+              }
+
+              return {
+                label:
+                  item.label ??
+                  null,
+
+                value:
+                  item.value ??
+                  null,
+
+                recordsUsed:
+                  item.recordsUsed ??
+                  null,
+              };
+            }
+          )
+      : [];
+
+  return {
+    question:
+      question || null,
+
+    dataset:
+      plan.dataset ||
+      result.dataset ||
+      null,
+
+    operation:
+      result.operation ||
+      plan.operation ||
+      null,
+
+    column:
+      result.column ||
+      plan.column ||
+      null,
+
+    labelColumn:
+      result.labelColumn ||
+      plan.labelColumn ||
+      null,
+
+    groupBy:
+      result.groupBy ||
+      plan.groupBy ||
+      null,
+
+    aggregation:
+      result.aggregation ||
+      plan.aggregation ||
+      null,
+
+    direction:
+      result.direction ||
+      plan.direction ||
+      null,
+
+    filters:
+      cloneFilters(
+        plan.filters ||
+        result.filters
+      ),
+
+    filterGroups:
+      cloneFilterGroups(
+        plan.filterGroups
+      ),
+
+    filterGroupLogic:
+      plan.filterGroupLogic ||
+      null,
+
+    selectColumns:
+      Array.isArray(
+        plan.selectColumns
+      )
+        ? [
+            ...plan.selectColumns,
+          ]
+        : [],
+
+    limit:
+      Number.isInteger(
+        Number(plan.limit)
+      )
+        ? Number(plan.limit)
+        : null,
+
+    showAll:
+      plan.showAll === true,
+
+    results:
+      compactResults,
+
+    value:
+      result.value ??
+      null,
+
+    recordsUsed:
+      result.recordsUsed ??
+      null,
+
+    timestamp:
+      Date.now(),
+  };
+}
+
+
 /**
  * Update conversation after a successfully
  * planned/executed question.
@@ -378,6 +706,11 @@ function updateConversation(
     getConversation(
       sessionId
     );
+
+  if (question) {
+    context.lastQuestion =
+      question;
+  }
 
   if (plan) {
     if (plan.dataset) {
@@ -401,6 +734,87 @@ function updateConversation(
     if (metric) {
       context.lastMetric =
         metric;
+    }
+
+    /**
+     * Remember the concrete subject/output field independently from
+     * the operation. This is especially important for:
+     *
+     *   count -> "what are those?"
+     *   count -> "show them"
+     *   distinct count -> "list those"
+     *
+     * Prefer the real plan.column. Otherwise use a single selected
+     * output column. We intentionally do not guess a field here.
+     */
+    const operation =
+      String(
+        plan.operation ||
+        plan.intent ||
+        ""
+      )
+        .trim()
+        .toLowerCase();
+
+    /**
+     * Preserve only EXPLICIT subject-bearing questions.
+     * Do not overwrite this with elliptical turns such as:
+     *   "what about La Union?"
+     */
+    const normalizedQuestion =
+      String(
+        question || ""
+      )
+        .toLowerCase()
+        .trim();
+
+    if (
+      question &&
+      (
+        /\bhow many\b/.test(
+          normalizedQuestion
+        ) ||
+        /\bnumber of\b/.test(
+          normalizedQuestion
+        ) ||
+        /\bcount(?: of)?\b/.test(
+          normalizedQuestion
+        ) ||
+        /^(?:please\s+)?(?:list|show|display|enumerate|name)\b/.test(
+          normalizedQuestion
+        )
+      )
+    ) {
+      context.lastSubjectQuestion =
+        question;
+    }
+
+    const singleSelectedColumn =
+      Array.isArray(
+        plan.selectColumns
+      ) &&
+      plan.selectColumns.length === 1
+        ? plan.selectColumns[0]
+        : null;
+
+    const subjectCandidate =
+      plan.column ||
+      singleSelectedColumn ||
+      null;
+
+    if (
+      subjectCandidate &&
+      [
+        "list",
+        "lookup",
+        "non_empty_count",
+        "distinct_count",
+        "count",
+        "group_count",
+      ].includes(operation)
+    ) {
+      context.lastSubjectColumn =
+        subjectCandidate;
     }
 
     /**
@@ -431,6 +845,40 @@ function updateConversation(
 
     context.lastPlan = {
       ...plan,
+
+      filters:
+        Array.isArray(
+          plan.filters
+        )
+          ? plan.filters.map(
+              (filter) => ({
+                ...filter,
+
+                value:
+                  Array.isArray(
+                    filter?.value
+                  )
+                    ? [
+                        ...filter.value,
+                      ]
+                    : filter?.value,
+              })
+            )
+          : [],
+
+      selectColumns:
+        Array.isArray(
+          plan.selectColumns
+        )
+          ? [
+              ...plan.selectColumns,
+            ]
+          : [],
+
+      filterGroups:
+        cloneFilterGroups(
+          plan.filterGroups
+        ),
     };
   }
 
@@ -439,6 +887,29 @@ function updateConversation(
   ) {
     context.lastResult =
       result;
+  }
+
+  /**
+   * Save the latest VERIFIED analytical state independently from
+   * ordinary lookups. A later lookup such as "who are those people?"
+   * must not erase the last analytical calculation.
+   */
+  if (
+    question &&
+    plan &&
+    result
+  ) {
+    const analyticalContext =
+      buildAnalyticalContext({
+        question,
+        plan,
+        result,
+      });
+
+    if (analyticalContext) {
+      context.analyticalContext =
+        analyticalContext;
+    }
   }
 
   // ========================================================
@@ -518,8 +989,17 @@ function getRelevantContext(
     lastIntent:
       context.lastIntent,
 
+    lastQuestion:
+      context.lastQuestion,
+
+    lastSubjectQuestion:
+      context.lastSubjectQuestion,
+
     lastMetric:
       context.lastMetric,
+
+    lastSubjectColumn:
+      context.lastSubjectColumn,
 
     lastFilters:
       context.lastFilters,
@@ -532,6 +1012,11 @@ function getRelevantContext(
     lastResult:
       isFollowUp
         ? context.lastResult
+        : null,
+
+    analyticalContext:
+      isFollowUp
+        ? context.analyticalContext
         : null,
 
     /**
