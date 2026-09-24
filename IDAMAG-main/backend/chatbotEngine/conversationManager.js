@@ -1,3 +1,5 @@
+const { buildSemanticPlan } = require("./semanticPlan");
+
 const conversations = new Map();
 
 const MAX_HISTORY = 10;
@@ -61,8 +63,29 @@ function createEmptyContext() {
      */
     analyticalContext: null,
 
+    // Canonical semantic plan used for stable follow-up inheritance.
+    semanticPlan: null,
+
     // Used for comparison follow-ups.
     recentResults: [],
+
+    // Verified entity/key scope used for longer relationship-aware chains.
+    relationshipScope: null,
+
+    /**
+     * Last VERIFIED compound request.
+     *
+     * A compound request may contain multiple operations over one shared
+     * scope, for example:
+     *   count rows + sum a metric
+     *
+     * Store every verified clause so a short follow-up such as
+     * "what about <new value>?" can replace only the newly mentioned
+     * scope while preserving ALL prior operations.
+     *
+     * This is planner-agnostic and schema-driven.
+     */
+    compoundContext: null,
 
     history: [],
   };
@@ -539,6 +562,15 @@ function isAnalyticalOperation(
 
     "rank_rows",
     "rank_groups",
+
+    // Distributed analytical operations must also replace the previous
+    // analytical context. Otherwise a later short follow-up such as
+    // "what about the lowest?" can accidentally reuse an older
+    // single-worksheet ranking even though the latest verified answer
+    // came from multiple worksheets.
+    "rank_worksheets",
+    "rank_across_worksheets",
+    "multi_worksheet",
   ]).has(
     String(
       operation || ""
@@ -689,6 +721,84 @@ function buildAnalyticalContext({
   };
 }
 
+
+
+function isCorrectionQuestion(question) {
+  const text = String(question || "").trim().toLowerCase();
+  return /^(?:no[, ]+)?(?:i\s+)?meant\b|\bnot\s+.+\b(?:but|instead|rather)\b|\binstead of\b|\brather than\b/.test(text);
+}
+
+function findExplicitSchemaColumnInQuestion(schema, question) {
+  const text = String(question || "").toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+  const matches = [];
+  for (const dataset of schema || []) {
+    for (const column of dataset?.columns || []) {
+      const normalized = String(column?.name || "").toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").replace(/\s+/g, " ").trim();
+      if (normalized && text.includes(normalized)) {
+        matches.push({ dataset: dataset.name, column: column.name, length: normalized.length });
+      }
+    }
+  }
+  return matches.sort((a, b) => b.length - a.length)[0] || null;
+}
+
+function applyConversationCorrection({ question, context, schema }) {
+  if (!context || !isCorrectionQuestion(question)) return context;
+  const explicit = findExplicitSchemaColumnInQuestion(schema, question);
+  if (!explicit) return context;
+
+  const next = { ...context };
+  next.isFollowUp = true;
+  next.lastDataset = explicit.dataset || next.lastDataset;
+  next.lastMetric = explicit.column;
+  next.lastSubjectColumn = explicit.column;
+  if (next.lastPlan && typeof next.lastPlan === "object") {
+    next.lastPlan = {
+      ...next.lastPlan,
+      dataset: explicit.dataset || next.lastPlan.dataset,
+      column: explicit.column,
+      selectColumns: [explicit.column],
+    };
+  }
+  next.correctionApplied = true;
+  next.correctedColumn = explicit.column;
+  return next;
+}
+
+function preserveRelationshipScope({ sessionId = "default", plan, result }) {
+  const context = getConversation(sessionId);
+  if (!plan || !result || result.success === false) return context.relationshipScope;
+
+  const entityValues = [];
+  if (Array.isArray(result.results)) {
+    for (const item of result.results) {
+      if (item === null || item === undefined) continue;
+      if (typeof item !== "object") {
+        const value = String(item).trim();
+        if (value) entityValues.push(value);
+      } else {
+        const preferred = plan.column || plan.labelColumn || plan.groupBy;
+        const value = preferred ? item?.[preferred] : null;
+        if (value !== null && value !== undefined && String(value).trim()) {
+          entityValues.push(String(value).trim());
+        }
+      }
+    }
+  }
+
+  const joins = Array.isArray(result.joins) ? result.joins : [];
+  context.relationshipScope = {
+    sourceDataset: joins[0]?.sourceDataset || plan.dataset || null,
+    targetDataset: joins[0]?.targetDataset || null,
+    sourceColumn: joins[0]?.sourceColumn || plan.column || plan.labelColumn || null,
+    targetColumn: joins[0]?.targetColumn || null,
+    entityValues: [...new Set(entityValues)].slice(0, 250),
+    joins: joins.map((item) => ({ ...item })),
+    crossDataset: result.crossDataset === true,
+    timestamp: Date.now(),
+  };
+  return context.relationshipScope;
+}
 
 /**
  * Update conversation after a successfully
@@ -880,6 +990,14 @@ function updateConversation(
           plan.filterGroups
         ),
     };
+
+    // Save meaning independently from the raw planner representation.
+    // Follow-ups can modify direction/month/metric without depending on
+    // whichever planner happened to create the previous turn.
+    const semantic = buildSemanticPlan({ plan, result });
+    if (semantic) {
+      context.semanticPlan = semantic;
+    }
   }
 
   if (
@@ -887,6 +1005,11 @@ function updateConversation(
   ) {
     context.lastResult =
       result;
+
+    if (plan) {
+      const semantic = buildSemanticPlan({ plan, result });
+      if (semantic) context.semanticPlan = semantic;
+    }
   }
 
   /**
@@ -935,6 +1058,10 @@ function updateConversation(
   // NORMAL CONVERSATION HISTORY
   // ========================================================
 
+  if (plan && result && result.success !== false) {
+    preserveRelationshipScope({ sessionId, plan, result });
+  }
+
   if (question) {
     context.history.push({
       question,
@@ -960,6 +1087,66 @@ function updateConversation(
 }
 
 /**
+ * Save the complete VERIFIED compound request in the user's real session.
+ *
+ * Compound clauses are executed in an isolated temporary session so they
+ * can depend on one another without polluting ordinary history. After the
+ * compound finishes, this compact structured snapshot is copied back to the
+ * real session specifically for future continuous Q&A.
+ */
+function saveCompoundContext(
+  sessionId = "default",
+  {
+    question = null,
+    clauses = [],
+  } = {}
+) {
+  const context =
+    getConversation(sessionId);
+
+  const verifiedClauses =
+    Array.isArray(clauses)
+      ? clauses
+          .filter((item) =>
+            item &&
+            item.plan &&
+            item.result &&
+            item.result.success !== false &&
+            item.plan.route === "dataset"
+          )
+          .map((item) => ({
+            question: item.question || null,
+            plan: {
+              ...item.plan,
+              filters: cloneFilters(item.plan.filters),
+              selectColumns: Array.isArray(item.plan.selectColumns)
+                ? [...item.plan.selectColumns]
+                : [],
+              filterGroups: cloneFilterGroups(item.plan.filterGroups),
+            },
+            result: item.result,
+          }))
+      : [];
+
+  if (verifiedClauses.length < 2) {
+    context.compoundContext = null;
+    return null;
+  }
+
+  context.compoundContext = {
+    question: question || null,
+    clauses: verifiedClauses,
+    timestamp: Date.now(),
+  };
+
+  if (question) {
+    context.lastQuestion = question;
+  }
+
+  return context.compoundContext;
+}
+
+/**
  * Get context that may be useful for
  * interpreting the next question.
  */
@@ -980,29 +1167,33 @@ function getRelevantContext(
   return {
     isFollowUp,
 
+    // Self-contained turns must be planned from the current question and
+    // current data only. Exposing stale dataset/intent/filter state here can
+    // make identical repeated questions take different planner paths. True
+    // referential turns still receive the full verified conversation context.
     lastEntity:
-      context.lastEntity,
+      isFollowUp ? context.lastEntity : null,
 
     lastDataset:
-      context.lastDataset,
+      isFollowUp ? context.lastDataset : null,
 
     lastIntent:
-      context.lastIntent,
+      isFollowUp ? context.lastIntent : null,
 
     lastQuestion:
-      context.lastQuestion,
+      isFollowUp ? context.lastQuestion : null,
 
     lastSubjectQuestion:
-      context.lastSubjectQuestion,
+      isFollowUp ? context.lastSubjectQuestion : null,
 
     lastMetric:
-      context.lastMetric,
+      isFollowUp ? context.lastMetric : null,
 
     lastSubjectColumn:
-      context.lastSubjectColumn,
+      isFollowUp ? context.lastSubjectColumn : null,
 
     lastFilters:
-      context.lastFilters,
+      isFollowUp ? context.lastFilters : [],
 
     lastPlan:
       isFollowUp
@@ -1017,6 +1208,21 @@ function getRelevantContext(
     analyticalContext:
       isFollowUp
         ? context.analyticalContext
+        : null,
+
+    semanticPlan:
+      isFollowUp
+        ? context.semanticPlan
+        : null,
+
+    relationshipScope:
+      isFollowUp
+        ? context.relationshipScope
+        : null,
+
+    compoundContext:
+      isFollowUp
+        ? context.compoundContext
         : null,
 
     /**
@@ -1093,6 +1299,10 @@ module.exports = {
   getRecentResults,
   getHistory,
   isFollowUpQuestion,
+  isCorrectionQuestion,
+  applyConversationCorrection,
+  preserveRelationshipScope,
+  saveCompoundContext,
   clearConversation,
   clearAllConversations,
 };

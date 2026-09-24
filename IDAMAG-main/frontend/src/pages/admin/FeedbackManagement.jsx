@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   MessageSquareText,
   LayoutDashboard,
@@ -8,12 +8,19 @@ import {
   Mail,
   CalendarDays,
   Star,
+  SlidersHorizontal,
 } from "lucide-react";
 
 import ManagementLayout from "../../components/management/ManagementLayout";
 
 function FeedbackManagement() {
   const [activeTab, setActiveTab] = useState("dashboard");
+
+  const [selectedDashboard, setSelectedDashboard] = useState("");
+  const [sortField, setSortField] = useState("");
+  const [sortOrder, setSortOrder] = useState("desc");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
 
   const [dashboardFeedback, setDashboardFeedback] = useState([]);
   const [websiteFeedback, setWebsiteFeedback] = useState([]);
@@ -23,7 +30,7 @@ function FeedbackManagement() {
 
   const RAW_API_URL = (
     import.meta.env.VITE_API_URL ||
-    "http://localhost:5000/api"
+    "/api"
   ).replace(/\/+$/, "");
 
   const API_URL = RAW_API_URL.endsWith("/api")
@@ -130,6 +137,160 @@ function FeedbackManagement() {
       </div>
     );
   };
+
+
+  const getDashboardName = (feedback) =>
+    String(
+      feedback?.dashboard_name ??
+        feedback?.dashboardName ??
+        ""
+    ).trim();
+
+  const dashboardNames = useMemo(() => {
+    const names = dashboardFeedback
+      .map((feedback) => getDashboardName(feedback))
+      .filter(Boolean);
+
+    return [...new Set(names)].sort((a, b) =>
+      a.localeCompare(b, undefined, {
+        sensitivity: "base",
+      })
+    );
+  }, [dashboardFeedback]);
+
+
+  const getRatingValue = (feedback, field) => {
+    const fieldMap = {
+      user_interface:
+        feedback.userInterface ??
+        feedback.user_interface,
+      user_experience:
+        feedback.userExperience ??
+        feedback.user_experience,
+      data_completeness:
+        feedback.dataCompleteness ??
+        feedback.data_completeness,
+      data_accuracy:
+        feedback.dataAccuracy ??
+        feedback.data_accuracy,
+      accessibility:
+        feedback.accessibility,
+    };
+
+    const value = Number(fieldMap[field]);
+
+    return Number.isFinite(value)
+      ? value
+      : null;
+  };
+
+  const isWithinDateRange = (dateValue) => {
+    if (!fromDate && !toDate) {
+      return true;
+    }
+
+    if (!dateValue) {
+      return false;
+    }
+
+    const itemDate = new Date(dateValue);
+
+    if (Number.isNaN(itemDate.getTime())) {
+      return false;
+    }
+
+    if (fromDate) {
+      const startDate = new Date(`${fromDate}T00:00:00`);
+
+      if (itemDate < startDate) {
+        return false;
+      }
+    }
+
+    if (toDate) {
+      const endDate = new Date(`${toDate}T23:59:59.999`);
+
+      if (itemDate > endDate) {
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  const filteredDashboardFeedback = dashboardFeedback
+    .filter((feedback) => {
+      if (!selectedDashboard) {
+        return true;
+      }
+
+      return (
+        getDashboardName(feedback).toLowerCase() ===
+        selectedDashboard.trim().toLowerCase()
+      );
+    })
+    .filter((feedback) =>
+      isWithinDateRange(
+        feedback.created_at ??
+          feedback.createdAt
+      )
+    )
+    .sort((a, b) => {
+      if (!sortField) {
+        return 0;
+      }
+
+      const aValue = getRatingValue(
+        a,
+        sortField
+      );
+
+      const bValue = getRatingValue(
+        b,
+        sortField
+      );
+
+      if (
+        aValue === null &&
+        bValue === null
+      ) {
+        return 0;
+      }
+
+      if (aValue === null) {
+        return 1;
+      }
+
+      if (bValue === null) {
+        return -1;
+      }
+
+      return sortOrder === "asc"
+        ? aValue - bValue
+        : bValue - aValue;
+    });
+
+  const filteredWebsiteFeedback = websiteFeedback.filter(
+    (feedback) =>
+      isWithinDateRange(
+        feedback.created_at ??
+          feedback.createdAt
+      )
+  );
+
+  const clearFilters = () => {
+    setSelectedDashboard("");
+    setSortField("");
+    setSortOrder("desc");
+    setFromDate("");
+    setToDate("");
+  };
+
+  const hasActiveFilters =
+    Boolean(selectedDashboard) ||
+    Boolean(sortField) ||
+    Boolean(fromDate) ||
+    Boolean(toDate);
 
   return (
     <ManagementLayout title="Manage Feedbacks">
@@ -300,6 +461,176 @@ function FeedbackManagement() {
             </button>
           </div>
 
+          {/* FILTERS */}
+          <div className="border-b border-slate-100 bg-white px-6 py-5">
+            <div
+              className="
+                grid grid-cols-1 gap-4
+                md:grid-cols-2
+                xl:grid-cols-[auto_minmax(230px,1.55fr)_minmax(190px,1.15fr)_minmax(145px,0.8fr)_minmax(165px,0.95fr)_minmax(165px,0.95fr)_auto]
+                xl:items-end
+              "
+            >
+              <div className="flex items-center gap-2 xl:pb-2.5 text-moss-700">
+                <SlidersHorizontal size={17} />
+                <span className="text-xs font-black uppercase tracking-widest">
+                  Filters
+                </span>
+              </div>
+
+              {activeTab === "dashboard" && (
+                <>
+                  <div className="min-w-0">
+                    <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
+                      Dashboard Name
+                    </label>
+
+                    <select
+                      value={selectedDashboard}
+                      onChange={(e) =>
+                        setSelectedDashboard(e.target.value)
+                      }
+                      className="
+                        w-full rounded-xl border border-slate-200 bg-white
+                        px-4 py-2.5 text-sm font-bold text-slate-700
+                        outline-none transition-all
+                        focus:border-moss-600 focus:ring-4 focus:ring-moss-600/10
+                      "
+                    >
+                      <option value="">All dashboards</option>
+
+                      {dashboardNames.map((dashboard) => (
+                        <option
+                          key={dashboard}
+                          value={dashboard}
+                        >
+                          {dashboard}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="min-w-0">
+                    <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
+                      Sort Rating By
+                    </label>
+
+                    <select
+                      value={sortField}
+                      onChange={(e) =>
+                        setSortField(e.target.value)
+                      }
+                      className="
+                        w-full rounded-xl border border-slate-200 bg-white
+                        px-4 py-2.5 text-sm font-bold text-slate-700
+                        outline-none transition-all
+                        focus:border-moss-600 focus:ring-4 focus:ring-moss-600/10
+                      "
+                    >
+                      <option value="">Select category</option>
+                      <option value="user_interface">User Interface</option>
+                      <option value="user_experience">User Experience</option>
+                      <option value="data_completeness">Data Completeness</option>
+                      <option value="data_accuracy">Data Accuracy</option>
+                      <option value="accessibility">Accessibility</option>
+                    </select>
+                  </div>
+
+                  <div className="min-w-0">
+                    <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
+                      Order
+                    </label>
+
+                    <select
+                      value={sortOrder}
+                      onChange={(e) =>
+                        setSortOrder(e.target.value)
+                      }
+                      disabled={!sortField}
+                      className="
+                        w-full rounded-xl border border-slate-200 bg-white
+                        px-4 py-2.5 text-sm font-bold text-slate-700
+                        outline-none transition-all
+                        focus:border-moss-600 focus:ring-4 focus:ring-moss-600/10
+                        disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-300
+                      "
+                    >
+                      <option value="desc">Descending</option>
+                      <option value="asc">Ascending</option>
+                    </select>
+                  </div>
+                </>
+              )}
+
+              <div className="min-w-0">
+                <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  From Date
+                </label>
+
+                <input
+                  type="date"
+                  value={fromDate}
+                  max={toDate || undefined}
+                  onChange={(e) =>
+                    setFromDate(e.target.value)
+                  }
+                  className="
+                    w-full rounded-xl border border-slate-200 bg-white
+                    px-4 py-2.5 text-sm font-bold text-slate-700
+                    outline-none transition-all
+                    focus:border-moss-600 focus:ring-4 focus:ring-moss-600/10
+                  "
+                />
+              </div>
+
+              <div className="min-w-0">
+                <label className="mb-2 block text-[10px] font-black uppercase tracking-widest text-slate-400">
+                  To Date
+                </label>
+
+                <input
+                  type="date"
+                  value={toDate}
+                  min={fromDate || undefined}
+                  onChange={(e) =>
+                    setToDate(e.target.value)
+                  }
+                  className="
+                    w-full rounded-xl border border-slate-200 bg-white
+                    px-4 py-2.5 text-sm font-bold text-slate-700
+                    outline-none transition-all
+                    focus:border-moss-600 focus:ring-4 focus:ring-moss-600/10
+                  "
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={clearFilters}
+                disabled={!hasActiveFilters}
+                className="
+                  inline-flex h-[42px] items-center justify-center gap-2
+                  rounded-xl border border-slate-200 bg-white
+                  px-4 text-xs font-black uppercase tracking-wider
+                  text-slate-500 transition-all
+                  hover:border-moss-600 hover:text-moss-700
+                  disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-300
+                "
+              >
+                Clear
+              </button>
+
+            </div>
+
+            <div className="mt-4 flex justify-end border-t border-slate-100 pt-4">
+              <span className="text-xs font-bold text-slate-400">
+                {activeTab === "dashboard"
+                  ? `${filteredDashboardFeedback.length} of ${dashboardFeedback.length} records`
+                  : `${filteredWebsiteFeedback.length} of ${websiteFeedback.length} records`}
+              </span>
+            </div>
+          </div>
+
           {error && (
             <div className="m-6 rounded-2xl border border-red-100 bg-red-50 p-4 text-sm font-bold text-red-600">
               {error}
@@ -328,6 +659,11 @@ function FeedbackManagement() {
                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
                           User
                         </th>
+
+                        <th className="min-w-[250px] px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
+                          Dashboard Name
+                        </th>
+
                         <th className="px-6 py-4 text-[10px] font-black uppercase tracking-widest text-slate-400">
                           User Interface
                         </th>
@@ -361,19 +697,20 @@ function FeedbackManagement() {
 
                     <tbody className="divide-y divide-slate-100">
 
-                      {dashboardFeedback.length ===
+                      {filteredDashboardFeedback.length ===
                       0 ? (
                         <tr>
                           <td
-                            colSpan="8"
+                            colSpan="9"
                             className="px-6 py-16 text-center text-sm font-bold text-slate-400"
                           >
-                            No dashboard feedback
-                            found.
+                            {hasActiveFilters
+                              ? "No dashboard feedback matches the selected filters."
+                              : "No dashboard feedback found."}
                           </td>
                         </tr>
                       ) : (
-                        dashboardFeedback.map(
+                        filteredDashboardFeedback.map(
                           (feedback, index) => (
                             <tr
                               key={`${feedback.email}-${feedback.createdAt ?? feedback.created_at}-${index}`}
@@ -404,6 +741,21 @@ function FeedbackManagement() {
                                     </p>
                                   </div>
 
+                                </div>
+                              </td>
+
+                              <td className="px-6 py-5">
+                                <div className="flex items-center gap-2">
+                                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-xl bg-moss-50">
+                                    <LayoutDashboard
+                                      size={14}
+                                      className="text-moss-600"
+                                    />
+                                  </div>
+
+                                  <span className="max-w-[260px] text-sm font-bold leading-relaxed text-slate-700">
+                                    {getDashboardName(feedback) || "—"}
+                                  </span>
                                 </div>
                               </td>
 
@@ -494,19 +846,20 @@ function FeedbackManagement() {
 
                     <tbody className="divide-y divide-slate-100">
 
-                      {websiteFeedback.length ===
+                      {filteredWebsiteFeedback.length ===
                       0 ? (
                         <tr>
                           <td
                             colSpan="3"
                             className="px-6 py-16 text-center text-sm font-bold text-slate-400"
                           >
-                            No website feedback
-                            found.
+                            {hasActiveFilters
+                              ? "No website feedback matches the selected date filter."
+                              : "No website feedback found."}
                           </td>
                         </tr>
                       ) : (
-                        websiteFeedback.map(
+                        filteredWebsiteFeedback.map(
                           (feedback) => (
                             <tr
                               key={feedback.id}

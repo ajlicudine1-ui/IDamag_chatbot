@@ -12,6 +12,14 @@ const {
   inferType,
 } = require("./schemaBuilder");
 
+const {
+  splitMultiValueCell,
+  valueMatchesToken,
+  normalizeLooseToken,
+  isMissingLikeValue,
+  isMissingOrZeroValue,
+} = require("./valueNormalizer");
+
 /**
  * ==========================================================
  * NORMALIZE FILTER VALUE
@@ -91,8 +99,8 @@ function compare(
     const matches =
       expectedValues.some(
         (value) =>
-          leftText ===
-          normalizeText(value)
+          leftText === normalizeText(value) ||
+          valueMatchesToken(actual, value)
       );
 
     return normalizedOperator ===
@@ -113,10 +121,19 @@ function compare(
   switch (
     normalizedOperator
   ) {
+    case "empty":
+      return isMissingLikeValue(actual);
+
+    case "empty_or_zero":
+      return isMissingOrZeroValue(actual);
+
+    case "not_empty":
+      return !isMissingLikeValue(actual);
+
     case "not_equals":
-      return (
-        leftText !==
-        rightText
+      return !(
+        leftText === rightText ||
+        valueMatchesToken(actual, expected)
       );
 
     case "contains":
@@ -169,8 +186,8 @@ function compare(
     case "equals":
     default:
       return (
-        leftText ===
-        rightText
+        leftText === rightText ||
+        valueMatchesToken(actual, expected)
       );
   }
 }
@@ -360,7 +377,7 @@ function findTextOccurrences(
 
   const regex =
     new RegExp(
-      `(^|[^\p{L}\p{N}])(${escaped})(?=$|[^\p{L}\p{N}])`,
+      `(^|[^\\p{L}\\p{N}])(${escaped})(?=$|[^\\p{L}\\p{N}])`,
       "gu"
     );
 
@@ -485,6 +502,452 @@ function suppressContainedMatches(
   }
 
   return accepted;
+}
+
+
+/**
+ * Remove a shorter live-value match when every occurrence of it is already
+ * contained inside a longer live-value match from ANY column.
+ *
+ * This prevents a categorical value such as "Phase 3" from also creating
+ * an unrelated numeric filter like CRAO-MIS Balance = 3 simply because the
+ * digit 3 exists elsewhere in the worksheet. If the number appears again
+ * independently (for example "Phase 3 with balance 3"), that independent
+ * occurrence is preserved.
+ *
+ * This is schema/value driven and does not hardcode any worksheet field.
+ */
+function suppressCrossColumnContainedMatches(
+  matches
+) {
+  const source = Array.isArray(matches)
+    ? matches
+    : [];
+
+  return source.filter((candidate) => {
+    const candidateSpans = Array.isArray(candidate?.spans)
+      ? candidate.spans
+      : [];
+
+    if (!candidateSpans.length) {
+      return true;
+    }
+
+    const candidateLength = Math.max(
+      0,
+      Number(candidate?.normalizedLength) || 0
+    );
+
+    const everyOccurrenceCovered = candidateSpans.every(
+      (candidateSpan) =>
+        source.some((other) => {
+          if (other === candidate) {
+            return false;
+          }
+
+          const otherLength = Math.max(
+            0,
+            Number(other?.normalizedLength) || 0
+          );
+
+          if (otherLength <= candidateLength) {
+            return false;
+          }
+
+          const otherSpans = Array.isArray(other?.spans)
+            ? other.spans
+            : [];
+
+          return otherSpans.some((otherSpan) =>
+            spanContains(otherSpan, candidateSpan)
+          );
+        })
+    );
+
+    return !everyOccurrenceCovered;
+  });
+}
+
+
+const ORDINAL_WORD_TO_NUMBER = new Map([
+  ["first", 1],
+  ["second", 2],
+  ["third", 3],
+  ["fourth", 4],
+  ["fifth", 5],
+  ["sixth", 6],
+  ["seventh", 7],
+  ["eighth", 8],
+  ["ninth", 9],
+  ["tenth", 10],
+  ["eleventh", 11],
+  ["twelfth", 12],
+  ["thirteenth", 13],
+  ["fourteenth", 14],
+  ["fifteenth", 15],
+  ["sixteenth", 16],
+  ["seventeenth", 17],
+  ["eighteenth", 18],
+  ["nineteenth", 19],
+  ["twentieth", 20],
+]);
+
+const CARDINAL_WORD_TO_NUMBER = new Map([
+  ["one", 1],
+  ["two", 2],
+  ["three", 3],
+  ["four", 4],
+  ["five", 5],
+  ["six", 6],
+  ["seven", 7],
+  ["eight", 8],
+  ["nine", 9],
+  ["ten", 10],
+  ["eleven", 11],
+  ["twelve", 12],
+  ["thirteen", 13],
+  ["fourteen", 14],
+  ["fifteen", 15],
+  ["sixteen", 16],
+  ["seventeen", 17],
+  ["eighteen", 18],
+  ["nineteen", 19],
+  ["twenty", 20],
+]);
+
+function ordinalSuffix(number) {
+  const n =
+    Number(number);
+
+  if (
+    n % 100 >= 11 &&
+    n % 100 <= 13
+  ) {
+    return "th";
+  }
+
+  switch (
+    n % 10
+  ) {
+    case 1:
+      return "st";
+    case 2:
+      return "nd";
+    case 3:
+      return "rd";
+    default:
+      return "th";
+  }
+}
+
+function numberWordFromMap(map, number) {
+  for (const [word, value] of map.entries()) {
+    if (
+      value ===
+      Number(number)
+    ) {
+      return word;
+    }
+  }
+
+  return null;
+}
+
+function romanToSmallInteger(value) {
+  const roman =
+    String(value || "")
+      .trim()
+      .toUpperCase();
+
+  if (!/^[IVXLCDM]+$/.test(roman)) {
+    return null;
+  }
+
+  const values = {
+    I: 1,
+    V: 5,
+    X: 10,
+    L: 50,
+    C: 100,
+    D: 500,
+    M: 1000,
+  };
+
+  let total = 0;
+  let previous = 0;
+
+  for (let index = roman.length - 1; index >= 0; index -= 1) {
+    const current = values[roman[index]];
+    if (!current) return null;
+
+    if (current < previous) {
+      total -= current;
+    } else {
+      total += current;
+      previous = current;
+    }
+  }
+
+  return Number.isInteger(total) && total >= 1 && total <= 20
+    ? total
+    : null;
+}
+
+function smallIntegerToRoman(number) {
+  let remaining = Number(number);
+  if (!Number.isInteger(remaining) || remaining < 1 || remaining > 20) {
+    return null;
+  }
+
+  const pairs = [
+    [10, "X"],
+    [9, "IX"],
+    [5, "V"],
+    [4, "IV"],
+    [1, "I"],
+  ];
+
+  let output = "";
+  for (const [value, symbol] of pairs) {
+    while (remaining >= value) {
+      output += symbol;
+      remaining -= value;
+    }
+  }
+
+  return output.toLowerCase();
+}
+
+function buildOrdinalValueAliases({
+  column,
+  displayValue,
+} = {}) {
+  const valueText =
+    normalizeText(
+      displayValue
+    );
+
+  const columnText =
+    normalizeText(
+      column
+    );
+
+  if (
+    !valueText ||
+    !columnText
+  ) {
+    return [];
+  }
+
+  /**
+   * Only alias small ordinal/category numbers that are semantically anchored
+   * to the column/value label itself. This avoids interpreting arbitrary IDs,
+   * dates, contact numbers, or years as ordinal filters.
+   *
+   * Examples:
+   *   Phase 2  <-> second phase / phase two / 2nd phase
+   *   Level 3  <-> third level / level three / 3rd level
+   *   Quarter 1 <-> first quarter / quarter one / 1st quarter
+   */
+  const numericMatch =
+    valueText.match(
+      /^(.*?)(?:\s+)(\d{1,2})(?:\s*\([^)]*\))?$/
+    );
+
+  const romanMatch =
+    numericMatch
+      ? null
+      : valueText.match(
+          /^(.*?)(?:\s+)([ivxlcdm]+)(?:\s*\([^)]*\))?$/i
+        );
+
+  const prefix =
+    String(
+      numericMatch?.[1] ||
+      romanMatch?.[1] ||
+      ""
+    ).trim();
+
+  const number =
+    numericMatch?.[2]
+      ? Number(numericMatch[2])
+      : romanToSmallInteger(
+          romanMatch?.[2]
+        );
+
+  if (
+    !prefix ||
+    !Number.isInteger(number)
+  ) {
+    return [];
+  }
+
+  if (
+    !Number.isInteger(number) ||
+    number < 1 ||
+    number > 20
+  ) {
+    return [];
+  }
+
+  const prefixTokens =
+    prefix
+      .split(/\s+/)
+      .filter(Boolean);
+
+  const columnTokens =
+    columnText
+      .split(/\s+/)
+      .filter(Boolean);
+
+  const hasSemanticAnchor =
+    prefixTokens.some(
+      (token) =>
+        columnTokens.includes(
+          token
+        )
+    );
+
+  if (
+    !hasSemanticAnchor
+  ) {
+    return [];
+  }
+
+  const ordinalWord =
+    numberWordFromMap(
+      ORDINAL_WORD_TO_NUMBER,
+      number
+    );
+
+  const cardinalWord =
+    numberWordFromMap(
+      CARDINAL_WORD_TO_NUMBER,
+      number
+    );
+
+  const ordinalNumeric =
+    `${number}${ordinalSuffix(number)}`;
+
+  const romanNumeric =
+    smallIntegerToRoman(number);
+
+  const aliases =
+    [
+      `${prefix} ${number}`,
+      `${number} ${prefix}`,
+      romanNumeric
+        ? `${prefix} ${romanNumeric}`
+        : null,
+      romanNumeric
+        ? `${romanNumeric} ${prefix}`
+        : null,
+      `${prefix} ${ordinalNumeric}`,
+      `${ordinalNumeric} ${prefix}`,
+      ordinalWord
+        ? `${prefix} ${ordinalWord}`
+        : null,
+      ordinalWord
+        ? `${ordinalWord} ${prefix}`
+        : null,
+      cardinalWord
+        ? `${prefix} ${cardinalWord}`
+        : null,
+      cardinalWord
+        ? `${cardinalWord} ${prefix}`
+        : null,
+    ]
+      .filter(Boolean)
+      .map(
+        (value) =>
+          normalizeText(value)
+      );
+
+  return [
+    ...new Set(
+      aliases
+    ),
+  ];
+}
+
+function findOrdinalAliasSpans({
+  normalizedQuestion,
+  column,
+  displayValue,
+} = {}) {
+  const aliases =
+    buildOrdinalValueAliases({
+      column,
+      displayValue,
+    });
+
+  const matches = [];
+
+  for (const alias of aliases) {
+    const spans =
+      findTextOccurrences(
+        normalizedQuestion,
+        alias
+      );
+
+    if (
+      spans.length
+    ) {
+      matches.push({
+        alias,
+        spans,
+      });
+    }
+  }
+
+  return matches;
+}
+
+/**
+ * Find wording in the question that is equivalent after removing only
+ * internal separators/spacing. This is deliberately conservative and is
+ * used for live categorical values such as "sugarcane" vs "sugar cane".
+ */
+function findLooseEquivalentSpans(normalizedQuestion, candidateValue) {
+  const targetKey = normalizeLooseToken(candidateValue);
+
+  if (targetKey.length < 6) {
+    return [];
+  }
+
+  const words = [];
+  const wordRegex = /\S+/g;
+  let match;
+
+  while ((match = wordRegex.exec(normalizedQuestion)) !== null) {
+    words.push({
+      text: match[0],
+      start: match.index,
+      end: match.index + match[0].length,
+    });
+  }
+
+  const spans = [];
+  const maxWords = 5;
+
+  for (let start = 0; start < words.length; start += 1) {
+    for (let end = start; end < Math.min(words.length, start + maxWords); end += 1) {
+      const phrase = normalizedQuestion.slice(words[start].start, words[end].end);
+      const phraseKey = normalizeLooseToken(phrase);
+
+      if (phraseKey === targetKey) {
+        spans.push({ start: words[start].start, end: words[end].end });
+      }
+
+      // Once the compact phrase is substantially longer than the target,
+      // adding more words cannot produce an exact compact-key match.
+      if (phraseKey.length > targetKey.length + 3) {
+        break;
+      }
+    }
+  }
+
+  return spans;
 }
 
 function inferValueFilters(
@@ -653,38 +1116,137 @@ function inferValueFilters(
         normalizedValue
           .length >= 2
       ) {
-        const spans =
-          findTextOccurrences(
-            normalizedQuestion,
-            normalizedValue
-          );
+        /**
+         * Match both the complete cell and, when the cell is a real
+         * delimited multi-value field, each individual live token.
+         *
+         * Example:
+         *   Commodities = "rice, sugar cane, high value crops"
+         *   Question    = "associations that produce sugar cane"
+         *
+         * The previous implementation only looked for the COMPLETE cell
+         * text in the question, so the explicit live value "sugar cane"
+         * could be silently omitted. Token matching is generic and uses the
+         * same multi-value normalizer already used by filter execution.
+         */
+        const valueCandidates =
+          splitMultiValueCell(
+            display
+          )
+            .map((candidate) => ({
+              display:
+                String(candidate || "").trim(),
+              normalized:
+                normalizeText(candidate),
+              tokenized:
+                normalizeText(candidate) !== normalizedValue,
+            }))
+            .filter((candidate) =>
+              candidate.normalized.length >= 2
+            );
 
-        if (!spans.length) {
-          continue;
+        let candidateMatched =
+          false;
+
+        for (
+          const candidate of
+          valueCandidates
+        ) {
+          let spans =
+            findTextOccurrences(
+              normalizedQuestion,
+              candidate.normalized
+            );
+
+          // Support generic separator/spacing variants in live categorical
+          // values, e.g. dataset "sugarcane" vs question "sugar cane".
+          // Exact matching remains first priority.
+          if (!spans.length) {
+            spans = findLooseEquivalentSpans(
+              normalizedQuestion,
+              candidate.normalized
+            );
+          }
+
+          let ordinalAliasMatch =
+            false;
+
+          if (
+            !spans.length &&
+            !candidate.tokenized
+          ) {
+            const aliasMatches =
+              findOrdinalAliasSpans({
+                normalizedQuestion,
+                column,
+                displayValue:
+                  display,
+              });
+
+            if (
+              aliasMatches.length
+            ) {
+              ordinalAliasMatch =
+                true;
+
+              spans =
+                aliasMatches
+                  .flatMap(
+                    (item) =>
+                      item.spans
+                  );
+            }
+          }
+
+          if (!spans.length) {
+            continue;
+          }
+
+          candidateMatched =
+            true;
+
+          matches.push({
+            column,
+            operator:
+              "equals",
+            value:
+              candidate.tokenized
+                ? candidate.display
+                : display,
+
+            score:
+              (
+                ordinalAliasMatch
+                  ? 900
+                  : 0
+              ) +
+              candidate.normalized.length +
+              (candidate.tokenized ? 25 : 0),
+
+            normalizedLength:
+              candidate.normalized.length,
+
+            spans,
+
+            ordinalAliasMatch,
+            multiValueTokenMatch:
+              candidate.tokenized,
+          });
         }
 
-        matches.push({
-          column,
-          operator:
-            "equals",
-          value:
-            display,
-
-          score:
-            normalizedValue
-              .length,
-
-          normalizedLength:
-            normalizedValue
-              .length,
-
-          spans,
-        });
+        if (!candidateMatched) {
+          continue;
+        }
       }
     }
   }
 
-  matches.sort(
+  const nonOverlappingMatches =
+    suppressCrossColumnContainedMatches(
+      matches
+    );
+
+  nonOverlappingMatches.sort(
     (a, b) =>
       b.score -
       a.score
@@ -713,7 +1275,7 @@ function inferValueFilters(
 
   for (
     const match of
-    matches
+    nonOverlappingMatches
   ) {
     if (
       !grouped.has(
@@ -1160,4 +1722,6 @@ module.exports = {
   inferDatasetValueFilters,
   mergeFilters,
   applyFilters,
+  buildOrdinalValueAliases,
+  findOrdinalAliasSpans,
 };

@@ -2,6 +2,7 @@ const {
   parseNumber,
   formatNumber,
   getColumns,
+  normalizeText,
 } = require("./utils");
 const {
   findDatasetName,
@@ -24,6 +25,12 @@ const {
 const {
   findBestRelationship,
 } = require("./relationshipEngine");
+const {
+  resolveSemanticContractIntentPlan,
+  applySemanticContractScope,
+  evaluateSemanticContractAggregation,
+  detectMissingSemanticContractRisk,
+} = require("./semanticContractEngine");
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 100;
 
@@ -74,6 +81,419 @@ function describeFilters(filters) {
       )
       .join(" and ")
   );
+}
+
+
+/**
+ * Mixed-grain datasets can contain the same measure at several aggregation
+ * levels (for example Province, Municipality, and Barangay). Summing all rows
+ * in that situation double- or triple-counts the same underlying population.
+ *
+ * This layer is deliberately schema/data-driven. It does NOT know about any
+ * particular dashboard, province, metric, or geography. A column is treated as
+ * a grain marker only when:
+ *   1) its name explicitly describes a level/grain/granularity; and
+ *   2) at least two of its values map back to real columns in the same rows.
+ *
+ * Example of a detected hierarchy:
+ *   geography_level = [Province, Municipality, Barangay]
+ *   columns          = [province, municipality, barangay, ...]
+ *
+ * If the plan asks for a Province-scoped aggregate, Province rows are used. If
+ * those rows cannot satisfy a requested grouping field, the engine falls back
+ * to the nearest finer compatible level rather than mixing grains.
+ */
+function normalizeGrainKey(value, { descriptor = false } = {}) {
+  let text = normalizeText(value)
+    .replace(/[_.\\/()+-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (descriptor) {
+    text = text
+      .replace(
+        /\b(?:summary|summaries|total|totals|level|grain|granularity|aggregate|aggregation|detail|details|record|records|row|rows)\b/g,
+        " "
+      )
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  const words = text
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => {
+      if (word.length > 4 && word.endsWith("ies")) {
+        return `${word.slice(0, -3)}y`;
+      }
+      if (
+        word.length > 3 &&
+        word.endsWith("s") &&
+        !word.endsWith("ss")
+      ) {
+        return word.slice(0, -1);
+      }
+      return word;
+    });
+
+  return words.join(" ");
+}
+
+function isPotentialGrainColumn(column) {
+  const normalized = normalizeText(column)
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return (
+    normalized === "level" ||
+    normalized === "grain" ||
+    normalized === "granularity" ||
+    /(?:^| )(?:level|grain|granularity)$/.test(normalized)
+  );
+}
+
+function findDimensionForGrainValue(columns, grainColumn, value) {
+  const target = normalizeGrainKey(value, { descriptor: true });
+  if (!target) return null;
+
+  const candidates = columns
+    .filter((column) => column !== grainColumn)
+    .map((column) => ({
+      column,
+      key: normalizeGrainKey(column),
+    }))
+    .filter((item) => item.key);
+
+  const exact = candidates.find((item) => item.key === target);
+  if (exact) return exact.column;
+
+  // Controlled containment supports values such as "Province Summary" after
+  // descriptor cleanup while avoiding very short accidental matches.
+  if (target.length >= 5) {
+    const contained = candidates
+      .filter(
+        (item) =>
+          item.key.length >= 5 &&
+          (item.key.includes(target) || target.includes(item.key))
+      )
+      .sort((a, b) => Math.abs(a.key.length - target.length) - Math.abs(b.key.length - target.length))[0];
+
+    if (contained) return contained.column;
+  }
+
+  return null;
+}
+
+function detectGrainHierarchies(rows) {
+  if (!Array.isArray(rows) || rows.length < 2) return [];
+
+  const columns = getColumns(rows);
+  const hierarchies = [];
+
+  for (const grainColumn of columns.filter(isPotentialGrainColumn)) {
+    const valueMap = new Map();
+
+    for (const row of rows) {
+      const raw = String(row?.[grainColumn] ?? "").trim();
+      if (!raw) continue;
+      const key = normalizeText(raw);
+      if (!valueMap.has(key)) {
+        valueMap.set(key, {
+          value: raw,
+          count: 0,
+        });
+      }
+      valueMap.get(key).count += 1;
+    }
+
+    const distinctValues = [...valueMap.values()];
+    if (distinctValues.length < 2 || distinctValues.length > 50) {
+      continue;
+    }
+
+    const levels = distinctValues.map((entry) => ({
+      ...entry,
+      dimensionColumn: findDimensionForGrainValue(
+        columns,
+        grainColumn,
+        entry.value
+      ),
+    }));
+
+    const mapped = levels.filter((level) => level.dimensionColumn);
+    const coverage = mapped.length / distinctValues.length;
+
+    // Requiring two mapped levels prevents ordinary categorical fields from
+    // being mistaken for hierarchy/grain controls.
+    if (mapped.length < 2 || coverage < 0.5) {
+      continue;
+    }
+
+    hierarchies.push({
+      grainColumn,
+      levels,
+      mappedLevels: mapped,
+      coverage,
+    });
+  }
+
+  return hierarchies.sort((a, b) => {
+    if (b.coverage !== a.coverage) return b.coverage - a.coverage;
+    return b.mappedLevels.length - a.mappedLevels.length;
+  });
+}
+
+function rowsAtGrain(rows, grainColumn, grainValue) {
+  const wanted = normalizeText(grainValue);
+  return (rows || []).filter(
+    (row) => normalizeText(row?.[grainColumn]) === wanted
+  );
+}
+
+function nonEmptyRatio(rows, column) {
+  if (!column || !Array.isArray(rows) || !rows.length) return 0;
+  let populated = 0;
+
+  for (const row of rows) {
+    const value = row?.[column];
+    if (
+      value !== null &&
+      value !== undefined &&
+      String(value).trim() !== ""
+    ) {
+      populated += 1;
+    }
+  }
+
+  return populated / rows.length;
+}
+
+function resolveGrainSelection({
+  hierarchy,
+  allRows,
+  scopedRows,
+  plan,
+  filters,
+  operation,
+}) {
+  const mappedLevels = hierarchy.mappedLevels
+    .map((level) => ({
+      ...level,
+      globalCount: rowsAtGrain(
+        allRows,
+        hierarchy.grainColumn,
+        level.value
+      ).length,
+      scopedRows: rowsAtGrain(
+        scopedRows,
+        hierarchy.grainColumn,
+        level.value
+      ),
+    }))
+    .filter((level) => level.globalCount > 0);
+
+  if (mappedLevels.length < 2) return null;
+
+  // Coarser levels normally contain fewer rows. This data-derived ordering is
+  // intentionally independent of words such as Province/Month/Year.
+  const ordered = [...mappedLevels].sort(
+    (a, b) => a.globalCount - b.globalCount
+  );
+
+  const resolvedGroupColumn =
+    plan.groupBy && findColumn(allRows, plan.groupBy);
+  const resolvedLabelColumn =
+    plan.labelColumn && findColumn(allRows, plan.labelColumn);
+
+  const requiredColumns = [];
+  if (
+    [
+      "group_sum",
+      "group_average",
+      "group_minimum",
+      "group_maximum",
+      "rank_groups",
+    ].includes(operation)
+  ) {
+    if (resolvedGroupColumn) requiredColumns.push(resolvedGroupColumn);
+    if (
+      resolvedLabelColumn &&
+      resolvedLabelColumn !== resolvedGroupColumn
+    ) {
+      requiredColumns.push(resolvedLabelColumn);
+    }
+  }
+
+  const isCompatible = (level) => {
+    if (!level.scopedRows.length) return false;
+    return requiredColumns.every(
+      (column) => nonEmptyRatio(level.scopedRows, column) >= 0.5
+    );
+  };
+
+  const targetColumns = [];
+  if (resolvedGroupColumn) targetColumns.push(resolvedGroupColumn);
+  if (
+    resolvedLabelColumn &&
+    !targetColumns.includes(resolvedLabelColumn)
+  ) {
+    targetColumns.push(resolvedLabelColumn);
+  }
+
+  for (const filter of filters || []) {
+    const resolved = findColumn(allRows, filter?.column);
+    if (resolved && !targetColumns.includes(resolved)) {
+      targetColumns.push(resolved);
+    }
+  }
+
+  let requestedLevel = null;
+  let requestedDimension = null;
+
+  for (const targetColumn of targetColumns) {
+    const targetKey = normalizeGrainKey(targetColumn);
+    const match = ordered.find(
+      (level) =>
+        normalizeGrainKey(level.dimensionColumn) === targetKey
+    );
+
+    if (match) {
+      requestedLevel = match;
+      requestedDimension = targetColumn;
+      break;
+    }
+  }
+
+  if (requestedLevel) {
+    if (isCompatible(requestedLevel)) {
+      return {
+        level: requestedLevel,
+        strategy: "requested_level",
+        requestedDimension,
+      };
+    }
+
+    // If the exact requested summary level cannot carry another requested
+    // dimension (for example grouping by Commodity), move only toward finer
+    // levels until one can answer the question. This avoids mixing levels and
+    // avoids discarding necessary detail columns.
+    const requestedIndex = ordered.indexOf(requestedLevel);
+    for (let index = requestedIndex + 1; index < ordered.length; index += 1) {
+      if (isCompatible(ordered[index])) {
+        return {
+          level: ordered[index],
+          strategy: "nearest_finer_compatible_level",
+          requestedDimension,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  // With no explicit hierarchy level in the plan, use the coarsest compatible
+  // level. Summing one complete level is safe; summing all levels is not.
+  const coarsestCompatible = ordered.find(isCompatible);
+  if (!coarsestCompatible) return null;
+
+  return {
+    level: coarsestCompatible,
+    strategy: "coarsest_compatible_level",
+    requestedDimension: null,
+  };
+}
+
+function applyGrainAwareAggregation({
+  rows,
+  filteredRows,
+  plan,
+  filters,
+  operation,
+}) {
+  const supportedOperations = new Set([
+    "sum",
+    "average",
+    "median",
+    "minimum",
+    "maximum",
+    "group_sum",
+    "group_average",
+    "group_minimum",
+    "group_maximum",
+    "rank_groups",
+  ]);
+
+  if (!supportedOperations.has(operation)) {
+    return {
+      rows: filteredRows,
+      metadata: null,
+    };
+  }
+
+  const hierarchies = detectGrainHierarchies(rows);
+  if (!hierarchies.length) {
+    return {
+      rows: filteredRows,
+      metadata: null,
+    };
+  }
+
+  let scopedRows = filteredRows;
+  const selections = [];
+
+  for (const hierarchy of hierarchies) {
+    const selection = resolveGrainSelection({
+      hierarchy,
+      allRows: rows,
+      scopedRows,
+      plan,
+      filters,
+      operation,
+    });
+
+    if (!selection?.level) continue;
+
+    const before = scopedRows.length;
+    const nextRows = selection.level.scopedRows;
+
+    if (!nextRows.length) continue;
+
+    scopedRows = nextRows;
+    selections.push({
+      column: hierarchy.grainColumn,
+      value: selection.level.value,
+      dimensionColumn: selection.level.dimensionColumn,
+      strategy: selection.strategy,
+      requestedDimension: selection.requestedDimension,
+      rowsBefore: before,
+      rowsAfter: scopedRows.length,
+    });
+  }
+
+  const applied =
+    selections.length > 0 &&
+    scopedRows.length < filteredRows.length;
+
+  if (!applied) {
+    return {
+      rows: filteredRows,
+      metadata: null,
+    };
+  }
+
+  return {
+    rows: scopedRows,
+    metadata: {
+      grainAwareAggregation: true,
+      grainColumn: selections[0].column,
+      grainValue: selections[0].value,
+      grainStrategy: selections[0].strategy,
+      grainSelections: selections,
+      rowsBeforeGrainSelection: filteredRows.length,
+      rowsAfterGrainSelection: scopedRows.length,
+    },
+  };
 }
 
 
@@ -247,6 +667,27 @@ function findBestTargetForColumn({
  * Generic cross-worksheet lookup that MERGES requested fields
  * from multiple worksheets into one result object.
  */
+function dedupeProjectedLookupResults(results, selectedColumns = []) {
+  const seen = new Set();
+  const unique = [];
+
+  for (const item of Array.isArray(results) ? results : []) {
+    const columns = selectedColumns.length
+      ? selectedColumns
+      : Object.keys(item || {});
+
+    const key = columns
+      .map((column) => normalizeText(item?.[column]))
+      .join("\u001f");
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+
+  return unique;
+}
+
 function tryCrossDatasetLookup({
   datasets,
   plan,
@@ -424,6 +865,7 @@ function tryCrossDatasetLookup({
     if (!results.length) continue;
 
     const selectedColumns = resolvers.map((item) => item.column);
+    const distinctResults = dedupeProjectedLookupResults(results, selectedColumns);
 
     return {
       success: true,
@@ -441,12 +883,14 @@ function tryCrossDatasetLookup({
           outputColumn: item.column,
         })),
       filters: source.filters,
-      count: results.length,
-      results,
+      matchedRowCount: results.length,
+      count: distinctResults.length,
+      results: distinctResults,
+      duplicateLookupRowsRemoved: distinctResults.length !== results.length,
       answer: formatLookupAnswer({
-        results,
+        results: distinctResults,
         selectedColumns,
-        count: results.length,
+        count: distinctResults.length,
       }),
     };
   }
@@ -1406,11 +1850,267 @@ function executeCrossDatasetGroupedAggregation({
 }
 
 
+
+
+/**
+ * Infer a compact categorical context column for list results when the same
+ * displayed value can refer to more than one entity in the current scope.
+ *
+ * This is intentionally data-driven. No geography, office, project, or other
+ * dashboard-specific field names are hardcoded. A useful context column is:
+ *   - mostly populated,
+ *   - non-numeric / non-date-like,
+ *   - lower-cardinality than the requested list field, and
+ *   - nearly functionally dependent on the requested field.
+ *
+ * Example shape (field names are arbitrary):
+ *   Parent=A, Child=Shared
+ *   Parent=B, Child=Shared
+ *
+ * Listing Child alone would collapse two real entities into one label. The
+ * inferred Parent column lets the renderer preserve both as
+ * "Shared — A" and "Shared — B".
+ */
+function inferListDisambiguationContext({ rows, selectedColumn }) {
+  const scopedRows = (rows || []).filter((row) => {
+    const value = row?.[selectedColumn];
+    return value !== null && value !== undefined && String(value).trim() !== "";
+  });
+
+  if (scopedRows.length < 2) return null;
+
+  const selectedDisplays = new Map();
+  for (const row of scopedRows) {
+    const display = String(row?.[selectedColumn] ?? "").trim();
+    const key = normalizeText(display);
+    if (key && !selectedDisplays.has(key)) selectedDisplays.set(key, display);
+  }
+
+  const selectedUniqueCount = selectedDisplays.size;
+  if (selectedUniqueCount < 2) return null;
+
+  const candidates = [];
+
+  for (const candidateColumn of getColumns(scopedRows)) {
+    if (normalizeText(candidateColumn) === normalizeText(selectedColumn)) continue;
+
+    const nonEmpty = [];
+    let numericCount = 0;
+    let dateLikeCount = 0;
+    const candidateValues = new Set();
+    const contextsBySelected = new Map();
+
+    for (const row of scopedRows) {
+      const rawSelected = row?.[selectedColumn];
+      const rawCandidate = row?.[candidateColumn];
+      const selectedDisplay = String(rawSelected ?? "").trim();
+      const candidateDisplay = String(rawCandidate ?? "").trim();
+      if (!selectedDisplay || !candidateDisplay) continue;
+
+      nonEmpty.push(candidateDisplay);
+      if (parseNumber(rawCandidate) !== null) numericCount += 1;
+      if (/[/-]/.test(candidateDisplay) && !Number.isNaN(Date.parse(candidateDisplay))) {
+        dateLikeCount += 1;
+      }
+
+      const selectedKey = normalizeText(selectedDisplay);
+      const candidateKey = normalizeText(candidateDisplay);
+      if (!selectedKey || !candidateKey) continue;
+
+      candidateValues.add(candidateKey);
+      if (!contextsBySelected.has(selectedKey)) contextsBySelected.set(selectedKey, new Map());
+      const valueMap = contextsBySelected.get(selectedKey);
+      if (!valueMap.has(candidateKey)) valueMap.set(candidateKey, candidateDisplay);
+    }
+
+    if (!nonEmpty.length) continue;
+
+    const populationRate = nonEmpty.length / scopedRows.length;
+    if (populationRate < 0.85) continue;
+
+    const numericRatio = numericCount / nonEmpty.length;
+    const dateRatio = dateLikeCount / nonEmpty.length;
+    if (numericRatio >= 0.7 || dateRatio >= 0.7) continue;
+
+    const distinctCandidateCount = candidateValues.size;
+    if (distinctCandidateCount < 2 || distinctCandidateCount >= selectedUniqueCount) continue;
+
+    // Require the context to exist for every distinct displayed child value.
+    // This prevents sparse descriptive fields from becoming accidental labels.
+    if (contextsBySelected.size !== selectedUniqueCount) continue;
+
+    let pairCount = 0;
+    let expandedSelectedCount = 0;
+    let maxContextsForOneSelected = 0;
+
+    for (const valueMap of contextsBySelected.values()) {
+      const size = valueMap.size;
+      pairCount += size;
+      if (size > 1) expandedSelectedCount += 1;
+      maxContextsForOneSelected = Math.max(maxContextsForOneSelected, size);
+    }
+
+    if (expandedSelectedCount === 0) continue;
+
+    const averageContextsPerSelected = pairCount / selectedUniqueCount;
+    const averageSelectedPerContext = pairCount / distinctCandidateCount;
+
+    // A parent/context field should be close to a function of the listed
+    // value. Wide many-to-many fields (category, commodity, status history,
+    // etc.) are attributes, not safe identity context.
+    if (averageContextsPerSelected > 1.6 || maxContextsForOneSelected > 4) continue;
+
+    // A useful parent/context is normally shared by multiple child labels.
+    // Near one-to-one descriptive attributes should not become identity
+    // context just because one repeated label happens to have different text.
+    // This relies on relationship shape rather than any specific column name.
+    if (averageSelectedPerContext < 1.5) continue;
+
+    // Prefer the most specific stable context. Higher cardinality usually
+    // means "closer parent" (e.g. municipality over province for barangays),
+    // while the stability penalty rejects fields that fan out too much.
+    const specificity = Math.log1p(distinctCandidateCount);
+    const stabilityPenalty = (averageContextsPerSelected - 1) * 4;
+    const expansionRate = expandedSelectedCount / selectedUniqueCount;
+    const score = specificity - stabilityPenalty + populationRate + expansionRate * 0.25;
+
+    candidates.push({
+      column: candidateColumn,
+      score,
+      pairCount,
+      distinctCandidateCount,
+      averageContextsPerSelected,
+      averageSelectedPerContext,
+      expandedSelectedCount,
+      contextsBySelected,
+    });
+  }
+
+  if (!candidates.length) return null;
+
+  candidates.sort((left, right) => {
+    if (right.score !== left.score) return right.score - left.score;
+    if (right.distinctCandidateCount !== left.distinctCandidateCount) {
+      return right.distinctCandidateCount - left.distinctCandidateCount;
+    }
+    return left.averageContextsPerSelected - right.averageContextsPerSelected;
+  });
+
+  const best = candidates[0];
+  const values = [];
+  const seenPairs = new Set();
+
+  for (const row of scopedRows) {
+    const selectedDisplay = String(row?.[selectedColumn] ?? "").trim();
+    const contextDisplay = String(row?.[best.column] ?? "").trim();
+    if (!selectedDisplay) continue;
+
+    const selectedKey = normalizeText(selectedDisplay);
+    const contextKey = normalizeText(contextDisplay);
+    const pairKey = `${selectedKey}::${contextKey}`;
+    if (seenPairs.has(pairKey)) continue;
+    seenPairs.add(pairKey);
+
+    values.push({
+      selected: selectedDisplay,
+      context: contextDisplay,
+      display: contextDisplay
+        ? `${selectedDisplay} — ${contextDisplay}`
+        : selectedDisplay,
+    });
+  }
+
+  values.sort((left, right) => {
+    const selectedOrder = left.selected.localeCompare(right.selected);
+    return selectedOrder || left.context.localeCompare(right.context);
+  });
+
+  return {
+    column: best.column,
+    values: values.map((item) => item.display),
+    entityCount: values.length,
+    labelCount: selectedUniqueCount,
+    ambiguousLabelCount: best.expandedSelectedCount,
+    confidence: Math.max(
+      0,
+      Math.min(1, 1 - (best.averageContextsPerSelected - 1) / 0.6)
+    ),
+  };
+}
+
+function buildDataQualitySummary({ datasets, plan }) {
+  if (!plan || plan.route !== "dataset" || !plan.dataset || !plan.column) return null;
+
+  const datasetName = findDatasetName(datasets || {}, plan.dataset) || plan.dataset;
+  const rows = datasets?.[datasetName];
+  if (!Array.isArray(rows) || !rows.length) return null;
+
+  const column = findColumn(rows, plan.column);
+  if (!column) return null;
+
+  const filters = resolveFilters(rows, Array.isArray(plan.filters) ? plan.filters : []);
+  const baseScopedRows = applyFilters(rows, filters);
+  const operation = String(plan.operation || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+  const contractResolution = applySemanticContractScope({
+    datasets,
+    datasetName,
+    rows,
+    filteredRows: baseScopedRows,
+    plan,
+  });
+
+  const grainResolution = applyGrainAwareAggregation({
+    rows: contractResolution.allRows,
+    filteredRows: contractResolution.rows,
+    plan,
+    filters,
+    operation,
+  });
+
+  const scopedRows = grainResolution.rows;
+  if (!scopedRows.length) {
+    return { totalRows: 0, missingCount: 0, nonMissingCount: 0, missingRate: 0 };
+  }
+
+  const missingCount = scopedRows.reduce((count, row) => {
+    const value = row?.[column];
+    return count + (value === null || value === undefined || String(value).trim() === "" ? 1 : 0);
+  }, 0);
+
+  return {
+    totalRows: scopedRows.length,
+    missingCount,
+    nonMissingCount: scopedRows.length - missingCount,
+    missingRate: missingCount / scopedRows.length,
+  };
+}
+
 function executePlan({
   datasets,
   plan,
   question,
 }) {
+  // Last-mile semantic-contract repair. Planner invariants normally resolve
+  // this earlier, but deployed runtimes can still arrive here with a physical
+  // row_count plan for a contract-defined scalar metric. Repair again at the
+  // execution boundary so Groq, local fallback, and any later planner rewrite
+  // cannot turn "how many <stored metric>" into a row count.
+  const executionContractRepair = resolveSemanticContractIntentPlan({
+    datasets,
+    plan,
+    question,
+  });
+
+  if (executionContractRepair?.semanticContractIntentRepaired) {
+    Object.assign(plan, executionContractRepair, {
+      semanticContractExecutionIntentRepairApplied: true,
+    });
+  }
+
   const crossDatasetGroupedResult =
     executeCrossDatasetGroupedAggregation({
       datasets,
@@ -1500,12 +2200,78 @@ function executePlan({
     implicitFilters
   );
 
-  const filteredRows = applyFilters(rows, filters);
-  const filterText = describeFilters(filters);
   const operation = String(plan.operation || "")
     .trim()
     .toLowerCase()
     .replace(/\s+/g, "_");
+
+  const baseFilteredRows = applyFilters(rows, filters);
+
+  const missingSemanticContractRisk = detectMissingSemanticContractRisk({
+    datasets,
+    rows,
+    plan,
+    question,
+  });
+
+  if (missingSemanticContractRisk) {
+    return {
+      success: false,
+      source: "router",
+      operation: "clarify",
+      dataset: datasetName,
+      filters,
+      semanticContractViolation: true,
+      semanticContractDiagnostic: missingSemanticContractRisk.diagnostic,
+      semanticContractViolationReason: missingSemanticContractRisk.reason,
+      semanticContextColumns: missingSemanticContractRisk.contextColumns,
+      answer:
+        "This worksheet contains semantic result contexts, but the semantic contract was not loaded with the dataset. I did not convert the matching rows into a count because that could combine or misread authorized result contexts.",
+    };
+  }
+
+  // Dataset-provided semantic contracts take precedence over arithmetic
+  // guesses. A contract can identify the authoritative record family, source
+  // table, result type, and filter profile for a metric. This keeps evaluated
+  // parent values separate from alternate visual/summary surfaces before any
+  // grain selection or numeric aggregation occurs.
+  const semanticContractResolution = applySemanticContractScope({
+    datasets,
+    datasetName,
+    rows,
+    filteredRows: baseFilteredRows,
+    plan,
+  });
+
+  const grainResolution = applyGrainAwareAggregation({
+    rows: semanticContractResolution.allRows,
+    filteredRows: semanticContractResolution.rows,
+    plan,
+    filters,
+    operation,
+  });
+  const filteredRows = grainResolution.rows;
+  const grainMetadata = grainResolution.metadata;
+  const semanticContractMetadata = semanticContractResolution.metadata;
+
+  const semanticContractAggregation = evaluateSemanticContractAggregation({
+    policy: semanticContractResolution.policy,
+    rows: filteredRows,
+    plan,
+    operation,
+    parseNumber,
+  });
+
+  const executionMetadata = {
+    ...(semanticContractMetadata || {}),
+    ...(grainMetadata || {}),
+    ...(semanticContractAggregation?.mode
+      ? { semanticContractExecutionMode: semanticContractAggregation.mode }
+      : {}),
+  };
+
+  const hasExecutionMetadata = Object.keys(executionMetadata).length > 0;
+  const filterText = describeFilters(filters);
   const limit = getLimit(plan);
 
   /*
@@ -1544,6 +2310,29 @@ function executePlan({
 
       if (crossResult) return crossResult;
     }
+  }
+
+  if (semanticContractAggregation?.allowed === false) {
+    const diagnostic = semanticContractAggregation.diagnostic || null;
+    return {
+      success: false,
+      source: "router",
+      operation: "clarify",
+      dataset: datasetName,
+      column: plan.column || null,
+      filters,
+      ...(hasExecutionMetadata ? executionMetadata : {}),
+      semanticContractViolation: true,
+      semanticContractDiagnostic: diagnostic,
+      semanticContractViolationReason:
+        semanticContractAggregation.reason || "recomputation_not_authorized",
+      answer:
+        diagnostic === "NO_SCALAR_MATCH"
+          ? "That authoritative stored result is unavailable for the requested scope."
+          : diagnostic === "MULTIPLE_SCALAR_MATCH" || diagnostic === "MULTIPLE_SEMANTIC_CONTEXT_MATCH"
+            ? "The request matched more than one authoritative semantic result, so I did not combine them. Please use a more specific supported scope."
+            : "This dataset provides that metric as an authoritative stored/evaluated result rather than a recalculable measure across multiple represented rows. Please ask for a single represented scope, or use an output whose dataset contract allows aggregation.",
+    };
   }
 
   if (operation === "row_count") {
@@ -1681,13 +2470,24 @@ function executePlan({
       }
     }
 
+    const disambiguation =
+      inferListDisambiguationContext({
+        rows: filteredRows,
+        selectedColumn,
+      });
+
+    const listValues =
+      disambiguation?.values?.length
+        ? disambiguation.values
+        : unique;
+
     const shouldShowAll =
       plan.showAll === true ||
       explicitListLimit === null;
 
     const shown = shouldShowAll
-      ? unique
-      : unique.slice(0, explicitListLimit);
+      ? listValues
+      : listValues.slice(0, explicitListLimit);
 
     return {
       success: true,
@@ -1695,13 +2495,22 @@ function executePlan({
       dataset: datasetName,
       operation,
       column: selectedColumn,
-      count: unique.length,
+      count: listValues.length,
       results: shown,
       filters,
+      ...(disambiguation
+        ? {
+            contextualizedList: true,
+            disambiguationColumn: disambiguation.column,
+            distinctLabelCount: disambiguation.labelCount,
+            ambiguousLabelCount: disambiguation.ambiguousLabelCount,
+            disambiguationConfidence: disambiguation.confidence,
+          }
+        : {}),
       answer:
       filters.length > 0
         ? `I found ${formatNumber(
-            unique.length
+            listValues.length
           )} ${selectedColumn} value(s) matching your request:\n\n` +
           shown
             .map(
@@ -1720,7 +2529,7 @@ function executePlan({
   }
 
   if (operation === "lookup") {
-    const selectedColumns =
+    const requestedSelectedColumns =
       Array.isArray(plan.selectColumns) &&
       plan.selectColumns.length
         ? plan.selectColumns
@@ -1730,20 +2539,70 @@ function executePlan({
           ? []
           : getColumns(rows).slice(0, 10);
 
+    /*
+     * Preserve row identity for multi-entity lookups.
+     *
+     * Example:
+     *   Municipality IN ["Dingras", "Badoc"]
+     *   return Irrigated Total Area Planted
+     *
+     * Previously the projection could become:
+     *   [{area: 1153}, {area: 6591}]
+     * which loses which municipality owns each value. Any response formatter
+     * that then paired values with the requested filter list by position could
+     * accidentally swap the entities.
+     *
+     * Keep a verified identity column alongside the requested metric whenever
+     * the lookup is scoped by a multi-value filter. This is schema-driven and
+     * applies to municipalities, provinces, associations, projects, offices,
+     * or any other categorical identity field.
+     */
+    let lookupLabelColumn = plan.labelColumn
+      ? findColumn(rows, plan.labelColumn)
+      : null;
+
+    if (!lookupLabelColumn) {
+      const multiEntityFilter = filters.find((filter) => {
+        const values = Array.isArray(filter?.value)
+          ? filter.value
+          : [];
+        const operator = String(filter?.operator || "")
+          .trim()
+          .toLowerCase();
+
+        return values.length > 1 &&
+          ["in", "one_of", "equals_any"].includes(operator);
+      });
+
+      if (multiEntityFilter) {
+        lookupLabelColumn = findColumn(
+          rows,
+          multiEntityFilter.column
+        );
+      }
+    }
+
+    const selectedColumns = [
+      ...(lookupLabelColumn ? [lookupLabelColumn] : []),
+      ...requestedSelectedColumns.filter(
+        (selected) => selected !== lookupLabelColumn
+      ),
+    ];
+
     if (
       plan.outputRequested &&
-      selectedColumns.length === 0
+      requestedSelectedColumns.length === 0
     ) {
       throw new Error(
         "I found the matching record, but could not determine which field you want returned."
       );
     }
 
-    const shown = plan.showAll
-      ? filteredRows
-      : filteredRows.slice(0, limit);
-
-    const projectedResults = shown.map((row) => {
+    // Project first, then deduplicate exact projected rows BEFORE applying the
+    // display limit. Denormalized worksheets often repeat the same entity once
+    // per intervention/event; a lookup asking which entities match should not
+    // print the same projected entity dozens of times.
+    const allProjectedResults = filteredRows.map((row) => {
       const projected = {};
 
       for (const selected of selectedColumns) {
@@ -1756,18 +2615,37 @@ function executePlan({
       return projected;
     });
 
+    const distinctProjectedResults = dedupeProjectedLookupResults(
+      allProjectedResults,
+      selectedColumns
+    );
+
+    const projectedResults = plan.showAll
+      ? distinctProjectedResults
+      : distinctProjectedResults.slice(0, limit);
+
     return {
       success: true,
       source: "dataset",
       dataset: datasetName,
       operation,
-      count: filteredRows.length,
+      column:
+        column ||
+        requestedSelectedColumns[0] ||
+        null,
+      labelColumn: lookupLabelColumn || null,
+      matchedRowCount: filteredRows.length,
+      count: distinctProjectedResults.length,
       results: projectedResults,
       filters,
+      duplicateLookupRowsRemoved:
+        distinctProjectedResults.length !== allProjectedResults.length,
       answer: formatLookupAnswer({
         results: projectedResults,
         selectedColumns,
-        count: filteredRows.length,
+        count: distinctProjectedResults.length,
+        question,
+        labelColumn: lookupLabelColumn || null,
       }),
     };
   }
@@ -1797,7 +2675,7 @@ function executePlan({
         row?.[valueColumn] ?? ""
       ).trim();
 
-      if (!groupLabel || !rawValue) {
+      if (!groupLabel) {
         continue;
       }
 
@@ -1806,6 +2684,10 @@ function executePlan({
           values: [],
           seen: new Set(),
         });
+      }
+
+      if (!rawValue) {
+        continue;
       }
 
       const group = groups.get(groupLabel);
@@ -1845,8 +2727,16 @@ function executePlan({
       answer:
         results.length
           ? results
-              .map(
-                (item) =>
+              .map((item) => {
+                if (item.values.length === 0) {
+                  return `${item.label} — No value recorded`;
+                }
+
+                if (item.values.length === 1) {
+                  return `${item.label} — ${item.values[0]}`;
+                }
+
+                return (
                   `${item.label}:\n` +
                   item.values
                     .map(
@@ -1854,7 +2744,8 @@ function executePlan({
                         `${index + 1}. ${value}`
                     )
                     .join("\n")
-              )
+                );
+              })
               .join("\n\n")
           : `No ${valueColumn} values were found grouped by ${groupColumn}.`,
     };
@@ -1955,6 +2846,34 @@ function executePlan({
         );
       }
 
+      const requestedDetailColumns =
+        (Array.isArray(plan.selectColumns)
+          ? plan.selectColumns
+          : [])
+          .filter((column) =>
+            column &&
+            column !== labelColumn &&
+            column !== metricColumn &&
+            Object.prototype.hasOwnProperty.call(filteredRows[0] || {}, column)
+          );
+
+      const rankedAnswerLines = ranked.map((item, index) => {
+        const details = requestedDetailColumns
+          .map((column) => {
+            const value = item.row?.[column];
+            if (value === null || value === undefined || String(value).trim() === "") {
+              return null;
+            }
+            return `${column}: ${String(value).trim()}`;
+          })
+          .filter(Boolean);
+
+        return (
+          `${index + 1}. ${item.label}: ${formatNumber(item.value)}` +
+          (details.length ? ` — ${details.join("; ")}` : "")
+        );
+      });
+
       return {
         success: true,
         source: "dataset",
@@ -1968,12 +2887,7 @@ function executePlan({
         answer:
           `${direction === "desc" ? "Top" : "Bottom"} ${ranked.length} ` +
           `${labelColumn} by ${metricColumn} in ${datasetName}${filterText}:\n` +
-          ranked
-            .map(
-              (item, index) =>
-                `${index + 1}. ${item.label}: ${formatNumber(item.value)}`
-            )
-            .join("\n"),
+          rankedAnswerLines.join("\n"),
       };
     }
 
@@ -2054,6 +2968,7 @@ function executePlan({
       direction,
       results: ranked,
       filters,
+      ...(hasExecutionMetadata ? executionMetadata : {}),
       answer:
         `${direction === "desc" ? "Top" : "Bottom"} ${ranked.length} ` +
         `${labelColumn} by ${aggregation} ${metricColumn} in ${datasetName}${filterText}:\n` +
@@ -2120,6 +3035,7 @@ function executePlan({
       value,
       recordsUsed: values.length,
       filters,
+      ...(hasExecutionMetadata ? executionMetadata : {}),
 
       /**
        * TEMPORARY DIAGNOSTIC ONLY
@@ -2176,6 +3092,7 @@ function executePlan({
       value: results[0]?.value,
       results,
       filters,
+      ...(hasExecutionMetadata ? executionMetadata : {}),
       answer:
         `${operation === "maximum" ? "Highest" : "Lowest"} ` +
         `${numericColumn} in ${datasetName}${filterText}:\n` +
@@ -2212,6 +3129,23 @@ function executePlan({
 
     const groups = new Map();
 
+    if (plan.preserveEmptyGroups === true) {
+      for (const row of filteredRows) {
+        const label = String(
+          row?.[groupColumn] ?? ""
+        ).trim();
+
+        if (!label || groups.has(label)) continue;
+
+        groups.set(label, {
+          sum: 0,
+          count: 0,
+          minimum: null,
+          maximum: null,
+        });
+      }
+    }
+
     for (const item of numericRows) {
       const label = String(
         item.row?.[groupColumn] ?? ""
@@ -2223,40 +3157,65 @@ function executePlan({
         groups.set(label, {
           sum: 0,
           count: 0,
-          minimum: item.value,
-          maximum: item.value,
+          minimum: null,
+          maximum: null,
         });
       }
 
       const group = groups.get(label);
       group.sum += item.value;
       group.count += 1;
-      group.minimum = Math.min(group.minimum, item.value);
-      group.maximum = Math.max(group.maximum, item.value);
+      group.minimum =
+        group.minimum === null
+          ? item.value
+          : Math.min(group.minimum, item.value);
+      group.maximum =
+        group.maximum === null
+          ? item.value
+          : Math.max(group.maximum, item.value);
     }
 
-    const results = [...groups.entries()]
+    const allResults = [...groups.entries()]
       .map(([label, group]) => {
-        let value;
+        let value = null;
 
-        if (operation === "group_average") {
-          value = group.sum / group.count;
-        } else if (operation === "group_minimum") {
-          value = group.minimum;
-        } else if (operation === "group_maximum") {
-          value = group.maximum;
-        } else {
-          value = group.sum;
+        if (group.count > 0) {
+          if (operation === "group_average") {
+            value = group.sum / group.count;
+          } else if (operation === "group_minimum") {
+            value = group.minimum;
+          } else if (operation === "group_maximum") {
+            value = group.maximum;
+          } else {
+            value = group.sum;
+          }
         }
 
         return {
           label,
           value,
           recordsUsed: group.count,
+          ...(group.count === 0 ? { missing: true } : {}),
         };
       })
-      .sort((a, b) => b.value - a.value)
-      .slice(0, limit);
+      .filter(
+        (item) =>
+          item.value !== null ||
+          plan.preserveEmptyGroups === true
+      )
+      .sort((a, b) => {
+        if (a.value === null && b.value === null) {
+          return a.label.localeCompare(b.label);
+        }
+        if (a.value === null) return 1;
+        if (b.value === null) return -1;
+        return b.value - a.value;
+      });
+
+    const results =
+      plan.showAll === true
+        ? allResults
+        : allResults.slice(0, limit);
 
     return {
       success: true,
@@ -2267,13 +3226,19 @@ function executePlan({
       groupBy: groupColumn,
       results,
       filters,
+      ...(hasExecutionMetadata ? executionMetadata : {}),
       answer:
         `${operation.replace("group_", "")} ${numericColumn} by ` +
         `${groupColumn} in ${datasetName}${filterText}:\n` +
         results
           .map(
             (item, index) =>
-              `${index + 1}. ${item.label}: ${formatNumber(item.value)}`
+              `${index + 1}. ${item.label}: ` +
+              (
+                item.value === null
+                  ? "No value recorded"
+                  : formatNumber(item.value)
+              )
           )
           .join("\n"),
     };
@@ -2286,4 +3251,5 @@ function executePlan({
 
 module.exports = {
   executePlan,
+  buildDataQualitySummary,
 };

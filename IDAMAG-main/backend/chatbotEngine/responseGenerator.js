@@ -6,6 +6,18 @@ const {
   formatVerifiedResultAnswer,
 } = require("./responseFormatter");
 
+const {
+  formatNumber,
+} = require("./utils");
+
+const {
+  buildSemanticVerifiedAnswer,
+} = require("./responseNarrativeEngine");
+
+const {
+  finalizeUserFacingGrammar,
+} = require("./responseGrammarEngine");
+
 
 /**
  * ============================================================
@@ -57,16 +69,146 @@ function shouldNaturalize(
 }
 
 
+
+function decorateVerifiedAnswer(answer, plan, result) {
+  let text = String(answer || "").trim();
+  if (!text) return text;
+
+  const unit = result?.displayUnit || plan?.displayUnit || result?.unit || plan?.unit || null;
+  const scalarValue = result?.value;
+  if (unit && scalarValue !== null && scalarValue !== undefined) {
+    const formatted = formatNumber(scalarValue);
+    if (formatted && !text.toLowerCase().includes(String(unit).toLowerCase())) {
+      const escaped = String(formatted).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      text = text.replace(new RegExp(`\\b${escaped}\\b`), `${formatted} ${unit}`);
+    }
+  }
+
+  const quality = result?.dataQuality;
+  if (quality && quality.missingCount > 0 && quality.missingRate >= 0.05) {
+    text += `\n\nNote: ${quality.missingCount} of ${quality.totalRows} matching record(s) had no value for this field.`;
+  }
+  return text;
+}
+
+function shouldPreferStructuredLookupFormatter({ plan, result } = {}) {
+  const operation = String(result?.operation || plan?.operation || '')
+    .trim()
+    .toLowerCase();
+  if (!['lookup', 'list', 'value'].includes(operation)) return false;
+
+  const rows = Array.isArray(result?.results) ? result.results : [];
+  if (!rows.length || !rows.some((row) => row && typeof row === 'object' && !Array.isArray(row))) {
+    return false;
+  }
+
+  const labelColumn = result?.labelColumn || plan?.labelColumn || null;
+  if (!labelColumn) return false;
+
+  const selected = Array.isArray(plan?.selectColumns)
+    ? plan.selectColumns.filter(Boolean)
+    : Object.keys(rows[0] || {});
+  const outputColumns = selected.filter((column) => column !== labelColumn);
+
+  // Multiple requested fields must stay paired row-by-row with their entity.
+  // A narrative summary can accidentally separate unique values from labels.
+  return outputColumns.length >= 2;
+}
+
 function buildLocalNaturalAnswer({
   question,
   plan,
   result,
 }) {
-  return formatVerifiedResultAnswer({
-    question,
-    plan,
-    result,
-  });
+  const semanticAnswer = buildSemanticVerifiedAnswer({ question, plan, result });
+  return finalizeUserFacingGrammar(
+    decorateVerifiedAnswer(
+      semanticAnswer || formatVerifiedResultAnswer({ question, plan, result }),
+      plan,
+      result
+    )
+  );
+}
+
+
+function shouldPreserveDeterministicSemanticAnswer({
+  plan,
+  result,
+  semanticAnswer,
+} = {}) {
+  if (!semanticAnswer) return false;
+
+  const operation = String(
+    result?.operation ||
+    plan?.operation ||
+    ""
+  ).trim().toLowerCase();
+
+  // Authoritative semantic-contract scalars are already exact stored values.
+  // Keep their deterministic formatter output so an optional language-model
+  // polish step can never alter a verified number on a repeated request.
+  if (
+    result?.semanticContractExecutionMode === "authoritative_stored_value" ||
+    plan?.deterministicSemanticContractRoute === true
+  ) {
+    return true;
+  }
+
+  // Rankings are already rendered from verified row labels, metrics, and
+  // details by the deterministic formatter. Preserve that wording so an LLM
+  // cannot relabel a schema entity (for example, calling an association a
+  // project) merely because the user's noun was broader than the live schema.
+  if (["rank_rows", "rank_groups"].includes(operation)) {
+    return true;
+  }
+
+  // A grounded list projection already knows both the requested output field
+  // and the verified filter scope. Preserve the deterministic local wording so
+  // Groq cannot accidentally describe the filter field as the returned entity.
+  // This also guarantees Groq/local response parity for these list answers.
+  if (
+    operation === "list" &&
+    (plan?.listProjectionGrounded === true || result?.listProjectionGrounded === true)
+  ) {
+    return true;
+  }
+
+  if (!["lookup", "list", "value"].includes(operation)) {
+    return false;
+  }
+
+  const rows = Array.isArray(result?.results)
+    ? result.results
+    : [];
+
+  if (!rows.length) return false;
+
+  const labelColumn =
+    result?.labelColumn ||
+    plan?.labelColumn ||
+    null;
+
+  const valueColumn =
+    result?.column ||
+    plan?.column ||
+    null;
+
+  if (!labelColumn || !valueColumn) {
+    return false;
+  }
+
+  // Preserve the deterministic semantic formatter when the verified result is
+  // a paired/relationship lookup (label + requested value). The local
+  // formatter already groups multi-value cells and answers the requested field
+  // first. Allowing the LLM to rewrite this can re-expand the answer into
+  // repetitive "label - value" lines even though the verified local answer is
+  // already better.
+  return rows.some((row) =>
+    row &&
+    typeof row === "object" &&
+    Object.prototype.hasOwnProperty.call(row, labelColumn) &&
+    Object.prototype.hasOwnProperty.call(row, valueColumn)
+  );
 }
 
 
@@ -141,6 +283,24 @@ function buildCompactVerifiedPayload({
     winner:
       result?.winner,
 
+    unit:
+      result?.displayUnit || plan?.displayUnit || result?.unit || plan?.unit || undefined,
+
+    metricMeaning:
+      result?.metricMeaning || plan?.metricMeaning || undefined,
+
+    metricSource:
+      plan?.metricSource || undefined,
+
+    coverage:
+      result?.coverage || undefined,
+
+    aggregationPolicy:
+      result?.aggregationPolicy || undefined,
+
+    dataQuality:
+      result?.dataQuality || undefined,
+
     results:
       Array.isArray(
         result?.results
@@ -184,12 +344,42 @@ async function generateNaturalResponse({
   plan,
   result,
 }) {
-  const fallback =
-    buildLocalNaturalAnswer({
+  const semanticAnswer =
+    buildSemanticVerifiedAnswer({
       question,
       plan,
       result,
     });
+
+  const structuredLookupAnswer =
+    shouldPreferStructuredLookupFormatter({ plan, result })
+      ? formatVerifiedResultAnswer({ question, plan, result })
+      : null;
+
+  const fallback =
+    finalizeUserFacingGrammar(
+      decorateVerifiedAnswer(
+        structuredLookupAnswer ||
+          semanticAnswer ||
+          formatVerifiedResultAnswer({
+            question,
+            plan,
+            result,
+          }),
+        plan,
+        result
+      )
+    );
+
+  if (
+    shouldPreserveDeterministicSemanticAnswer({
+      plan,
+      result,
+      semanticAnswer,
+    })
+  ) {
+    return fallback;
+  }
 
   if (
     !shouldNaturalize(
@@ -238,6 +428,8 @@ STRICT RULES:
 - For grouped calculations, describe the aggregation naturally.
 - For rankings, preserve the exact verified order.
 - For follow-ups, be concise and conversational.
+- Preserve and naturally include the verified unit when one is provided.
+- Preserve any missing-data note when dataQuality says it is material.
 - Return ONLY the final answer.
 
 The LOCAL ANSWER is already fact-safe. Prefer making only small stylistic improvements.
@@ -287,7 +479,9 @@ The LOCAL ANSWER is already fact-safe. Prefer making only small stylistic improv
       return fallback;
     }
 
-    return naturalAnswer;
+    return finalizeUserFacingGrammar(
+      naturalAnswer
+    );
   } catch (error) {
     console.error(
       "Natural response generation failed:",
@@ -306,4 +500,6 @@ The LOCAL ANSWER is already fact-safe. Prefer making only small stylistic improv
 
 module.exports = {
   generateNaturalResponse,
+  shouldPreserveDeterministicSemanticAnswer,
+  shouldPreferStructuredLookupFormatter,
 };

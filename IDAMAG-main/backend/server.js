@@ -178,7 +178,7 @@ console.log(
 const allowedOrigins = [
   "http://localhost:5173",
   "http://192.168.56.1:5173",
-  "https://i-damag-part2.vercel.app",
+  "https://i-damag-portal.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
@@ -395,7 +395,7 @@ function getGoogleOAuthClient() {
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   const redirectUri =
     process.env.GOOGLE_REDIRECT_URI ||
-    "https://i-damag-part2.vercel.app/api/google/callback";
+    "https://i-damag-portal.vercel.app/api/google/callback";
 
   if (!clientId || !clientSecret) {
     throw new Error(
@@ -1097,6 +1097,15 @@ app.get(
         await DashboardWorksheet.findAll({
           where,
 
+          attributes: [
+            "worksheetId",
+            "dashboardId",
+            "worksheetName",
+            "gid",
+            "createdAt",
+            "updatedAt",
+          ],
+
           order: [
             [
               "worksheetId",
@@ -1105,16 +1114,73 @@ app.get(
           ],
         });
 
-      res.json(worksheets);
+      const dashboardIds = [
+        ...new Set(
+          worksheets.map(
+            (worksheet) =>
+              Number(
+                worksheet.dashboardId
+              )
+          )
+        ),
+      ].filter(Number.isFinite);
+
+      const reports =
+        dashboardIds.length > 0
+          ? await Report.findAll({
+              where: {
+                id: dashboardIds,
+              },
+
+              attributes: [
+                "id",
+                "title",
+              ],
+            })
+          : [];
+
+      const reportMap =
+        new Map(
+          reports.map((report) => [
+            Number(report.id),
+            report.title,
+          ])
+        );
+
+      const results =
+        worksheets.map(
+          (worksheet) => {
+            const row =
+              worksheet.toJSON();
+
+            return {
+              ...row,
+
+              dashboardName:
+                reportMap.get(
+                  Number(
+                    row.dashboardId
+                  )
+                ) ||
+                "Unknown Dashboard",
+            };
+          }
+        );
+
+      return res
+        .status(200)
+        .json(results);
     } catch (error) {
       console.error(
         "GET WORKSHEETS ERROR:",
         error
       );
 
-      res.status(500).json({
-        error: error.message,
-      });
+      return res
+        .status(500)
+        .json({
+          error: error.message,
+        });
     }
   }
 );
@@ -2393,6 +2459,8 @@ app.get("/api/feedback/dashboard", async (req, res) => {
   try {
     const [rows] = await sequelize.query(`
       SELECT
+        id,
+        dashboard_name,
         user_interface,
         user_experience,
         data_completeness,
@@ -2406,12 +2474,20 @@ app.get("/api/feedback/dashboard", async (req, res) => {
       ORDER BY created_at DESC
     `);
 
-    res.json(rows);
+    res.status(200).json(rows);
+
   } catch (error) {
-    console.error("Dashboard feedback error:", error);
+    console.error(
+      "GET FEEDBACK MANAGEMENT DASHBOARD ERROR:",
+      error
+    );
 
     res.status(500).json({
-      message: "Unable to load dashboard feedback.",
+      message:
+        "Unable to load dashboard feedback.",
+
+      error:
+        error.message,
     });
   }
 });

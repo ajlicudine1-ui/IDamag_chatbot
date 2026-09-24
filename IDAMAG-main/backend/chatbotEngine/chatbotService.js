@@ -8,6 +8,7 @@ const {
 
 const {
   executePlan,
+  buildDataQualitySummary,
 } = require("./calculationEngine");
 
 const {
@@ -17,6 +18,7 @@ const {
 const {
   answerGeneralQuestion,
   createSchemaAwarePlan,
+  classifyGroqError,
 } = require("./groqService");
 
 const {
@@ -30,6 +32,8 @@ const {
   getRelevantContext,
   updateConversation,
   getRecentResults,
+  applyConversationCorrection,
+  saveCompoundContext,
 } = require("./conversationManager");
 
 const {
@@ -38,6 +42,7 @@ const {
 
 const {
   validateQueryPlan,
+  validateResolvedFilterValues,
 } = require("./queryValidator");
 
 const {
@@ -66,3841 +71,181 @@ const {
   buildRetrievalContext,
 } = require("./dataRetriever");
 
-
-function normalizeExplicitColumnText(value) {
-  return String(value ?? "")
-    .toLowerCase()
-    .replace(/[’']/g, "")
-    .replace(/&/g, " and ")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function compactExplicitColumnText(value) {
-  return normalizeExplicitColumnText(value)
-    .replace(/\s+/g, "")
-    .trim();
-}
-
-
-function expandExplicitColumnWords(
-  value
-) {
-  const text =
-    normalizeExplicitColumnText(
-      value
-    );
-
-  if (!text) {
-    return "";
-  }
-
-  /**
-   * Generic schema-label abbreviation expansion.
-   *
-   * This is NOT tied to one dashboard or one field.
-   *
-   * Examples:
-   *   NO / NO. / NUM / # -> NUMBER
-   *   QTY              -> QUANTITY
-   *   AMT              -> AMOUNT
-   *   DESC             -> DESCRIPTION
-   *   DEPT             -> DEPARTMENT
-   *   DIV              -> DIVISION
-   *
-   * It allows natural user wording to match compact column headers.
-   */
-  const replacements = new Map([
-    ["no", "number"],
-    ["num", "number"],
-    ["nbr", "number"],
-    ["qty", "quantity"],
-    ["amt", "amount"],
-    ["desc", "description"],
-    ["dept", "department"],
-    ["div", "division"],
-    ["pos", "position"],
-  ]);
-
-  return text
-    .split(/\s+/)
-    .filter(Boolean)
-    .map(
-      (token) =>
-        replacements.get(token) ||
-        token
-    )
-    .join(" ")
-    .trim();
-}
-
-
-function buildExplicitColumnAliases(
-  columnName
-) {
-  const base =
-    normalizeExplicitColumnText(
-      columnName
-    );
-
-  const expanded =
-    expandExplicitColumnWords(
-      columnName
-    );
-
-  const aliases =
-    new Set(
-      [
-        base,
-        expanded,
-      ].filter(Boolean)
-    );
-
-  /**
-   * Also support a compact form for headers that contain spacing
-   * or punctuation differences.
-   */
-  for (
-    const alias of
-    [...aliases]
-  ) {
-    const compact =
-      alias
-        .replace(/\s+/g, "")
-        .trim();
-
-    if (compact) {
-      aliases.add(
-        compact
-      );
-    }
-  }
-
-  return [
-    ...aliases,
-  ];
-}
-
-
-/**
- * Return every real schema column explicitly named in the question.
- *
- * Longer overlapping column names win:
- * "POSITION TITLE" suppresses a shorter "POSITION" match that occupies
- * the same phrase.
- */
-function findExplicitSchemaColumns({
-  schema,
-  question,
-  preferredDataset = null,
-}) {
-  const normalizedQuestion =
-    normalizeExplicitColumnText(
-      question
-    );
-
-  if (!normalizedQuestion) {
-    return [];
-  }
-
-  const matches = [];
-
-  for (const dataset of schema || []) {
-    if (
-      preferredDataset &&
-      String(dataset?.name || "") !==
-        String(preferredDataset)
-    ) {
-      continue;
-    }
-
-    for (const column of dataset?.columns || []) {
-      const name =
-        column?.name;
-
-      if (!name) {
-        continue;
-      }
-
-      const aliases =
-        buildExplicitColumnAliases(
-          name
-        );
-
-      if (!aliases.length) {
-        continue;
-      }
-
-      const normalizedRealColumn =
-        normalizeExplicitColumnText(
-          name
-        );
-
-      const realColumnWordCount =
-        normalizedRealColumn
-          .split(/\s+/)
-          .filter(Boolean)
-          .length;
-
-      /**
-       * Search both the normalized question and an abbreviation-expanded
-       * version of it.
-       *
-       * Example:
-       * schema:   "PLANTILLA ITEM NO."
-       * question: "plantilla item number"
-       *
-       * Both become:
-       * "plantilla item number"
-       */
-      const searchableQuestions = [
-        {
-          text:
-            normalizedQuestion,
-          compact:
-            false,
-        },
-
-        {
-          text:
-            expandExplicitColumnWords(
-              question
-            ),
-          compact:
-            false,
-        },
-
-        {
-          text:
-            compactExplicitColumnText(
-              question
-            ),
-          compact:
-            true,
-        },
-
-        {
-          text:
-            expandExplicitColumnWords(
-              question
-            )
-              .replace(
-                /\s+/g,
-                ""
-              ),
-          compact:
-            true,
-        },
-      ];
-
-      for (
-        const alias of aliases
-      ) {
-        const aliasIsCompact =
-          !/\s/.test(alias);
-
-        for (
-          const searchable of
-          searchableQuestions
-        ) {
-          if (
-            searchable.compact !==
-            aliasIsCompact
-          ) {
-            continue;
-          }
-
-          const haystack =
-            searchable.text;
-
-          if (
-            !haystack ||
-            !alias
-          ) {
-            continue;
-          }
-
-          if (
-            searchable.compact
-          ) {
-            /**
-             * Compact matching exists only to bridge punctuation/spacing
-             * differences in MULTI-WORD schema labels.
-             *
-             * Never compact-match a one-word field name by raw substring.
-             *
-             * Example of the old bug:
-             *
-             *   schema column: AGE
-             *   question:      "What about the average?"
-             *
-             * compact question:
-             *   whatabouttheaverage
-             *
-             * raw substring matching found:
-             *   ...averAGE
-             *
-             * and incorrectly changed the metric to AGE.
-             *
-             * Multi-word fields such as:
-             *   PLANTILLA ITEM NO.
-             *
-             * may still use compact matching safely.
-             */
-            if (
-              realColumnWordCount < 2
-            ) {
-              continue;
-            }
-
-            const start =
-              haystack.indexOf(
-                alias
-              );
-
-            if (start >= 0) {
-              matches.push({
-                dataset:
-                  dataset.name,
-
-                column:
-                  name,
-
-                start,
-
-                end:
-                  start +
-                  alias.length,
-
-                length:
-                  alias.length,
-              });
-            }
-
-            continue;
-          }
-
-          const escaped =
-            alias.replace(
-              /[.*+?^${}()|[\]\\]/g,
-              "\\$&"
-            );
-
-          const regex =
-            new RegExp(
-              `(^|[^\\p{L}\\p{N}])(${escaped})(?=$|[^\\p{L}\\p{N}])`,
-              "gu"
-            );
-
-          let match;
-
-          while (
-            (match =
-              regex.exec(
-                haystack
-              )) !== null
-          ) {
-            const prefixLength =
-              match[1]?.length ||
-              0;
-
-            const start =
-              match.index +
-              prefixLength;
-
-            matches.push({
-              dataset:
-                dataset.name,
-
-              column:
-                name,
-
-              start,
-
-              end:
-                start +
-                match[2].length,
-
-              length:
-                match[2].length,
-            });
-
-            if (
-              regex.lastIndex ===
-              match.index
-            ) {
-              regex.lastIndex += 1;
-            }
-          }
-        }
-      }
-    }
-  }
-
-  matches.sort(
-    (a, b) =>
-      b.length -
-        a.length ||
-      a.start -
-        b.start
-  );
-
-  const accepted = [];
-
-  for (const candidate of matches) {
-    const covered =
-      accepted.some(
-        (stronger) =>
-          stronger.dataset ===
-            candidate.dataset &&
-          stronger.start <=
-            candidate.start &&
-          stronger.end >=
-            candidate.end &&
-          stronger.length >
-            candidate.length
-      );
-
-    if (!covered) {
-      accepted.push(
-        candidate
-      );
-    }
-  }
-
-  const seen = new Set();
-
-  return accepted.filter(
-    (item) => {
-      const key =
-        `${item.dataset}::${item.column}`;
-
-      if (seen.has(key)) {
-        return false;
-      }
-
-      seen.add(key);
-      return true;
-    }
-  );
-}
-
-function splitExplicitEntitySegments(
-  question
-) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  const tailMatch =
-    text.match(
-      /\b(?:of|for)\b\s+(.+)$/
-    );
-
-  if (!tailMatch?.[1]) {
-    return [];
-  }
-
-  const segments =
-    tailMatch[1]
-      .replace(/[?.!]+$/g, "")
-      .split(
-        /\s+(?:and|vs\.?|versus)\s+/i
-      )
-      .map(
-        (value) =>
-          value.trim()
-      )
-      .filter(Boolean);
-
-  return segments.length >= 2
-    ? segments
-    : [];
-}
-
-
-
-function detectQuestionAggregation(
-  question
-) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  if (
-    /\b(average|avg|mean)\b/.test(
-      text
-    )
-  ) {
-    return "average";
-  }
-
-  if (
-    /\b(total|sum|combined|overall|altogether|in all)\b/.test(
-      text
-    )
-  ) {
-    return "sum";
-  }
-
-  if (
-    /\b(count|how many|number of)\b/.test(
-      text
-    )
-  ) {
-    return "count";
-  }
-
-  return null;
-}
-
-
-function detectRankingDirection(
-  question
-) {
-  const text =
-    normalizeText(question);
-
-  if (
-    /\b(lowest|smallest|least|minimum|min|bottom)\b/.test(
-      text
-    )
-  ) {
-    return "asc";
-  }
-
-  if (
-    /\b(highest|largest|biggest|greatest|most|maximum|max|top)\b/.test(
-      text
-    )
-  ) {
-    return "desc";
-  }
-
-  return null;
-}
-
-
-function detectRankingLimit(
-  question
-) {
-  const text =
-    normalizeText(question);
-
-  const match =
-    text.match(
-      /\b(?:top|bottom|first|last)\s+(\d{1,3})\b/
-    ) ||
-    text.match(
-      /\b(\d{1,3})\s+(?:highest|lowest|largest|smallest)\b/
-    );
-
-  if (match?.[1]) {
-    const value =
-      Number(
-        match[1]
-      );
-
-    if (
-      Number.isInteger(value)
-    ) {
-      return Math.min(
-        Math.max(
-          value,
-          1
-        ),
-        100
-      );
-    }
-  }
-
-  return 1;
-}
-
-
-function looksNumericValue(
-  value
-) {
-  if (
-    value === null ||
-    value === undefined ||
-    String(value).trim() === ""
-  ) {
-    return false;
-  }
-
-  const cleaned =
-    String(value)
-      .trim()
-      .replace(
-        /[,₱$€£¥%]/g,
-        ""
-      )
-      .replace(/\s+/g, "");
-
-  return (
-    cleaned !== "" &&
-    Number.isFinite(
-      Number(cleaned)
-    )
-  );
-}
-
-
-function isNumericLikeColumn({
-  column,
-  rows,
-}) {
-  if (!column) {
-    return false;
-  }
-
-  if (
-    column.type === "number"
-  ) {
-    return true;
-  }
-
-  const examples =
-    Array.isArray(
-      column.examples
-    )
-      ? column.examples
-      : [];
-
-  const samples = [
-    ...examples,
-    ...(Array.isArray(rows)
-      ? rows
-          .slice(0, 40)
-          .map(
-            (row) =>
-              row?.[
-                column.name
-              ]
-          )
-      : []),
-  ];
-
-  let usable = 0;
-  let numeric = 0;
-
-  for (
-    const value of samples
-  ) {
-    if (
-      value === null ||
-      value === undefined ||
-      String(value).trim() === ""
-    ) {
-      continue;
-    }
-
-    usable += 1;
-
-    if (
-      looksNumericValue(
-        value
-      )
-    ) {
-      numeric += 1;
-    }
-  }
-
-  return (
-    usable > 0 &&
-    numeric / usable >= 0.6
-  );
-}
-
-
-function parseRankingTargets(
-  question
-) {
-  const text =
-    normalizeText(question);
-
-  let match =
-    text.match(
-      /\bwho\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
-    );
-
-  if (match?.[1]) {
-    return {
-      asksWho: true,
-      labelTarget:
-        "person name employee",
-      metricTarget:
-        normalizeText(
-          match[1]
-        ),
-    };
-  }
-
-  match =
-    text.match(
-      /\b(?:which|what)\s+(.+?)\s+(?:has|have|had|is|are)\s+(?:the\s+)?(?:highest|lowest|largest|smallest|biggest|greatest|most|least|maximum|minimum)\s+(.+?)(?:\s+\b(?:in|within|among|for)\b\s+.+)?$/
-    );
-
-  if (
-    match?.[1] &&
-    match?.[2]
-  ) {
-    return {
-      asksWho: false,
-      labelTarget:
-        normalizeText(
-          match[1]
-        ),
-      metricTarget:
-        normalizeText(
-          match[2]
-        ),
-    };
-  }
-
-  return null;
-}
-
-
-function scoreTargetToColumn(
-  target,
-  columnName
-) {
-  const left =
-    normalizeText(
-      target
-    );
-
-  const right =
-    normalizeText(
-      columnName
-    );
-
-  if (
-    !left ||
-    !right
-  ) {
-    return 0;
-  }
-
-  if (left === right) {
-    return 3;
-  }
-
-  let score =
-    similarity(
-      left,
-      right
-    );
-
-  if (
-    left.includes(
-      right
-    ) ||
-    right.includes(
-      left
-    )
-  ) {
-    score += 1;
-  }
-
-  const leftTokens =
-    new Set(
-      left
-        .split(/\s+/)
-        .filter(Boolean)
-    );
-
-  const rightTokens =
-    right
-      .split(/\s+/)
-      .filter(Boolean);
-
-  if (
-    rightTokens.length
-  ) {
-    const overlap =
-      rightTokens.filter(
-        (token) =>
-          leftTokens.has(
-            token
-          )
-      ).length;
-
-    score +=
-      overlap /
-      rightTokens.length;
-  }
-
-  return score;
-}
-
-
-
-function sanitizeRankingStructuralFilters({
-  plan,
-  question,
-}) {
-  if (
-    !plan ||
-    !Array.isArray(
-      plan.filters
-    ) ||
-    !plan.filters.length
-  ) {
-    return plan;
-  }
-
-  const text =
-    normalizeText(
-      question
-    );
-
-  /**
-   * Words that often describe the requested calculation itself rather
-   * than a real row filter.
-   *
-   * Examples:
-   *   "most number of members"
-   *   "highest average salary"
-   *   "largest total area"
-   *
-   * A planner must not turn those structural words into:
-   *   Unit = "number"
-   *   Type = "average"
-   *   Category = "total"
-   *
-   * This remains conservative: the filter is removed only when the
-   * value is used in a recognizable analytical phrase in the question.
-   */
-  const structuralPhrasePatterns = [
-    /\bnumber\s+of\b/,
-    /\bcount\s+of\b/,
-    /\baverage\s+(?:of\s+)?/,
-    /\bavg\s+(?:of\s+)?/,
-    /\bmean\s+(?:of\s+)?/,
-    /\btotal\s+(?:of\s+)?/,
-    /\bsum\s+(?:of\s+)?/,
-    /\bhighest\b/,
-    /\blowest\b/,
-    /\bmaximum\b/,
-    /\bminimum\b/,
-    /\bmost\b/,
-    /\bleast\b/,
-  ];
-
-  const hasAnalyticalStructure =
-    structuralPhrasePatterns.some(
-      (pattern) =>
-        pattern.test(
-          text
-        )
-    );
-
-  if (!hasAnalyticalStructure) {
-    return plan;
-  }
-
-  const structuralValues =
-    new Set([
-      "number",
-      "count",
-      "average",
-      "avg",
-      "mean",
-      "total",
-      "sum",
-      "highest",
-      "lowest",
-      "maximum",
-      "minimum",
-      "most",
-      "least",
-    ]);
-
-  const cleanedFilters =
-    plan.filters.filter(
-      (filter) => {
-        const value =
-          normalizeText(
-            Array.isArray(
-              filter?.value
-            )
-              ? filter.value.join(
-                  " "
-                )
-              : filter?.value
-          );
-
-        if (
-          !structuralValues.has(
-            value
-          )
-        ) {
-          return true;
-        }
-
-        /**
-         * Keep a structural-looking value only if the question clearly
-         * uses it as an explicit filter value rather than as part of
-         * the analytical wording.
-         *
-         * Examples kept:
-         *   "where Unit is number"
-         *   "filter Unit by number"
-         *   "only number"
-         *
-         * Example removed:
-         *   "most number of members"
-         */
-        const escaped =
-          value.replace(
-            /[.*+?^${}()|[\]\\]/g,
-            "\\$&"
-          );
-
-        const explicitFilterUse =
-          new RegExp(
-            `\\b(?:where|with|filter(?:ed)?(?:\\s+by)?|only|equals?|equal\\s+to|is)\\s+(?:\\w+\\s+){0,4}${escaped}\\b`
-          ).test(
-            text
-          );
-
-        return explicitFilterUse;
-      }
-    );
-
-  if (
-    cleanedFilters.length ===
-      plan.filters.length
-  ) {
-    return plan;
-  }
-
-  return {
-    ...plan,
-
-    filters:
-      cleanedFilters,
-  };
-}
-
-
-function repairRankingIdentityPlan({
-  datasets,
-  schema,
-  plan,
-  question,
-}) {
-  if (
-    !plan ||
-    plan.route !== "dataset"
-  ) {
-    return plan;
-  }
-
-  plan =
-    sanitizeRankingStructuralFilters({
-      plan,
-      question,
-    });
-
-  const direction =
-    detectRankingDirection(
-      question
-    );
-
-  const targets =
-    parseRankingTargets(
-      question
-    );
-
-  if (
-    !direction ||
-    !targets
-  ) {
-    return plan;
-  }
-
-  /**
-   * Prefer the planner's selected dataset, but verify it against the
-   * requested metric across all live worksheets.
-   *
-   * This prevents:
-   *   "Which association has the most members?"
-   *
-   * from choosing a worksheet merely because it is named "Association"
-   * and then ranking an unrelated numeric field such as QTY.
-   *
-   * We only switch worksheets when:
-   *   - there are no existing filters to invalidate, and
-   *   - another worksheet has a clearly stronger numeric metric match.
-   */
-  let selectedDatasetName =
-    plan.dataset || null;
-
-  let datasetSchema =
-    (schema || []).find(
-      (item) =>
-        String(
-          item?.name || ""
-        ) ===
-        String(
-          selectedDatasetName || ""
-        )
-    );
-
-  let rows =
-    datasets?.[
-      selectedDatasetName
-    ];
-
-  const hasPlanFilters =
-    Array.isArray(
-      plan.filters
-    ) &&
-    plan.filters.length > 0;
-
-  const scoreDatasetForRanking =
-    (candidateSchema) => {
-      const candidateRows =
-        datasets?.[
-          candidateSchema?.name
-        ];
-
-      if (
-        !candidateSchema ||
-        !Array.isArray(
-          candidateRows
-        )
-      ) {
-        return null;
-      }
-
-      const candidateColumns =
-        Array.isArray(
-          candidateSchema.columns
-        )
-          ? candidateSchema.columns
-          : [];
-
-      const numeric =
-        candidateColumns
-          .filter(
-            (column) =>
-              isNumericLikeColumn({
-                column,
-                rows:
-                  candidateRows,
-              })
-          )
-          .map(
-            (column) => ({
-              column,
-
-              score:
-                scoreTargetToColumn(
-                  targets.metricTarget,
-                  column.name
-                ),
-            })
-          )
-          .sort(
-            (a, b) =>
-              b.score -
-              a.score
-          )[0] ||
-        null;
-
-      const label =
-        candidateColumns
-          .filter(
-            (column) =>
-              column?.name &&
-              (
-                !numeric ||
-                column.name !==
-                  numeric.column.name
-              ) &&
-              !isNumericLikeColumn({
-                column,
-                rows:
-                  candidateRows,
-              })
-          )
-          .map(
-            (column) => ({
-              column,
-
-              score:
-                scoreTargetToColumn(
-                  targets.labelTarget,
-                  column.name
-                ),
-            })
-          )
-          .sort(
-            (a, b) =>
-              b.score -
-              a.score
-          )[0] ||
-        null;
-
-      return {
-        datasetName:
-          candidateSchema.name,
-
-        schema:
-          candidateSchema,
-
-        rows:
-          candidateRows,
-
-        numeric,
-
-        label,
-
-        combinedScore:
-          (
-            numeric?.score ||
-            0
-          ) *
-            2 +
-          (
-            label?.score ||
-            0
-          ),
-      };
-    };
-
-  if (!hasPlanFilters) {
-    const rankedDatasets =
-      (schema || [])
-        .map(
-          scoreDatasetForRanking
-        )
-        .filter(Boolean)
-        .sort(
-          (a, b) =>
-            b.combinedScore -
-            a.combinedScore
-        );
-
-    const bestGlobal =
-      rankedDatasets[0] ||
-      null;
-
-    const currentScore =
-      rankedDatasets.find(
-        (item) =>
-          String(
-            item.datasetName
-          ) ===
-          String(
-            selectedDatasetName
-          )
-      ) ||
-      null;
-
-    if (
-      bestGlobal?.numeric?.score >=
-        0.55 &&
-      (
-        !currentScore ||
-        currentScore
-          .numeric?.score <
-          0.55 ||
-        bestGlobal
-          .combinedScore >
-          currentScore
-            .combinedScore +
-            0.35
-      )
-    ) {
-      selectedDatasetName =
-        bestGlobal.datasetName;
-
-      datasetSchema =
-        bestGlobal.schema;
-
-      rows =
-        bestGlobal.rows;
-    }
-  }
-
-  if (
-    !datasetSchema ||
-    !Array.isArray(rows)
-  ) {
-    return plan;
-  }
-
-  const columns =
-    Array.isArray(
-      datasetSchema.columns
-    )
-      ? datasetSchema.columns
-      : [];
-
-  const numericCandidates =
-    columns
-      .filter(
-        (column) =>
-          isNumericLikeColumn({
-            column,
-            rows,
-          })
-      )
-      .map(
-        (column) => ({
-          column,
-          score:
-            scoreTargetToColumn(
-              targets.metricTarget,
-              column.name
-            ),
-        })
-      )
-      .sort(
-        (a, b) =>
-          b.score - a.score
-      );
-
-  const metric =
-    numericCandidates[0];
-
-  if (
-    !metric ||
-    metric.score < 0.55
-  ) {
-    return plan;
-  }
-
-  const textCandidates =
-    columns
-      .filter(
-        (column) =>
-          column?.name &&
-          column.name !==
-            metric.column.name &&
-          !isNumericLikeColumn({
-            column,
-            rows,
-          })
-      )
-      .map((column, index) => {
-        let score =
-          scoreTargetToColumn(
-            targets.labelTarget,
-            column.name
-          );
-
-        const normalizedName =
-          normalizeText(
-            column.name
-          );
-
-        if (targets.asksWho) {
-          if (
-            /\b(full name|name|first name|last name|surname|employee|staff|person|respondent|beneficiary|owner|operator|applicant|client|customer|student|teacher|member)\b/.test(
-              normalizedName
-            )
-          ) {
-            score += 1.2;
-          }
-
-          const values =
-            rows
-              .slice(0, 40)
-              .map(
-                (row) =>
-                  row?.[
-                    column.name
-                  ]
-              )
-              .filter(
-                (value) =>
-                  value !== null &&
-                  value !== undefined &&
-                  String(value).trim() !== ""
-              );
-
-          if (
-            values.length &&
-            values.some(
-              (value) =>
-                /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
-                  String(value).trim()
-                )
-            )
-          ) {
-            score += 0.3;
-          }
-        }
-
-        return {
-          column,
-          score,
-          index,
-        };
-      })
-      .sort(
-        (a, b) =>
-          b.score -
-            a.score ||
-          a.index -
-            b.index
-      );
-
-  const label =
-    textCandidates[0];
-
-  if (
-    !label ||
-    label.score < 0.55
-  ) {
-    return plan;
-  }
-
-  const identityColumns = [
-    label.column.name,
-  ];
-
-  /**
-   * For "who", keep closely related name components when the
-   * schema stores identity across multiple fields.
-   */
-  if (targets.asksWho) {
-    for (
-      const candidate of
-      textCandidates.slice(1)
-    ) {
-      const name =
-        normalizeText(
-          candidate.column.name
-        );
-
-      if (
-        /\b(first name|last name|surname|middle name|middle initial|full name|name)\b/.test(
-          name
-        ) &&
-        !identityColumns.includes(
-          candidate.column.name
-        )
-      ) {
-        identityColumns.push(
-          candidate.column.name
-        );
-      }
-
-      if (
-        identityColumns.length >= 3
-      ) {
-        break;
-      }
-    }
-  }
-
-  const selectColumns = [
-    ...identityColumns,
-    metric.column.name,
-  ];
-
-  /**
-   * Preserve grouped aggregate rankings.
-   *
-   * IMPORTANT:
-   * repairRankingIdentityPlan() runs at the END of
-   * normalizePlannerPlan(). Previously it always forced the plan
-   * back to rank_rows, which undid an earlier rank_groups repair.
-   *
-   * Example:
-   *   "Which division has the highest average actual salary?"
-   *
-   * Must remain:
-   *   rank_groups + aggregation average + groupBy DIVISION
-   *
-   * while:
-   *   "Who has the highest actual salary?"
-   *
-   * remains:
-   *   rank_rows
-   */
-  const normalizedAggregation =
-    String(
-      plan?.aggregation ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-
-  /**
-   * A numeric metric should be ranked by its VALUE even when the
-   * wording contains "number of".
-   *
-   * The planner may encode:
-   *   aggregation = "count"
-   *
-   * for:
-   *   "most number of members"
-   *
-   * But when the metric has already resolved to a numeric field such as
-   * "No. of members", COUNT would count records per group and return 1
-   * for one-row associations. Clear that false count aggregation.
-   */
-  const countActuallyMeansNumericValue =
-    normalizedAggregation ===
-      "count" &&
-    metric?.column &&
-    isNumericLikeColumn({
-      column:
-        metric.column,
-
-      rows,
-    });
-
-  const groupedAggregation =
-    [
-      "sum",
-      "average",
-      "avg",
-      "mean",
-    ].includes(
-      normalizedAggregation
-    ) ||
-    (
-      normalizedAggregation ===
-        "count" &&
-      !countActuallyMeansNumericValue
-    );
-
-  const effectiveAggregation =
-    countActuallyMeansNumericValue
-      ? null
-      : normalizedAggregation;
-
-  const finalOperation =
-    groupedAggregation
-      ? "rank_groups"
-      : "rank_rows";
-
-  const finalLabelColumn =
-    identityColumns[0];
-
-  return {
-    ...plan,
-
-    dataset:
-      selectedDatasetName,
-
-    operation:
-      finalOperation,
-
-    column:
-      metric.column.name,
-
-    labelColumn:
-      finalLabelColumn,
-
-    groupBy:
-      groupedAggregation
-        ? finalLabelColumn
-        : null,
-
-    aggregation:
-      groupedAggregation
-        ? (
-            effectiveAggregation ===
-              "avg" ||
-            effectiveAggregation ===
-              "mean"
-              ? "average"
-              : effectiveAggregation
-          )
-        : null,
-
-    direction,
-
-    limit:
-      detectRankingLimit(
-        question
-      ),
-
-    selectColumns: [
-      ...new Set(
-        [
-          finalLabelColumn,
-          metric.column.name,
-        ].filter(Boolean)
-      ),
-    ],
-
-    outputRequested:
-      true,
-
-    showAll:
-      false,
-  };
-}
-
-
-/**
- * Normalize both Groq and local plans into the SAME execution shape.
- *
- * 1. Preserve every explicitly requested output column.
- * 2. Rebuild explicit multi-entity requests as OR-ed filter groups.
- * 3. Each entity group is a coherent AND-filter set from one real row.
- */
-
-function detectGroupedComparisonOperation(
-  question
-) {
-  const text =
-    normalizeText(question);
-
-  // Only repair explicit comparisons.
-  if (
-    !/\b(compare|comparison|versus|vs\.?)\b/.test(
-      text
-    )
-  ) {
-    return null;
-  }
-
-  if (
-    /\b(average|avg|mean)\b/.test(
-      text
-    )
-  ) {
-    return "group_average";
-  }
-
-  if (
-    /\b(total|sum|combined|overall|altogether)\b/.test(
-      text
-    )
-  ) {
-    return "group_sum";
-  }
-
-  if (
-    /\b(minimum|min|lowest|smallest|least)\b/.test(
-      text
-    )
-  ) {
-    return "group_minimum";
-  }
-
-  if (
-    /\b(maximum|max|highest|largest|greatest)\b/.test(
-      text
-    )
-  ) {
-    return "group_maximum";
-  }
-
-  if (
-    /\b(count|how many|number of)\b/.test(
-      text
-    )
-  ) {
-    return "group_count";
-  }
-
-  return null;
-}
-
-function normalizePlannerPlan({
-  datasets,
-  schema,
-  plan,
-  question,
-}) {
-  if (
-    !plan ||
-    typeof plan !== "object" ||
-    plan.route !== "dataset"
-  ) {
-    return plan;
-  }
-
-  const normalized = {
-    ...plan,
-
-    filters:
-      Array.isArray(plan.filters)
-        ? plan.filters.map(
-            (filter) => ({
-              ...filter,
-
-              value:
-                Array.isArray(
-                  filter?.value
-                )
-                  ? [...filter.value]
-                  : filter?.value,
-            })
-          )
-        : [],
-
-    selectColumns:
-      Array.isArray(
-        plan.selectColumns
-      )
-        ? [...plan.selectColumns]
-        : [],
-  };
-
-  const explicitColumns =
-    findExplicitSchemaColumns({
-      schema,
-      question,
-
-      preferredDataset:
-        normalized.dataset ||
-        null,
-    });
-
-  const rankingDirection =
-    detectRankingDirection(
-      question
-    );
-
-  /**
-   * ========================================================
-   * QUESTION-LEVEL AGGREGATION REPAIR
-   * ========================================================
-   *
-   * Groq can occasionally return a syntactically valid ranking plan
-   * while omitting aggregation, for example:
-   *
-   *   operation: "rank_rows"
-   *   column: "ACTUAL SALARY"
-   *   labelColumn: "DIVISION"
-   *   aggregation: null
-   *
-   * for:
-   *
-   *   "Which division has the highest average actual salary?"
-   *
-   * The word "average" is explicit in the user's question, so recover
-   * that intent deterministically before deciding between rank_rows and
-   * rank_groups.
-   *
-   * This is generic and schema/dataset agnostic.
-   */
-  const questionAggregation =
-    detectQuestionAggregation(
-      question
-    );
-
-  const normalizedOperationName =
-    String(
-      normalized.operation ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-
-  const isRankingOperation =
-    normalizedOperationName ===
-      "rank_rows" ||
-    normalizedOperationName ===
-      "rank_groups";
-
-  if (
-    isRankingOperation &&
-    !normalized.aggregation &&
-    questionAggregation
-  ) {
-    normalized.aggregation =
-      questionAggregation;
-  }
-
-  /**
-   * ========================================================
-   * RANKED AGGREGATE NORMALIZATION
-   * ========================================================
-   *
-   * A planner may return:
-   *
-   *   operation: "rank_rows"
-   *   aggregation: "average"
-   *   labelColumn: "..."
-   *
-   * for a question such as:
-   *
-   *   "Which division has the highest average salary?"
-   *
-   * That is logically a GROUP ranking, not a row ranking.
-   *
-   * Normalize this deterministically before execution.
-   * This is schema/dataset agnostic and works for any grouping field.
-   */
-  const normalizedAggregation =
-    String(
-      normalized.aggregation ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-
-  const isGroupedRankingAggregation =
-    [
-      "sum",
-      "average",
-      "avg",
-      "mean",
-      "count",
-    ].includes(
-      normalizedAggregation
-    );
-
-  if (
-    String(
-      normalized.operation ||
-      ""
-    )
-      .trim()
-      .toLowerCase() ===
-      "rank_rows" &&
-    isGroupedRankingAggregation &&
-    (
-      normalized.groupBy ||
-      normalized.labelColumn
-    )
-  ) {
-    normalized.operation =
-      "rank_groups";
-
-    normalized.groupBy =
-      normalized.groupBy ||
-      normalized.labelColumn;
-
-    normalized.labelColumn =
-      normalized.labelColumn ||
-      normalized.groupBy;
-
-    /**
-     * Keep selectColumns aligned with the grouping field + metric.
-     */
-    normalized.selectColumns = [
-      ...new Set(
-        [
-          normalized.groupBy,
-          normalized.column,
-          ...(
-            Array.isArray(
-              normalized.selectColumns
-            )
-              ? normalized.selectColumns
-              : []
-          ),
-        ].filter(Boolean)
-      ),
-    ];
-  }
-
-  /**
-   * Multiple explicitly named output columns normally mean a
-   * multi-field lookup. Do NOT apply that rule to ranking
-   * questions, where one field is often the identity/label and
-   * another is the numeric ranking metric.
-   */
-  if (
-    explicitColumns.length >= 2 &&
-    !rankingDirection
-  ) {
-    normalized.operation =
-      "lookup";
-
-    normalized.column =
-      null;
-
-    normalized.selectColumns =
-      explicitColumns.map(
-        (item) =>
-          item.column
-      );
-
-    normalized.outputRequested =
-      true;
-
-    normalized.transform =
-      null;
-
-    normalized.showAll =
-      true;
-  }
-
-  const rows =
-    datasets?.[
-      normalized.dataset
-    ];
-
-  const segments =
-  splitExplicitEntitySegments(
-    question
-  );
-
-if (
-  Array.isArray(rows) &&
-  rows.length &&
-  segments.length >= 2
-) {
-  const groups =
-    segments.map(
-      (segment) =>
-        inferCoherentFilters(
-          rows,
-          segment
-        )
-    );
-
-  if (
-    groups.every(
-      (filters) =>
-        filters.length > 0
-    )
-  ) {
-    const groupedOperation =
-      detectGroupedComparisonOperation(
-        question
-      );
-
-    // ========================================================
-    // ANALYTICAL COMPARISON
-    // ========================================================
-    if (groupedOperation) {
-      const groupMaps =
-        groups.map(
-          (filters) =>
-            new Map(
-              filters.map(
-                (filter) => [
-                  normalizeText(
-                    filter.column
-                  ),
-                  filter,
-                ]
-              )
-            )
-        );
-
-      // Find columns common to BOTH entities.
-      const commonColumns =
-        [
-          ...groupMaps[0].keys(),
-        ].filter(
-          (column) =>
-            groupMaps.every(
-              (map) =>
-                map.has(column)
-            )
-        );
-
-      const preferredGroup =
-        normalizeText(
-          normalized.groupBy ||
-          ""
-        );
-
-      let selectedGroupKey =
-        null;
-
-      // Prefer the groupBy already chosen by Groq/local planner.
-      if (
-        preferredGroup &&
-        commonColumns.includes(
-          preferredGroup
-        )
-      ) {
-        selectedGroupKey =
-          preferredGroup;
-      } else {
-        selectedGroupKey =
-          commonColumns[0] ||
-          null;
-      }
-
-      if (selectedGroupKey) {
-        const actualGroupColumn =
-          groupMaps[0]
-            .get(
-              selectedGroupKey
-            )
-            ?.column;
-
-        const groupValues = [
-        ...new Set(
-          groupMaps
-            .map(
-              (map) =>
-                map.get(
-                  selectedGroupKey
-                )
-                ?.value
-            )
-            .filter(
-              (value) =>
-                value !== null &&
-                value !== undefined &&
-                String(value).trim() !== ""
-            )
-        ),
-      ];
-
-        if (
-          actualGroupColumn &&
-          groupValues.length >= 2
-        ) {
-          // ========================================================
-          // RESOLVE THE METRIC COLUMN
-          // ========================================================
-
-          const selectedMetricColumns =
-            (
-              Array.isArray(
-                normalized.selectColumns
-              )
-                ? normalized.selectColumns
-                : []
-            ).filter(
-              (column) =>
-                normalizeText(
-                  column
-                ) !==
-                normalizeText(
-                  actualGroupColumn
-                )
-            );
-
-          let metricColumn =
-            normalized.column ||
-            null;
-
-          /**
-           * If exactly one selected column is NOT the group column,
-           * use that as the metric.
-           *
-           * Example:
-           *
-           * groupBy:
-           *   DIVISION
-           *
-           * selectColumns:
-           *   DIVISION
-           *   ACTUAL SALARY
-           *
-           * metric:
-           *   ACTUAL SALARY
-           */
-          if (
-            selectedMetricColumns.length ===
-            1
-          ) {
-            metricColumn =
-              selectedMetricColumns[0];
-          }
-
-          normalized.operation =
-            groupedOperation;
-
-          normalized.groupBy =
-            actualGroupColumn;
-
-          // IMPORTANT:
-          // overwrite the potentially wrong Groq metric.
-          normalized.column =
-            metricColumn;
-
-          normalized.filters = [
-            {
-              column:
-                actualGroupColumn,
-
-              operator:
-                "in",
-
-              value:
-                groupValues,
-            },
-          ];
-
-          // Remove raw entity groups because
-          // grouped calculation uses one shared IN filter.
-          delete normalized.filterGroups;
-          delete normalized.filterGroupLogic;
-
-          normalized.selectColumns = [
-            actualGroupColumn,
-            ...(metricColumn
-              ? [
-                  metricColumn,
-                ]
-              : []),
-          ];
-
-          normalized.outputRequested =
-            true;
-
-          normalized.showAll =
-            true;
-
-          normalized.limit =
-            100;
-        }
-      }
-    }
-
-    // ========================================================
-    // NORMAL MULTI-ENTITY LOOKUP / COMPARISON
-    // ========================================================
-    else {
-      normalized.filters =
-        [];
-
-      normalized.filterGroups =
-        groups.map(
-          (filters) => ({
-            logic:
-              "and",
-
-            filters,
-          })
-        );
-
-      normalized.filterGroupLogic =
-        "or";
-
-      normalized.operation =
-        "lookup";
-
-      normalized.showAll =
-        true;
-    }
-  }
-}
-
-  if (
-    Array.isArray(
-      normalized.filterGroups
-    )
-  ) {
-    normalized.filterGroups =
-      normalized.filterGroups
-        .map(
-          (group) => ({
-            logic:
-              String(
-                group?.logic ||
-                "and"
-              )
-                .trim()
-                .toLowerCase(),
-
-            filters:
-              Array.isArray(
-                group?.filters
-              )
-                ? group.filters
-                    .filter(Boolean)
-                    .map(
-                      (filter) => ({
-                        ...filter,
-
-                        operator:
-                          String(
-                            filter?.operator ||
-                            "equals"
-                          )
-                            .trim()
-                            .toLowerCase(),
-
-                        value:
-                          Array.isArray(
-                            filter?.value
-                          )
-                            ? [
-                                ...filter.value,
-                              ]
-                            : filter?.value,
-                      })
-                    )
-                : [],
-          })
-        )
-        .filter(
-          (group) =>
-            group.filters.length
-        );
-  }
-
-  return repairRankingIdentityPlan({
-    datasets,
-    schema,
-    plan:
-      normalized,
-    question,
-  });
-}
-
-/**
- * Detect a REAL schema column explicitly named by the user.
- *
- * This is intentionally deterministic and dataset-agnostic.
- *
- * Example:
- * schema column: "RainfedTotal Area Planted"
- * question:      "What is the total of Rainfed Total Area Planted?"
- *
- * The compact forms match:
- * "rainfedtotalareaplanted"
- *
- * This prevents a planner/fallback parser from replacing an
- * explicitly requested real field with a similar field.
- */
-function findExplicitSchemaColumn({
-  schema,
-  question,
-  preferredDataset = null,
-}) {
-  const normalizedQuestion =
-    normalizeExplicitColumnText(question);
-
-  const compactQuestion =
-    compactExplicitColumnText(question);
-
-  if (
-    !normalizedQuestion ||
-    !compactQuestion
-  ) {
-    return null;
-  }
-
-  const candidates = [];
-
-  for (const dataset of schema || []) {
-    if (
-      preferredDataset &&
-      String(dataset?.name || "") !==
-        String(preferredDataset)
-    ) {
-      continue;
-    }
-
-    for (const column of dataset?.columns || []) {
-      const name =
-        column?.name;
-
-      if (!name) {
-        continue;
-      }
-
-      const normalizedColumn =
-        normalizeExplicitColumnText(name);
-
-      const compactColumn =
-        compactExplicitColumnText(name);
-
-      if (
-        !normalizedColumn ||
-        !compactColumn
-      ) {
-        continue;
-      }
-
-      let score = 0;
-
-      if (
-        normalizedQuestion ===
-        normalizedColumn
-      ) {
-        score = 100;
-      } else if (
-        compactQuestion ===
-        compactColumn
-      ) {
-        score = 99;
-      } else if (
-        normalizedQuestion.includes(
-          normalizedColumn
-        )
-      ) {
-        score =
-          95 +
-          normalizedColumn.length / 10000;
-      } else if (
-        compactQuestion.includes(
-          compactColumn
-        )
-      ) {
-        score =
-          94 +
-          compactColumn.length / 10000;
-      }
-
-      if (score > 0) {
-        candidates.push({
-          dataset:
-            dataset.name,
-
-          column:
-            name,
-
-          score,
-
-          length:
-            compactColumn.length,
-        });
-      }
-    }
-  }
-
-  if (
-    !candidates.length &&
-    preferredDataset
-  ) {
-    return findExplicitSchemaColumn({
-      schema,
-      question,
-      preferredDataset: null,
-    });
-  }
-
-  candidates.sort(
-    (a, b) =>
-      b.score - a.score ||
-      b.length - a.length
-  );
-
-  return candidates[0] || null;
-}
-
-function operationUsesMetricColumn(
-  operation
-) {
-  return new Set([
-    "sum",
-    "average",
-    "median",
-    "minimum",
-    "maximum",
-    "non_empty_count",
-    "distinct_count",
-    "list",
-    "rank_rows",
-    "rank_groups",
-    "group_sum",
-    "group_average",
-    "group_minimum",
-    "group_maximum",
-  ]).has(
-    String(operation || "")
-      .trim()
-      .toLowerCase()
-  );
-}
-
-/**
- * Last planner-independent safeguard.
- *
- * If the user explicitly names a real schema column, preserve
- * that exact column even when Groq or the local fallback chose
- * a similar one.
- */
-function enforceExplicitQuestionColumn({
-  plan,
-  schema,
-  question,
-}) {
-  if (
-    !plan ||
-    plan.route !== "dataset" ||
-    !operationUsesMetricColumn(
-      plan.operation
-    )
-  ) {
-    return plan;
-  }
-
-  const normalizedOperation =
-    String(plan.operation || "")
-      .trim()
-      .toLowerCase();
-
-  /**
-   * Ranking and grouped calculation plans already have
-   * their metric and grouping columns resolved.
-   *
-   * Do not let the single-column safeguard overwrite them.
-   */
-  if (
-    normalizedOperation === "rank_rows" ||
-    normalizedOperation === "rank_groups" ||
-    normalizedOperation === "group_sum" ||
-    normalizedOperation === "group_average" ||
-    normalizedOperation === "group_minimum" ||
-    normalizedOperation === "group_maximum" ||
-    normalizedOperation === "group_count"
-  ) {
-    return plan;
-  }
-
-  const match =
-    findExplicitSchemaColumn({
-      schema,
-      question,
-
-      preferredDataset:
-        plan.dataset || null,
-    });
-
-  if (!match) {
-    return plan;
-  }
-
-  const resolved = {
-    ...plan,
-
-    column:
-      match.column,
-
-    dataset:
-      match.dataset ||
-      plan.dataset,
-  };
-
-  if (
-    String(plan.operation || "")
-      .trim()
-      .toLowerCase() === "list"
-  ) {
-    resolved.selectColumns = [
-      match.column,
-    ];
-  }
-
-  return resolved;
-}
-
-/**
- * ==========================================================
- * APPLY CONVERSATION CONTEXT
- * ==========================================================
- *
- * Allows follow-up questions such as:
- *
- * "What is the salary of Roberto?"
- * "What is his position?"
- *
- * or:
- *
- * "What is Roberto's position?"
- * "What about Vener?"
- */
-function getSchemaColumns(
-  schema,
-  preferredDataset = null
-) {
-  const results = [];
-
-  for (const dataset of schema || []) {
-    if (
-      preferredDataset &&
-      String(dataset?.name || "") !==
-        String(preferredDataset)
-    ) {
-      continue;
-    }
-
-    for (const column of dataset?.columns || []) {
-      if (!column?.name) continue;
-
-      results.push({
-        dataset:
-          dataset.name,
-
-        column:
-          column.name,
-      });
-    }
-  }
-
-  return results;
-}
-
-function inferRequestedColumnFromQuestion({
-  schema,
-  question,
-  preferredDataset = null,
-  excludedColumns = [],
-}) {
-  const normalizedQuestion =
-    normalizeText(question);
-
-  if (!normalizedQuestion) {
-    return null;
-  }
-
-  const excluded =
-    new Set(
-      (excludedColumns || [])
-        .filter(Boolean)
-        .map(
-          (column) =>
-            normalizeText(column)
-        )
-    );
-
-  const preferred =
-    getSchemaColumns(
-      schema,
-      preferredDataset
-    );
-
-  const fallback =
-    preferred.length
-      ? preferred
-      : getSchemaColumns(
-          schema,
-          null
-        );
-
-  let best = null;
-
-  for (const candidate of fallback) {
-    const normalizedColumn =
-      normalizeText(
-        candidate.column
-      );
-
-    if (
-      !normalizedColumn ||
-      excluded.has(
-        normalizedColumn
-      )
-    ) {
-      continue;
-    }
-
-    let score =
-      similarity(
-        normalizedQuestion,
-        normalizedColumn
-      );
-
-    /**
-     * Strong exact phrase signal.
-     *
-     * Example:
-     * "how about actual salary"
-     * contains the real column label
-     * "ACTUAL SALARY".
-     */
-    if (
-      normalizedQuestion.includes(
-        normalizedColumn
-      )
-    ) {
-      score =
-        Math.max(
-          score,
-          1
-        );
-    } else {
-      /**
-       * Also compare shorter question phrases against
-       * the column name so wording such as:
-       *
-       * "how about the actual salary"
-       *
-       * still resolves dynamically.
-       */
-      const words =
-        normalizedQuestion
-          .split(/\s+/)
-          .filter(Boolean);
-
-      const columnWords =
-        normalizedColumn
-          .split(/\s+/)
-          .filter(Boolean);
-
-      const maxSize =
-        Math.min(
-          Math.max(
-            columnWords.length,
-            1
-          ),
-          words.length
-        );
-
-      for (
-        let size = 1;
-        size <= maxSize;
-        size += 1
-      ) {
-        for (
-          let i = 0;
-          i <= words.length - size;
-          i += 1
-        ) {
-          const phrase =
-            words
-              .slice(
-                i,
-                i + size
-              )
-              .join(" ");
-
-          score =
-            Math.max(
-              score,
-              similarity(
-                phrase,
-                normalizedColumn
-              )
-            );
-        }
-      }
-    }
-
-    if (
-      !best ||
-      score > best.score
-    ) {
-      best = {
-        dataset:
-          candidate.dataset,
-
-        column:
-          candidate.column,
-
-        score,
-      };
-    }
-  }
-
-  /**
-   * Be conservative.
-   *
-   * Exact/near-exact column wording should pass.
-   * Weak guesses should not silently change context.
-   */
-  if (
-    !best ||
-    best.score < 0.72
-  ) {
-    return null;
-  }
-
-  return best;
-}
-
-/**
- * ==========================================================
- * APPLY CONVERSATION CONTEXT
- * ==========================================================
- *
- * Dynamic follow-up resolution.
- *
- * No employee name, field name, worksheet name, division,
- * province, municipality, or other dataset value is hardcoded.
- *
- * Supports:
- *
- * 1. Same entity + new field
- *    "authorized salary of [person]"
- *    "how about actual salary"
- *
- * 2. New entity + same field
- *    "position of [person A]"
- *    "what about [person B]"
- *
- * 3. Pronoun follow-ups
- *    "what is his position title?"
- */
-
-
-function inferRememberedSubjectColumn({
-  schema,
-  datasetName,
-  previousQuestion,
-  context,
-}) {
-  /**
-   * Prefer an already verified remembered subject.
-   */
-  if (
-    context?.lastSubjectColumn
-  ) {
-    return context.lastSubjectColumn;
-  }
-
-  const previousPlan =
-    context?.lastPlan;
-
-  if (
-    previousPlan?.column
-  ) {
-    return previousPlan.column;
-  }
-
-  if (
-    Array.isArray(
-      previousPlan?.selectColumns
-    ) &&
-    previousPlan.selectColumns.length ===
-      1 &&
-    previousPlan.selectColumns[0]
-  ) {
-    return previousPlan.selectColumns[0];
-  }
-
-  const datasetSchema =
-    (schema || []).find(
-      (item) =>
-        String(
-          item?.name || ""
-        ) ===
-        String(
-          datasetName || ""
-        )
-    );
-
-  if (
-    !datasetSchema ||
-    !Array.isArray(
-      datasetSchema.columns
-    ) ||
-    !datasetSchema.columns.length
-  ) {
-    return null;
-  }
-
-  const text =
-    normalizeText(
-      previousQuestion || ""
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  /**
-   * Extract the noun phrase that was counted/listed in the previous
-   * question.
-   *
-   * Examples:
-   *   "How many associations are in La Union?"
-   *       -> associations
-   *   "How many employees are in ORED?"
-   *       -> employees
-   *   "Count completed projects"
-   *       -> completed projects
-   */
-  let target = "";
-
-  const patterns = [
-    /\bhow many\s+(.+?)(?:\s+(?:are|is|were|was|in|from|within|for)\b|$)/i,
-    /\bnumber of\s+(.+?)(?:\s+(?:are|is|were|was|in|from|within|for)\b|$)/i,
-    /\bcount(?: of)?\s+(.+?)(?:\s+(?:are|is|were|was|in|from|within|for)\b|$)/i,
-    /\blist\s+(.+?)(?:\s+(?:in|from|within|for)\b|$)/i,
-    /\bshow\s+(.+?)(?:\s+(?:in|from|within|for)\b|$)/i,
-  ];
-
-  for (
-    const pattern of patterns
-  ) {
-    const match =
-      text.match(
-        pattern
-      );
-
-    if (match?.[1]) {
-      target =
-        normalizeText(
-          match[1]
-        )
-          .replace(
-            /\b(?:the|all|total|unique|distinct|different)\b/g,
-            " "
-          )
-          .replace(
-            /\s+/g,
-            " "
-          )
-          .trim();
-
-      break;
-    }
-  }
-
-  if (!target) {
-    return null;
-  }
-
-  const singularizeLoose = (
-    value
-  ) => {
-    const token =
-      String(
-        value || ""
-      );
-
-    if (
-      token.endsWith(
-        "ies"
-      ) &&
-      token.length > 3
-    ) {
-      return (
-        token.slice(
-          0,
-          -3
-        ) +
-        "y"
-      );
-    }
-
-    if (
-      token.endsWith(
-        "ses"
-      ) &&
-      token.length > 3
-    ) {
-      return token.slice(
-        0,
-        -2
-      );
-    }
-
-    if (
-      token.endsWith(
-        "s"
-      ) &&
-      !token.endsWith(
-        "ss"
-      ) &&
-      token.length > 2
-    ) {
-      return token.slice(
-        0,
-        -1
-      );
-    }
-
-    return token;
-  };
-
-  const targetTokens =
-    target
-      .split(
-        /\s+/
-      )
-      .filter(Boolean)
-      .map(
-        singularizeLoose
-      );
-
-  const candidates =
-    datasetSchema.columns
-      .filter(
-        (column) =>
-          column?.name
-      )
-      .map(
-        (column) => {
-          const name =
-            normalizeText(
-              column.name
-            );
-
-          const nameTokens =
-            name
-              .split(
-                /\s+/
-              )
-              .filter(Boolean)
-              .map(
-                singularizeLoose
-              );
-
-          let score =
-            scoreTargetToColumn(
-              target,
-              column.name
-            );
-
-          const overlap =
-            targetTokens.filter(
-              (token) =>
-                nameTokens.includes(
-                  token
-                )
-            ).length;
-
-          if (
-            targetTokens.length
-          ) {
-            score +=
-              overlap /
-              targetTokens.length;
-          }
-
-          /**
-           * Generic identity/display-field bonus.
-           *
-           * If the target noun occurs in a text field with "name",
-           * that field is usually the natural value to list.
-           *
-           * association -> Name of Association
-           * employee    -> Employee Name
-           * project     -> Project Name
-           */
-          if (
-            column.type !==
-              "number" &&
-            /\bname\b/.test(
-              name
-            ) &&
-            overlap > 0
-          ) {
-            score += 1.25;
-          }
-
-          /**
-           * Avoid choosing a numeric measure when a text identity field
-           * has comparable evidence.
-           */
-          if (
-            column.type ===
-              "number"
-          ) {
-            score -= 0.4;
-          }
-
-          return {
-            name:
-              column.name,
-            score,
-          };
-        }
-      )
-      .sort(
-        (a, b) =>
-          b.score -
-          a.score
-      );
-
-  return (
-    candidates[0]?.score >=
-      0.75
-      ? candidates[0].name
-      : null
-  );
-}
-
-
-
-
-function tokenizeSchemaPhrase(
-  value
-) {
-  return normalizeText(
-    value
-  )
-    .replace(
-      /&/g,
-      " and "
-    )
-    .replace(
-      /[^\p{L}\p{N}\s]/gu,
-      " "
-    )
-    .split(
-      /\s+/
-    )
-    .map(
-      (token) =>
-        token.trim()
-    )
-    .filter(Boolean)
-    .map(
-      (token) => {
-        if (
-          token.endsWith(
-            "ies"
-          ) &&
-          token.length > 3
-        ) {
-          return (
-            token.slice(
-              0,
-              -3
-            ) +
-            "y"
-          );
-        }
-
-        if (
-          token.endsWith(
-            "s"
-          ) &&
-          !token.endsWith(
-            "ss"
-          ) &&
-          token.length > 3
-        ) {
-          return token.slice(
-            0,
-            -1
-          );
-        }
-
-        return token;
-      }
-    );
-}
-
-
-function scoreNaturalFieldPhrase(
-  requestedPhrase,
-  columnName
-) {
-  const requestedTokens =
-    tokenizeSchemaPhrase(
-      requestedPhrase
-    );
-
-  const columnTokens =
-    tokenizeSchemaPhrase(
-      columnName
-    );
-
-  if (
-    !requestedTokens.length ||
-    !columnTokens.length
-  ) {
-    return 0;
-  }
-
-  const requestedSet =
-    new Set(
-      requestedTokens
-    );
-
-  const columnSet =
-    new Set(
-      columnTokens
-    );
-
-  const overlap =
-    requestedTokens.filter(
-      (token) =>
-        columnSet.has(
-          token
-        )
-    ).length;
-
-  const coverage =
-    overlap /
-    requestedTokens.length;
-
-  const reverseCoverage =
-    overlap /
-    columnTokens.length;
-
-  const compactRequested =
-    requestedTokens.join(
-      " "
-    );
-
-  const compactColumn =
-    columnTokens.join(
-      " "
-    );
-
-  let score =
-    coverage *
-      1.5 +
-    reverseCoverage *
-      0.5;
-
-  if (
-    compactRequested ===
-      compactColumn
-  ) {
-    score += 1.5;
-  } else if (
-    compactColumn.includes(
-      compactRequested
-    ) ||
-    compactRequested.includes(
-      compactColumn
-    )
-  ) {
-    score += 0.75;
-  }
-
-  return score;
-}
-
-
-function inferApproximateEntityFilterFromText({
-  rows,
-  identifierText,
-}) {
-  if (
-    !Array.isArray(rows) ||
-    !rows.length
-  ) {
-    return [];
-  }
-
-  const target =
-    normalizeText(
-      identifierText
-    );
-
-  if (!target) {
-    return [];
-  }
-
-  const candidates = [];
-
-  const columns =
-    Object.keys(
-      rows[0] || {}
-    );
-
-  for (const column of columns) {
-    const seen =
-      new Set();
-
-    for (const row of rows) {
-      const raw =
-        row?.[column];
-
-      if (
-        raw === null ||
-        raw === undefined
-      ) {
-        continue;
-      }
-
-      const value =
-        String(raw).trim();
-
-      if (
-        !value ||
-        value.length > 120 ||
-        /^[-+]?\d[\d,]*(?:\.\d+)?$/.test(
-          value
-        )
-      ) {
-        continue;
-      }
-
-      const normalizedValue =
-        normalizeText(value);
-
-      if (
-        !normalizedValue ||
-        seen.has(normalizedValue)
-      ) {
-        continue;
-      }
-
-      seen.add(
-        normalizedValue
-      );
-
-      let score =
-        Math.max(
-          similarity(
-            target,
-            normalizedValue
-          ),
-
-          normalizedEditSimilarity(
-            target,
-            normalizedValue
-          )
-        );
-
-      if (
-        target ===
-          normalizedValue
-      ) {
-        score = 1;
-      } else if (
-        target.includes(
-          normalizedValue
-        ) ||
-        normalizedValue.includes(
-          target
-        )
-      ) {
-        score =
-          Math.max(
-            score,
-            0.94
-          );
-      }
-
-      /**
-       * Conservative but typo-tolerant entity matching.
-       *
-       * The follow-up resolver already uses edit similarity because real
-       * report values and user spelling can differ slightly. Standalone
-       * direct questions should use the same evidence.
-       */
-      if (score >= 0.72) {
-        candidates.push({
-          column,
-          value,
-          score,
-        });
-      }
-    }
-  }
-
-  candidates.sort(
-    (a, b) =>
-      b.score - a.score
-  );
-
-  if (!candidates.length) {
-    return [];
-  }
-
-  if (
-    candidates.length > 1 &&
-    candidates[0].column !==
-      candidates[1].column &&
-    Math.abs(
-      candidates[0].score -
-      candidates[1].score
-    ) < 0.025
-  ) {
-    return [];
-  }
-
-  return [
-    {
-      column:
-        candidates[0].column,
-
-      operator:
-        "equals",
-
-      value:
-        candidates[0].value,
-    },
-  ];
-}
-
-
-/**
- * Resolve standalone filtered numeric aggregate questions before Groq.
- *
- * Examples of the shape handled:
- *   "what is the total <metric> in <entity>"
- *   "what is the average <metric> for <entity>"
- *
- * Both the metric column and entity filter are discovered dynamically
- * from the live schema/data. Minor wording typos are tolerated through
- * existing schema similarity plus a conservative entity-value fallback.
- */
-function resolveDirectFilteredAggregatePlan({
-  question,
-  schema,
-  datasets,
-}) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  const aggregation =
-    detectQuestionAggregation(
-      question
-    );
-
-  if (
-    !aggregation ||
-    ![
-      "sum",
-      "average",
-      "count",
-    ].includes(
-      aggregation
-    )
-  ) {
-    return null;
-  }
-
-  const match =
-    text.match(
-      /^(?:what|which|show|give|tell me|get|find|calculate|compute)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:in|at|within|inside|under|for|from)\s+(.+?)\??$/
-    );
-
-  if (
-    !match?.[1] ||
-    !match?.[2]
-  ) {
-    return null;
-  }
-
-  const requestedPhrase =
-    match[1]
-      .replace(
-        /\b(?:total|sum|combined|overall|altogether|average|avg|mean|count|number of|how many)\b/g,
-        " "
-      )
-      .replace(
-        /\s+/g,
-        " "
-      )
-      .trim();
-
-  const identifierText =
-    match[2]
-      .replace(
-        /[?.!]+$/g,
-        ""
-      )
-      .trim();
-
-  if (
-    !requestedPhrase ||
-    !identifierText
-  ) {
-    return null;
-  }
-
-  const candidates = [];
-
-  for (
-    const datasetSchema
-    of schema || []
-  ) {
-    const datasetName =
-      datasetSchema?.name;
-
-    const rows =
-      datasets?.[
-        datasetName
-      ];
-
-    if (
-      !datasetName ||
-      !Array.isArray(rows) ||
-      !rows.length
-    ) {
-      continue;
-    }
-
-    let filters =
-      inferCoherentFilters(
-        rows,
-        identifierText
-      );
-
-    if (
-      !Array.isArray(filters) ||
-      !filters.length
-    ) {
-      filters =
-        inferApproximateEntityFilterFromText({
-          rows,
-          identifierText,
-        });
-    }
-
-    if (
-      !Array.isArray(filters) ||
-      !filters.length
-    ) {
-      continue;
-    }
-
-    const excludedColumns =
-      new Set(
-        filters
-          .map(
-            (filter) =>
-              normalizeText(
-                filter?.column
-              )
-          )
-          .filter(Boolean)
-      );
-
-    const metricCandidates =
-      (datasetSchema.columns || [])
-        .filter(
-          (column) =>
-            column?.name &&
-            !excludedColumns.has(
-              normalizeText(
-                column.name
-              )
-            )
-        )
-        .filter(
-          (column) =>
-            aggregation ===
-              "count" ||
-            isNumericLikeColumn({
-              column,
-              rows,
-            })
-        )
-        .map(
-          (column) => {
-            const naturalScore =
-              scoreNaturalFieldPhrase(
-                requestedPhrase,
-                column.name
-              );
-
-            const fuzzyScore =
-              similarity(
-                normalizeText(
-                  requestedPhrase
-                ),
-                normalizeText(
-                  column.name
-                )
-              );
-
-            /**
-             * scoreNaturalFieldPhrase rewards shared schema words while
-             * similarity tolerates small typing errors such as
-             * "land are" -> "land area".
-             */
-            const score =
-              Math.max(
-                naturalScore,
-                fuzzyScore * 2.5
-              );
-
-            return {
-              column,
-              score,
-            };
-          }
-        )
-        .sort(
-          (a, b) =>
-            b.score -
-            a.score
-        );
-
-    const metric =
-      metricCandidates[0] ||
-      null;
-
-    if (
-      !metric ||
-      metric.score < 1.15
-    ) {
-      continue;
-    }
-
-    /**
-     * If two different metrics are effectively tied, do not guess.
-     */
-    if (
-      metricCandidates.length >
-        1 &&
-      Math.abs(
-        metricCandidates[0]
-          .score -
-        metricCandidates[1]
-          .score
-      ) < 0.08
-    ) {
-      continue;
-    }
-
-    candidates.push({
-      dataset:
-        datasetName,
-
-      column:
-        metric.column.name,
-
-      score:
-        metric.score,
-
-      filters,
-    });
-  }
-
-  if (!candidates.length) {
-    /**
-     * Final generic fallback:
-     * resolve the requested output column across the live schema first,
-     * then independently recover the entity filter from that dataset.
-     *
-     * This prevents a strong field phrase such as
-     * "climate related risks" from being lost merely because the first
-     * combined pass was too conservative.
-     */
-    const explicitField =
-      inferRequestedColumnFromQuestion({
-        schema,
-        question:
-          requestedPhrase,
-      });
-
-    if (explicitField) {
-      const rows =
-        datasets?.[
-          explicitField.dataset
-        ];
-
-      if (
-        Array.isArray(rows) &&
-        rows.length
-      ) {
-        let filters =
-          inferCoherentFilters(
-            rows,
-            identifierText
-          );
-
-        if (
-          !Array.isArray(filters) ||
-          !filters.length
-        ) {
-          filters =
-            inferApproximateEntityFilterFromText({
-              rows,
-              identifierText,
-            });
-        }
-
-        if (
-          Array.isArray(filters) &&
-          filters.length
-        ) {
-          candidates.push({
-            dataset:
-              explicitField.dataset,
-
-            column:
-              explicitField.column,
-
-            fieldScore:
-              explicitField.score ||
-              0.95,
-
-            filters,
-          });
-        }
-      }
-    }
-  }
-
-  if (!candidates.length) {
-    return null;
-  }
-
-  candidates.sort(
-    (a, b) =>
-      b.score - a.score
-  );
-
-  if (
-    candidates.length > 1 &&
-    candidates[0].dataset !==
-      candidates[1].dataset &&
-    Math.abs(
-      candidates[0].score -
-      candidates[1].score
-    ) < 0.03
-  ) {
-    return null;
-  }
-
-  const best =
-    candidates[0];
-
-  const operation =
-    aggregation === "count"
-      ? "non_empty_count"
-      : aggregation;
-
-  return {
-    route:
-      "dataset",
-
-    dataset:
-      best.dataset,
-
-    operation,
-
-    column:
-      best.column,
-
-    labelColumn:
-      null,
-
-    groupBy:
-      null,
-
-    aggregation:
-      aggregation === "count"
-        ? "count"
-        : aggregation,
-
-    direction:
-      null,
-
-    filters:
-      best.filters.map(
-        (filter) => ({
-          ...filter,
-
-          value:
-            Array.isArray(
-              filter?.value
-            )
-              ? [...filter.value]
-              : filter?.value,
-        })
-      ),
-
-    selectColumns: [
-      best.column,
-    ],
-
-    outputRequested:
-      true,
-
-    transform:
-      null,
-
-    limit:
-      10,
-
-    showAll:
-      false,
-
-    directFilteredAggregate:
-      true,
-  };
-}
-
-
-function resolveDirectFilteredFieldPlan({
-  question,
-  schema,
-  datasets,
-}) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  /**
-   * Direct field + entity/location/value questions.
-   *
-   * Examples:
-   *   "What are the climate related risks in Solsona?"
-   *   "What are the commodities in Dingras?"
-   *   "Which projects are in San Fernando?"
-   *   "What is the enterprise in Barangay X?"
-   *
-   * The field and filter value are both resolved from live schema/data.
-   */
-  const match =
-    text.match(
-      /^(?:what|which|who|show|give|list|display|tell me|get|find)\s+(?:(?:is|are|was|were)\s+)?(?:the\s+)?(.+?)\s+(?:in|at|within|inside|under|for|from|of)\s+(.+?)\??$/
-    );
-
-  if (
-    !match?.[1] ||
-    !match?.[2]
-  ) {
-    return null;
-  }
-
-  const requestedPhrase =
-    match[1]
-      .trim();
-
-  const identifierText =
-    match[2]
-      .replace(
-        /[?.!]+$/g,
-        ""
-      )
-      .trim();
-
-  if (
-    !requestedPhrase ||
-    !identifierText
-  ) {
-    return null;
-  }
-
-  const candidates = [];
-
-  for (
-    const datasetSchema
-    of schema || []
-  ) {
-    const rows =
-      datasets?.[
-        datasetSchema?.name
-      ];
-
-    if (
-      !Array.isArray(
-        rows
-      ) ||
-      !rows.length
-    ) {
-      continue;
-    }
-
-    let filters =
-      inferCoherentFilters(
-        rows,
-        identifierText
-      );
-
-    /**
-     * The typed entity can differ slightly from the stored value
-     * (for example a small spelling typo). Use the same conservative,
-     * data-driven fuzzy entity recovery used by numeric aggregates.
-     */
-    if (
-      !Array.isArray(
-        filters
-      ) ||
-      !filters.length
-    ) {
-      filters =
-        inferApproximateEntityFilterFromText({
-          rows,
-          identifierText,
-        });
-    }
-
-    if (
-      !Array.isArray(
-        filters
-      ) ||
-      !filters.length
-    ) {
-      continue;
-    }
-
-    const columns =
-      Array.isArray(
-        datasetSchema.columns
-      )
-        ? datasetSchema.columns
-        : [];
-
-    const bestColumn =
-      columns
-        .map(
-          (column) => {
-            const naturalScore =
-              scoreNaturalFieldPhrase(
-                requestedPhrase,
-                column?.name
-              );
-
-            const fuzzyScore =
-              Math.max(
-                similarity(
-                  normalizeText(
-                    requestedPhrase
-                  ),
-                  normalizeText(
-                    column?.name
-                  )
-                ),
-
-                normalizedEditSimilarity(
-                  normalizeText(
-                    requestedPhrase
-                  ),
-                  normalizeText(
-                    column?.name
-                  )
-                )
-              );
-
-            return {
-              column,
-
-              score:
-                Math.max(
-                  naturalScore,
-                  fuzzyScore * 2
-                ),
-            };
-          }
-        )
-        .sort(
-          (a, b) =>
-            b.score -
-            a.score
-        )[0] ||
-      null;
-
-    if (
-      !bestColumn ||
-      bestColumn.score <
-        0.95
-    ) {
-      continue;
-    }
-
-    candidates.push({
-      dataset:
-        datasetSchema.name,
-
-      column:
-        bestColumn.column.name,
-
-      fieldScore:
-        bestColumn.score,
-
-      filters,
-    });
-  }
-
-  if (!candidates.length) {
-    return null;
-  }
-
-  candidates.sort(
-    (a, b) =>
-      b.fieldScore -
-      a.fieldScore
-  );
-
-  const best =
-    candidates[0];
-
-  /**
-   * Avoid auto-picking when two worksheets are genuinely tied.
-   */
-  if (
-    candidates.length > 1 &&
-    Math.abs(
-      candidates[0].fieldScore -
-      candidates[1].fieldScore
-    ) <
-      0.05 &&
-    candidates[0].column !==
-      candidates[1].column
-  ) {
-    return null;
-  }
-
-  const asksForList =
-    /^(?:what|which)\s+are\b/.test(
-      text
-    ) ||
-    /^(?:show|give|list|display)\b/.test(
-      text
-    );
-
-  return {
-    route:
-      "dataset",
-
-    dataset:
-      best.dataset,
-
-    operation:
-      asksForList
-        ? "list"
-        : "lookup",
-
-    column:
-      best.column,
-
-    labelColumn:
-      asksForList
-        ? best.column
-        : null,
-
-    groupBy:
-      null,
-
-    aggregation:
-      null,
-
-    direction:
-      null,
-
-    filters:
-      best.filters.map(
-        (filter) => ({
-          ...filter,
-
-          value:
-            Array.isArray(
-              filter?.value
-            )
-              ? [
-                  ...filter.value,
-                ]
-              : filter?.value,
-        })
-      ),
-
-    selectColumns: [
-      best.column,
-    ],
-
-    outputRequested:
-      true,
-
-    transform:
-      null,
-
-    showAll:
-      asksForList,
-
-    limit:
-      asksForList
-        ? 100
-        : 10,
-
-    directFilteredField:
-      true,
-  };
-}
+const {
+  detectColumnAmbiguity,
+} = require("./columnMatcher");
+
+const {
+  inferMetricSemantics,
+  inferUnitFromColumn,
+} = require("./semanticDictionary");
+
+const {
+  discoverWorksheetRelationships,
+} = require("./relationshipEngine");
+
+const {
+  hardenLocalPlan,
+  reconcileExplicitDatasetMention,
+} = require("./localPlannerHardener");
+
+const {
+  buildCrossWorksheetGroupedRankingResolution,
+  executeCrossWorksheetGroupedPlan,
+  buildDistributedWorksheetResolution,
+  buildDistributedWorksheetFollowUpResolution,
+  executeDistributedWorksheetPlan,
+} = require("./multiWorksheetEngine");
+
+const {
+  refineStoredMetricOperation,
+  enrichPlanMetricMeaning,
+} = require("./metricMeaningEngine");
+
+const {
+  attachLocalConfidence,
+  evaluateLocalPlanConfidence,
+} = require("./planConfidenceEngine");
+
+const {
+  buildSemanticVerifiedAnswer,
+} = require("./responseNarrativeEngine");
+
+const {
+  finalizeUserFacingGrammar,
+} = require("./responseGrammarEngine");
+
+const {
+  chooseContinuitySubjectColumn,
+  rewriteContinuityQuestionWithFilters,
+  shouldPreferExplicitValueFilter,
+} = require("./followUpContinuityEngine");
+
+const {
+  normalizeExplicitColumnText,
+  compactExplicitColumnText,
+  expandExplicitColumnWords,
+  buildExplicitColumnAliases,
+  findExplicitSchemaColumns,
+  splitExplicitEntitySegments,
+  detectQuestionAggregation,
+  detectRankingDirection,
+  detectRankingLimit,
+  looksNumericValue,
+  isNumericLikeColumn,
+  parseRankingTargets,
+  scoreTargetToColumn,
+  sanitizeRankingStructuralFilters,
+  repairRankingIdentityPlan,
+  detectGroupedComparisonOperation,
+  resolveExplicitRankingColumns,
+  currentQuestionOverridesAnalyticalGroup,
+  sanitizeSemanticPlanFilters,
+  repairSemanticAggregatePlan,
+  recoverHighConfidenceAggregateClarification,
+  repairListOutputColumn,
+  normalizePlannerPlan,
+  singularizeSchemaToken,
+  normalizeSchemaPhraseMorphology,
+  findStrongMorphologicalQuestionColumn,
+  findExplicitSchemaColumn,
+  operationUsesMetricColumn,
+  enforceExplicitQuestionColumn,
+  getSchemaColumns,
+  inferRequestedColumnFromQuestion,
+  inferRememberedSubjectColumn,
+} = require("./plannerNormalizer");
+
+const {
+  getUniqueColumnValues,
+  tokenSimilarity,
+  buildQuestionNgrams,
+  questionValueMatchScore,
+  questionContainsValue,
+  collectQuestionMatchesForColumn,
+  hasExplicitMultiEntityRequest,
+  repairMultiEntityFilters,
+  detectAnalyticalAggregationFollowUp,
+  detectAnalyticalRankIndexFollowUp,
+  detectAnalyticalLimitFollowUp,
+  detectAnalyticalDirectionFollowUp,
+  isAnalyticalTransformQuestion,
+  aggregationToGroupedOperation,
+  detectAnalyticalExtremeComparison,
+  getLastVerifiedAnalyticalLabel,
+  detectAnalyticalExclusions,
+  mergeAnalyticalExclusionFilter,
+  buildAnalyticalFollowUpPlan,
+  hasPluralSelectionReference,
+  buildMultiRowFieldFollowUpPlan,
+  detectPreviousResultIdentityRequest,
+  getDatasetSchema,
+  findPreviousResultIdentityColumn,
+  valuesMatchForPreviousResult,
+  buildPreviousResultIdentityPlan,
+  detectComparisonRequest,
+  formatAnalyticalNumber,
+  getVerifiedAnalyticalPair,
+  cleanAnalyticalLabel,
+  getVerifiedAnalyticalSet,
+  detectRequestedResultSubset,
+  detectMultiResultIntent,
+  findExplicitAnalyticalItems,
+  calculateMedian,
+  analyzeVerifiedAnalyticalSet,
+  compareVerifiedAnalyticalPair,
+  formatConversationNumber,
+  ordinalLabel,
+  ordinalDirectionLabel,
+  buildOrdinalAnalyticalAnswer,
+  containsNormalizedPhrase,
+  isUsefulCategoryColumn,
+  findMentionedCategoriesInDataset,
+  buildMultiCategoryCountResolution,
+} = require("./analyticalConversationEngine");
+
+const {
+  resolveDirectFilteredAggregatePlan,
+  resolveDirectFilteredFieldPlan,
+  normalizedEditSimilarity,
+} = require("./directQueryResolver");
+
+const {
+  currentQuestionRequiresReplan,
+} = require("./currentQuestionOverrideEngine");
+
+const {
+  resolveStrongLocalSemanticPlan,
+  hasExplicitAbsenceIntent,
+} = require("./localSemanticResolver");
+
+const {
+  ensureLocalPlannerParity,
+} = require("./localPlannerParityEngine");
+
+const {
+  resolveComplexFilterPlan,
+} = require("./complexFilterParityEngine");
+
+const {
+  decomposeComplexQuestion,
+} = require("./complexQuestionParityEngine");
+
+const {
+  enforceUniversalGrounding,
+} = require("./universalGroundingEngine");
+
+const {
+  buildCompoundParityQuestion,
+  hasAllInheritedScopeColumns,
+  mergeInheritedScopeIntoPlan,
+} = require("./compoundContextParityEngine");
+
+const {
+  enforcePlannerInvariants,
+  buildRankingDetailRescuePlan,
+  repairSemanticContractCountIntent,
+} = require("./plannerInvariantEngine");
 
 
 
@@ -3943,102 +288,6 @@ function extractFollowUpTargetPhrase(
   );
 }
 
-
-
-function normalizedEditSimilarity(
-  left,
-  right
-) {
-  const a =
-    normalizeText(
-      left
-    );
-
-  const b =
-    normalizeText(
-      right
-    );
-
-  if (!a || !b) {
-    return 0;
-  }
-
-  if (a === b) {
-    return 1;
-  }
-
-  const previous =
-    Array.from(
-      {
-        length:
-          b.length + 1,
-      },
-      (_, index) =>
-        index
-    );
-
-  for (
-    let i = 1;
-    i <= a.length;
-    i += 1
-  ) {
-    const current = [
-      i,
-    ];
-
-    for (
-      let j = 1;
-      j <= b.length;
-      j += 1
-    ) {
-      const substitutionCost =
-        a[
-          i - 1
-        ] ===
-        b[
-          j - 1
-        ]
-          ? 0
-          : 1;
-
-      current[j] =
-        Math.min(
-          current[
-            j - 1
-          ] + 1,
-          previous[j] + 1,
-          previous[
-            j - 1
-          ] +
-            substitutionCost
-        );
-    }
-
-    for (
-      let j = 0;
-      j < current.length;
-      j += 1
-    ) {
-      previous[j] =
-        current[j];
-    }
-  }
-
-  const distance =
-    previous[
-      b.length
-    ];
-
-  return Math.max(
-    0,
-    1 -
-      distance /
-        Math.max(
-          a.length,
-          b.length
-        )
-  );
-}
 
 
 function filterRowsBySimpleFilters(
@@ -5056,7 +1305,26 @@ function buildVerifiedListAnswer({
     );
   }
 
-  return items
+  /**
+   * A list answer represents distinct values unless the user explicitly asks
+   * for row-by-row records. Preserve first-seen display casing while removing
+   * duplicate values case-insensitively.
+   */
+  const distinctItems =
+    [
+      ...new Map(
+        items.map(
+          (value) => [
+            normalizeText(
+              value
+            ),
+            value,
+          ]
+        )
+      ).values(),
+    ];
+
+  return distinctItems
     .map(
       (value, index) =>
         `${index + 1}. ${value}`
@@ -5064,6 +1332,897 @@ function buildVerifiedListAnswer({
     .join(
       "\n"
     );
+}
+
+
+function splitDistinctCellValues(
+  value
+) {
+  const raw =
+    String(
+      value ?? ""
+    ).trim();
+
+  if (!raw) {
+    return [];
+  }
+
+  if (/[;|\r\n]/.test(raw)) {
+    return raw
+      .split(
+        /\s*(?:;|\||\r?\n)\s*/
+      )
+      .map(
+        (part) =>
+          part.trim()
+      )
+      .filter(Boolean);
+  }
+
+  if (
+    raw.includes(",")
+  ) {
+    const parts =
+      raw
+        .split(",")
+        .map(
+          (part) =>
+            part.trim()
+        )
+        .filter(Boolean);
+
+    const compactCategoryList =
+      parts.length >= 2 &&
+      parts.length <= 20 &&
+      parts.every(
+        (part) =>
+          part
+            .split(/\s+/)
+            .filter(Boolean)
+            .length <= 6
+      );
+
+    if (
+      compactCategoryList
+    ) {
+      return parts;
+    }
+  }
+
+  return [
+    raw,
+  ];
+}
+
+
+function normalizeLooseMetricPhrase(
+  value
+) {
+  return normalizeText(
+    value || ""
+  )
+    .replace(
+      /^(?:the\s+)?(?:total\s+)?(?:no|num|number|count)\s*(?:of\s+)?/,
+      ""
+    )
+    .replace(
+      /^(?:total|overall|combined)\s+/,
+      ""
+    )
+    .replace(
+      /\b(?:the|all)\b/g,
+      " "
+    )
+    .replace(
+      /\s+/g,
+      " "
+    )
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map(
+      (token) => {
+        if (
+          token.endsWith("ies") &&
+          token.length > 3
+        ) {
+          return (
+            token.slice(
+              0,
+              -3
+            ) + "y"
+          );
+        }
+
+        if (
+          token.endsWith("s") &&
+          !token.endsWith("ss") &&
+          token.length > 3
+        ) {
+          return token.slice(
+            0,
+            -1
+          );
+        }
+
+        return token;
+      }
+    )
+    .join(" ");
+}
+
+
+function resolveExplicitNumericMetricPlan({
+  plan,
+  question,
+  schema,
+  datasets,
+  context = null,
+}) {
+  const text =
+    normalizeText(
+      question || ""
+    );
+
+  if (!text) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  let operation =
+    null;
+
+  if (
+    /\b(?:sum|total|overall|combined|altogether)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "sum";
+  } else if (
+    /\b(?:average|avg|mean)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "average";
+  } else if (
+    /\bmedian\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "median";
+  } else if (
+    /\b(?:minimum|min|lowest|smallest)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "minimum";
+  } else if (
+    /\b(?:maximum|max|highest|largest)\b/.test(
+      text
+    )
+  ) {
+    operation =
+      "maximum";
+  }
+
+  if (!operation) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const numberOfMatch =
+    text.match(
+      /\bnumber\s+of\s+(.+?)(?=\s+(?:in|from|within|at|under)\b|[?.!]|$)/
+    );
+
+  if (!numberOfMatch?.[1]) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const targetPhrase =
+    normalizeLooseMetricPhrase(
+      numberOfMatch[1]
+    );
+
+  if (!targetPhrase) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const preferredDatasets =
+    new Set(
+      [
+        plan?.dataset,
+        context?.lastDataset,
+      ]
+        .filter(Boolean)
+        .map(
+          (value) =>
+            normalizeText(
+              value
+            )
+        )
+    );
+
+  const candidates = [];
+
+  for (
+    const datasetSchema
+    of schema || []
+  ) {
+    const datasetName =
+      datasetSchema?.name;
+
+    const rows =
+      datasets?.[
+        datasetName
+      ];
+
+    if (
+      !datasetName ||
+      !Array.isArray(rows) ||
+      !rows.length
+    ) {
+      continue;
+    }
+
+    for (
+      const column
+      of datasetSchema?.columns || []
+    ) {
+      const columnName =
+        typeof column ===
+          "string"
+          ? column
+          : column?.name;
+
+      if (!columnName) {
+        continue;
+      }
+
+      const columnSchema =
+        typeof column ===
+          "string"
+          ? {
+              name:
+                columnName,
+            }
+          : column;
+
+      if (
+        !isNumericLikeColumn({
+          column:
+            columnSchema,
+          rows,
+        })
+      ) {
+        continue;
+      }
+
+      const fieldPhrase =
+        normalizeLooseMetricPhrase(
+          columnName
+        );
+
+      if (!fieldPhrase) {
+        continue;
+      }
+
+      const targetTokens =
+        new Set(
+          targetPhrase
+            .split(/\s+/)
+            .filter(Boolean)
+        );
+
+      const fieldTokens =
+        new Set(
+          fieldPhrase
+            .split(/\s+/)
+            .filter(Boolean)
+        );
+
+      const shared =
+        [
+          ...targetTokens,
+        ].filter(
+          (token) =>
+            fieldTokens.has(
+              token
+            )
+        ).length;
+
+      const coverage =
+        targetTokens.size
+          ? shared /
+            targetTokens.size
+          : 0;
+
+      const reverseCoverage =
+        fieldTokens.size
+          ? shared /
+            fieldTokens.size
+          : 0;
+
+      let score =
+        0;
+
+      if (
+        fieldPhrase ===
+        targetPhrase
+      ) {
+        score = 1;
+      } else if (
+        coverage === 1 &&
+        reverseCoverage >= 0.75
+      ) {
+        score = 0.96;
+      } else {
+        score =
+          Math.max(
+            similarity(
+              targetPhrase,
+              fieldPhrase
+            ),
+            (
+              coverage *
+              0.65
+            ) +
+            (
+              reverseCoverage *
+              0.35
+            )
+          );
+      }
+
+      if (
+        preferredDatasets.has(
+          normalizeText(
+            datasetName
+          )
+        )
+      ) {
+        score += 0.025;
+      }
+
+      candidates.push({
+        dataset:
+          datasetName,
+        column:
+          columnName,
+        score:
+          Math.min(
+            1,
+            score
+          ),
+      });
+    }
+  }
+
+  candidates.sort(
+    (a, b) =>
+      b.score -
+      a.score
+  );
+
+  const best =
+    candidates[0] ||
+    null;
+
+  const second =
+    candidates[1] ||
+    null;
+
+  if (
+    !best ||
+    best.score < 0.82 ||
+    (
+      second &&
+      second.dataset !==
+        best.dataset &&
+      Math.abs(
+        best.score -
+        second.score
+      ) < 0.03
+    )
+  ) {
+    return {
+      plan,
+      repaired: false,
+      reasons: [],
+    };
+  }
+
+  const rows =
+    datasets?.[
+      best.dataset
+    ] || [];
+
+  /**
+   * Infer filters only from an explicit trailing scope phrase.
+   * This prevents "number" in "number of X" from being interpreted
+   * as a categorical filter value such as Unit = "number".
+   */
+  const scopeMatch =
+    text.match(
+      /\b(?:in|from|within|at|under)\s+(.+?)(?:[?.!]|$)/
+    );
+
+  const scopeText =
+    scopeMatch?.[1]
+      ? String(
+          scopeMatch[1]
+        ).trim()
+      : "";
+
+  const filters =
+    scopeText
+      ? inferCoherentFilters(
+          rows,
+          scopeText
+        )
+      : [];
+
+  const repairedPlan = {
+    ...(plan &&
+    typeof plan ===
+      "object"
+      ? plan
+      : {}),
+
+    route:
+      "dataset",
+
+    dataset:
+      best.dataset,
+
+    operation,
+
+    column:
+      best.column,
+
+    labelColumn:
+      null,
+
+    groupBy:
+      null,
+
+    aggregation:
+      null,
+
+    direction:
+      null,
+
+    filters:
+      Array.isArray(filters)
+        ? filters
+        : [],
+
+    filterGroups:
+      [],
+
+    filterGroupLogic:
+      null,
+
+    selectColumns: [
+      best.column,
+    ],
+
+    outputRequested:
+      true,
+
+    transform:
+      null,
+
+    showAll:
+      false,
+
+    limit:
+      10,
+
+    explicitNumericMetricResolved:
+      true,
+
+    explicitNumericMetricTarget:
+      targetPhrase,
+
+    explicitNumericMetricConfidence:
+      Number(
+        best.score.toFixed(
+          4
+        )
+      ),
+  };
+
+  const changed =
+    normalizeText(
+      plan?.route
+    ) !==
+      "dataset" ||
+    normalizeText(
+      plan?.dataset
+    ) !==
+      normalizeText(
+        repairedPlan.dataset
+      ) ||
+    normalizeText(
+      plan?.column
+    ) !==
+      normalizeText(
+        repairedPlan.column
+      ) ||
+    normalizeText(
+      plan?.operation
+    ) !==
+      normalizeText(
+        repairedPlan.operation
+      ) ||
+    JSON.stringify(
+      plan?.filters ||
+      []
+    ) !==
+      JSON.stringify(
+        repairedPlan.filters
+      );
+
+  return {
+    plan:
+      repairedPlan,
+
+    repaired:
+      changed,
+
+    reasons:
+      changed
+        ? [
+            "explicit-live-numeric-metric-restored",
+          ]
+        : [],
+  };
+}
+
+
+
+function normalizeDirectSingleFieldResult({
+  plan,
+  result,
+  question = "",
+}) {
+  if (
+    !plan ||
+    !result ||
+    !plan.column ||
+    !Array.isArray(
+      result.results
+    )
+  ) {
+    return result;
+  }
+
+  const selectedColumns =
+    Array.isArray(
+      plan.selectColumns
+    )
+      ? plan.selectColumns
+          .filter(Boolean)
+      : [];
+
+  const isSingleField =
+    selectedColumns.length <=
+      1 &&
+    (
+      !selectedColumns.length ||
+      normalizeText(
+        selectedColumns[0]
+      ) ===
+        normalizeText(
+          plan.column
+        )
+    );
+
+  if (
+    !isSingleField
+  ) {
+    return result;
+  }
+
+  const distinctMap =
+    new Map();
+
+  const wantsDistinctValues =
+    /\b(?:distinct|unique|different)\b/i.test(
+      String(
+        question || ""
+      )
+    );
+
+  let multiValueNormalized =
+    false;
+
+  for (
+    const item of
+    result.results
+  ) {
+    const value =
+      typeof item ===
+        "object" &&
+      item !== null
+        ? item[
+            plan.column
+          ]
+        : item;
+
+    if (
+      value === null ||
+      value === undefined ||
+      String(
+        value
+      ).trim() ===
+        ""
+    ) {
+      continue;
+    }
+
+    const displayValues =
+      wantsDistinctValues
+        ? splitDistinctCellValues(
+            value
+          )
+        : [
+            String(
+              value
+            ).trim(),
+          ];
+
+    if (
+      displayValues.length >
+      1
+    ) {
+      multiValueNormalized =
+        true;
+    }
+
+    for (
+      const displayValueRaw of
+      displayValues
+    ) {
+      const displayValue =
+        String(
+          displayValueRaw
+        ).trim();
+
+      const key =
+        normalizeText(
+          displayValue
+        );
+
+      if (
+        !key ||
+        distinctMap.has(
+          key
+        )
+      ) {
+        continue;
+      }
+
+      distinctMap.set(
+        key,
+        typeof item ===
+          "object" &&
+        item !== null
+          ? {
+              ...item,
+              [
+                plan.column
+              ]:
+                displayValue,
+            }
+          : displayValue
+      );
+    }
+  }
+
+  const distinctResults =
+    [
+      ...distinctMap.values(),
+    ];
+
+  if (
+    !multiValueNormalized &&
+    distinctResults.length ===
+      result.results.length
+  ) {
+    return result;
+  }
+
+  return {
+    ...result,
+    results:
+      distinctResults,
+    count:
+      distinctResults.length,
+    distinctResultCount:
+      distinctResults.length,
+    duplicateRowsRemoved:
+      Math.max(
+        0,
+        result.results.length -
+          distinctResults.length
+      ),
+    multiValueNormalized,
+  };
+}
+
+
+/**
+ * Format a VERIFIED conversational list as:
+ *
+ *   <previous conversational subject> - <current answer>
+ *
+ * The label is derived from verified context, never from a hardcoded
+ * dataset/field. For the first referential list after a filtered count,
+ * the single verified scope value is used (for example a province value).
+ * Later chained field questions use the immediately previous subject field.
+ */
+function buildContextAwareContinuousListAnswer({
+  result,
+  subjectColumn = null,
+  pairColumn = null,
+  context = null,
+  preferScopeValue = false,
+}) {
+  const resultRows = Array.isArray(result?.results) ? result.results : [];
+
+  /**
+   * For chained field questions, preserve the ACTUAL row relationship:
+   *
+   *   <value from previous field> - <value from current requested field>
+   *
+   * Example shape only (never hardcoded):
+   *   <association value> - <municipality value>
+   *   <municipality value> - <commodity value>
+   *
+   * This uses values returned by the calculation engine, not schema labels.
+   */
+  if (
+    pairColumn &&
+    subjectColumn &&
+    normalizeText(pairColumn) !== normalizeText(subjectColumn) &&
+    resultRows.some((item) => item && typeof item === "object")
+  ) {
+    const pairs = [];
+
+    for (const item of resultRows) {
+      if (!item || typeof item !== "object") continue;
+
+      const leftRaw =
+        item?.[pairColumn] ??
+        item?.label ??
+        null;
+
+      const rightRaw =
+        item?.[subjectColumn] ??
+        item?.value ??
+        null;
+
+      const left = String(leftRaw ?? "").trim();
+      const right = String(rightRaw ?? "").trim();
+
+      if (!left || !right) continue;
+
+      // Explicit delimiters always indicate multiple values. For comma-delimited
+      // cells, split only when the text looks like a compact category list.
+      let rightValues = [right];
+      if (/[;|]/.test(right)) {
+        rightValues = right.split(/[;|]/);
+      } else if (right.includes(",")) {
+        const parts = right.split(",").map((v) => v.trim()).filter(Boolean);
+        const compactCategoryList =
+          parts.length >= 2 &&
+          parts.every((v) => v.split(/\s+/).filter(Boolean).length <= 5);
+        if (compactCategoryList) rightValues = parts;
+      }
+
+      for (const value of rightValues) {
+        const cleaned = String(value).trim();
+        if (cleaned) pairs.push({ left, right: cleaned });
+      }
+    }
+
+    const uniquePairs = [];
+    const seenPairs = new Set();
+    for (const pair of pairs) {
+      const key = `${normalizeText(pair.left)}\u0000${normalizeText(pair.right)}`;
+      if (!pair.left || !pair.right || seenPairs.has(key)) continue;
+      seenPairs.add(key);
+      uniquePairs.push(pair);
+    }
+
+    if (uniquePairs.length) {
+      return uniquePairs.map((pair) => `${pair.left} - ${pair.right}`).join("\n");
+    }
+  }
+
+  const rawItems =
+    resultRows
+      .map((item) => {
+        if (item === null || item === undefined) return "";
+        if (typeof item !== "object") return String(item).trim();
+        if (subjectColumn && item?.[subjectColumn] !== null && item?.[subjectColumn] !== undefined) {
+          return String(item[subjectColumn]).trim();
+        }
+        if (item.value !== null && item.value !== undefined) return String(item.value).trim();
+        if (item.label !== null && item.label !== undefined) return String(item.label).trim();
+        return "";
+      })
+      .filter(Boolean);
+
+  if (!rawItems.length) {
+    return result?.answer || "No matching results were found.";
+  }
+
+  // Generic multi-value-cell normalization.
+  let items = [...rawItems];
+  const explicitMulti = rawItems.some((v) => /[;|]/.test(v));
+  const commaRows = rawItems.filter((v) => v.includes(","));
+  let sharedCommaToken = false;
+  if (commaRows.length >= 2) {
+    const tokenSets = commaRows.map((v) => new Set(v.split(",").map((x) => normalizeText(x)).filter(Boolean)));
+    const tokenSeen = new Set();
+    for (const set of tokenSets) {
+      for (const token of set) {
+        if (tokenSeen.has(token)) sharedCommaToken = true;
+        tokenSeen.add(token);
+      }
+    }
+  }
+  if (explicitMulti || sharedCommaToken) {
+    items = rawItems
+      .flatMap((v) => v.split(explicitMulti ? /[;|]/ : /,/))
+      .map((v) => v.trim())
+      .filter(Boolean);
+  }
+
+  const unique = [];
+  const seen = new Set();
+  for (const item of items) {
+    const key = normalizeText(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+
+  const filters = Array.isArray(context?.lastFilters) ? context.lastFilters : [];
+  const singleScopeValue =
+    filters.length === 1 && !Array.isArray(filters[0]?.value)
+      ? String(filters[0]?.value ?? "").trim()
+      : "";
+
+  const previousSubject = String(context?.lastSubjectColumn || "").trim();
+  const prefix =
+    preferScopeValue && singleScopeValue
+      ? singleScopeValue
+      : previousSubject || singleScopeValue;
+
+  if (!prefix) return unique.join("\n");
+  return unique.map((value) => `${prefix} - ${value}`).join("\n");
 }
 
 
@@ -5748,5702 +2907,116 @@ function applyConversationContext(
  * The actual column and values are discovered from the live
  * worksheet, not written into this code.
  */
-function getUniqueColumnValues(
-  rows,
-  column
-) {
-  const values = [];
-  const seen = new Set();
-
-  for (const row of rows || []) {
-    const raw =
-      row?.[column];
-
-    if (
-      raw === null ||
-      raw === undefined
-    ) {
-      continue;
-    }
-
-    const display =
-      String(raw).trim();
-
-    const key =
-      normalizeText(display);
-
-    if (
-      !display ||
-      !key ||
-      seen.has(key)
-    ) {
-      continue;
-    }
-
-    seen.add(key);
-    values.push(display);
-  }
-
-  return values;
-}
-
-function tokenSimilarity(
-  left,
-  right
-) {
-  const a =
-    normalizeText(left);
-
-  const b =
-    normalizeText(right);
-
-  if (!a || !b) {
-    return 0;
-  }
-
-  if (a === b) {
-    return 1;
-  }
-
-  if (
-    a.includes(b) ||
-    b.includes(a)
-  ) {
-    return 0.95;
-  }
-
-  const aTokens =
-    a.split(/\s+/)
-      .filter(Boolean);
-
-  const bTokens =
-    b.split(/\s+/)
-      .filter(Boolean);
-
-  const aSet =
-    new Set(aTokens);
-
-  const bSet =
-    new Set(bTokens);
-
-  let overlap = 0;
-
-  for (const token of aSet) {
-    if (bSet.has(token)) {
-      overlap += 1;
-    }
-  }
-
-  const denominator =
-    Math.max(
-      aSet.size,
-      bSet.size,
-      1
-    );
-
-  return overlap / denominator;
-}
-
-function buildQuestionNgrams(
-  question,
-  maxWords = 4
-) {
-  const normalized =
-    normalizeText(question);
-
-  const tokens =
-    normalized
-      .split(/\s+/)
-      .filter(
-        (token) =>
-          token.length >= 2
-      );
-
-  const phrases = [];
-
-  for (
-    let size = 1;
-    size <= Math.min(
-      maxWords,
-      tokens.length
-    );
-    size += 1
-  ) {
-    for (
-      let i = 0;
-      i <=
-      tokens.length - size;
-      i += 1
-    ) {
-      phrases.push(
-        tokens
-          .slice(
-            i,
-            i + size
-          )
-          .join(" ")
-      );
-    }
-  }
-
-  return phrases;
-}
-
-function questionValueMatchScore(
-  question,
-  value
-) {
-  const q =
-    normalizeText(question);
-
-  const v =
-    normalizeText(value);
-
-  if (!q || !v) {
-    return 0;
-  }
-
-  /**
-   * Exact phrase present in the question.
-   */
-  if (q.includes(v)) {
-    return 1;
-  }
-
-  const valueWords =
-    v.split(/\s+/)
-      .filter(Boolean);
-
-  const ngrams =
-    buildQuestionNgrams(
-      question,
-      Math.max(
-        1,
-        valueWords.length
-      )
-    );
-
-  let best = 0;
-
-  for (const phrase of ngrams) {
-    /**
-     * Avoid comparing wildly different lengths.
-     */
-    const shortLength =
-      Math.min(
-        phrase.length,
-        v.length
-      );
-
-    const longLength =
-      Math.max(
-        phrase.length,
-        v.length
-      );
-
-    if (
-      shortLength < 3 ||
-      shortLength /
-        Math.max(
-          longLength,
-          1
-        ) <
-        0.55
-    ) {
-      continue;
-    }
-
-    const score =
-      similarity(
-        phrase,
-        v
-      );
-
-    if (score > best) {
-      best = score;
-    }
-  }
-
-  return best;
-}
-
-function questionContainsValue(
-  question,
-  value
-) {
-  return (
-    questionValueMatchScore(
-      question,
-      value
-    ) >= 0.78
-  );
-}
-
-function collectQuestionMatchesForColumn({
-  rows,
-  column,
-  question,
-  seedValues = [],
-}) {
-  const actualValues =
-    getUniqueColumnValues(
-      rows,
-      column
-    );
-
-  if (!actualValues.length) {
-    return [];
-  }
-
-  const selected = [];
-  const selectedKeys =
-    new Set();
-
-  const addValue =
-    (value) => {
-      const key =
-        normalizeText(value);
-
-      if (
-        !key ||
-        selectedKeys.has(key)
-      ) {
-        return;
-      }
-
-      selectedKeys.add(key);
-      selected.push(value);
-    };
-
-  /**
-   * Preserve / resolve values already identified by the planner.
-   */
-  for (
-    const seedValue of
-    Array.isArray(seedValues)
-      ? seedValues
-      : [seedValues]
-  ) {
-    if (
-      seedValue === null ||
-      seedValue === undefined ||
-      String(seedValue).trim() === ""
-    ) {
-      continue;
-    }
-
-    const exact =
-      actualValues.find(
-        (candidate) =>
-          normalizeText(candidate) ===
-          normalizeText(seedValue)
-      );
-
-    if (exact) {
-      addValue(exact);
-      continue;
-    }
-
-    let best = null;
-
-    for (const candidate of actualValues) {
-      const score =
-        similarity(
-          normalizeText(
-            seedValue
-          ),
-          normalizeText(
-            candidate
-          )
-        );
-
-      if (
-        !best ||
-        score > best.score
-      ) {
-        best = {
-          value:
-            candidate,
-          score,
-        };
-      }
-    }
-
-    if (
-      best &&
-      best.score >= 0.78
-    ) {
-      addValue(
-        best.value
-      );
-    }
-  }
-
-  /**
-   * Search the user's question against EVERY actual value
-   * in the dynamically chosen column.
-   *
-   * This supports small spelling differences, e.g. a user
-   * types a name slightly differently from the sheet.
-   */
-  const fuzzyCandidates =
-    actualValues
-      .map(
-        (candidate) => ({
-          value:
-            candidate,
-
-          score:
-            questionValueMatchScore(
-              question,
-              candidate
-            ),
-        })
-      )
-      .filter(
-        (item) =>
-          item.score >= 0.78
-      )
-      .sort(
-        (a, b) =>
-          b.score - a.score
-      );
-
-  for (
-    const candidate of
-    fuzzyCandidates
-  ) {
-    addValue(
-      candidate.value
-    );
-  }
-
-  return selected;
-}
-
-/**
- * ==========================================================
- * REPAIR MULTI-ENTITY FILTERS
- * ==========================================================
- *
- * Fully dynamic:
- *
- * - no employee names are hardcoded
- * - no LAST NAME column is hardcoded
- * - no division/province/municipality is hardcoded
- * - no worksheet name is hardcoded
- *
- * The planner's existing filter tells us which column is
- * acting as the entity column. We then scan the ACTUAL values
- * of that column and recover any additional values explicitly
- * present in the user's question.
- */
-
-/**
- * Return true only when the user's wording clearly asks about
- * MORE THAN ONE entity.
- *
- * This prevents a single person's multi-word name, such as
- * "Doris Joy Garcia", from being split into multiple matches
- * merely because another row contains one of those words.
- */
-function hasExplicitMultiEntityRequest(
-  question
-) {
-  const text =
-    String(question || "")
-      .trim()
-      .toLowerCase();
-
-  if (!text) {
-    return false;
-  }
-
-  return (
-    /\bboth\b/.test(text) ||
-    /\b(?:vs\.?|versus)\b/.test(text) ||
-    /\bcompare\b.*\b(?:with|and|to)\b/.test(text) ||
-    /\bbetween\b.+\band\b.+/.test(text) ||
-    /,\s*\S+/.test(text) ||
-    /\b(?:and|or)\b/.test(text)
-  );
-}
-
-
-function repairMultiEntityFilters({
-  datasets,
-  plan,
-  question,
-}) {
-  if (
-    !plan ||
-    plan.route !== "dataset" ||
-    !plan.dataset
-  ) {
-    return plan;
-  }
-
-  /**
-   * Structured entity groups already preserve identity correctly.
-   * Do not flatten or expand them back into same-column IN filters.
-   */
-  if (
-    Array.isArray(
-      plan.filterGroups
-    ) &&
-    plan.filterGroups.length
-  ) {
-    return plan;
-  }
-
-  const rows =
-    datasets?.[plan.dataset];
-
-  if (
-    !Array.isArray(rows) ||
-    !rows.length
-  ) {
-    return plan;
-  }
-
-  /**
-   * CRITICAL SINGLE-ENTITY SAFETY RULE
-   * ----------------------------------
-   *
-   * Do not scan the question for additional row values unless
-   * the user clearly requested multiple entities.
-   *
-   * Example:
-   * "What is the position title of Doris Joy Garcia?"
-   *
-   * must remain a single-person lookup and must not be expanded
-   * to another employee just because that employee also contains
-   * the word "Joy".
-   */
-  if (
-    !hasExplicitMultiEntityRequest(
-      question
-    )
-  ) {
-    return plan;
-  }
-
-  const currentFilters =
-    Array.isArray(
-      plan.filters
-    )
-      ? plan.filters.map(
-          (filter) => ({
-            ...filter,
-
-            value:
-              Array.isArray(
-                filter?.value
-              )
-                ? [...filter.value]
-                : filter?.value,
-          })
-        )
-      : [];
-
-  /**
-   * Keep the existing exact inference as an additional source.
-   */
-  const inferred =
-    inferValueFilters(
-      rows,
-      question,
-      []
-    );
-
-  let repaired = false;
-
-  const repairedFilters =
-    currentFilters.map(
-      (filter) => {
-        if (
-          !filter ||
-          !filter.column
-        ) {
-          return filter;
-        }
-
-        const operator =
-          String(
-            filter.operator ||
-              "equals"
-          )
-            .trim()
-            .toLowerCase();
-
-        if (
-          operator !== "equals" &&
-          operator !== "in"
-        ) {
-          return filter;
-        }
-
-        const seedValues =
-          Array.isArray(
-            filter.value
-          )
-            ? filter.value
-            : [filter.value];
-
-        const matches =
-          collectQuestionMatchesForColumn({
-            rows,
-
-            column:
-              filter.column,
-
-            question,
-
-            seedValues,
-          });
-
-        /**
-         * Also merge any values found by inferValueFilters()
-         * for this same dynamically selected column.
-         */
-        const inferredSameColumn =
-          (Array.isArray(inferred)
-            ? inferred
-            : []
-          ).filter(
-            (candidate) =>
-              candidate &&
-              normalizeText(
-                candidate.column
-              ) ===
-                normalizeText(
-                  filter.column
-                )
-          );
-
-        for (
-          const candidate of
-          inferredSameColumn
-        ) {
-          const values =
-            Array.isArray(
-              candidate.value
-            )
-              ? candidate.value
-              : [candidate.value];
-
-          for (const value of values) {
-            if (
-              value === null ||
-              value === undefined ||
-              String(value).trim() === ""
-            ) {
-              continue;
-            }
-
-            if (
-              !matches.some(
-                (existing) =>
-                  normalizeText(
-                    existing
-                  ) ===
-                  normalizeText(
-                    value
-                  )
-              )
-            ) {
-              matches.push(value);
-            }
-          }
-        }
-
-        if (
-          matches.length <= 1
-        ) {
-          return filter;
-        }
-
-        repaired = true;
-
-        return {
-          ...filter,
-
-          operator:
-            "in",
-
-          value:
-            matches,
-        };
-      }
-    );
-
-  /**
-   * If the planner produced no filter at all, retain the
-   * previous generic inference behavior only when one
-   * unambiguous multi-value column is discovered.
-   */
-  if (
-    currentFilters.length === 0 &&
-    Array.isArray(inferred)
-  ) {
-    const multiCandidates =
-      inferred.filter(
-        (candidate) =>
-          candidate &&
-          candidate.column &&
-          String(
-            candidate.operator || ""
-          )
-            .trim()
-            .toLowerCase() === "in" &&
-          Array.isArray(
-            candidate.value
-          ) &&
-          candidate.value.length > 1
-      );
-
-    if (
-      multiCandidates.length === 1
-    ) {
-      repaired = true;
-
-      repairedFilters.push({
-        column:
-          multiCandidates[0].column,
-
-        operator:
-          "in",
-
-        value: [
-          ...multiCandidates[0].value,
-        ],
-      });
-    }
-  }
-
-  if (!repaired) {
-    return plan;
-  }
-
-  return {
-    ...plan,
-
-    filters:
-      repairedFilters,
-
-    showAll:
-      plan.operation === "lookup"
-        ? true
-        : plan.showAll,
-  };
-}
-
-
-
-/**
- * ==========================================================
- * CONVERSATIONAL ANALYTICS
- * ==========================================================
- *
- * Transform a previous VERIFIED analytical plan instead of asking
- * Groq to rediscover the whole question.
- *
- * Examples:
- *
- *   "Which division has the highest average salary?"
- *   "Show the top 5 instead."
- *   "What about the total?"
- *   "What about actual obligation?"
- *   "Show the bottom 3."
- *
- * No dashboard field or entity is hardcoded.
- */
-
-function detectAnalyticalAggregationFollowUp(
-  question
-) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  if (
-    /\b(?:total|sum|combined|altogether)\b/.test(
-      text
-    )
-  ) {
-    return "sum";
-  }
-
-  if (
-    /\b(?:average|avg|mean)\b/.test(
-      text
-    )
-  ) {
-    return "average";
-  }
-
-  if (
-    /\b(?:count|how many|number of)\b/.test(
-      text
-    )
-  ) {
-    return "count";
-  }
-
-  if (
-    /\b(?:minimum|min|lowest|smallest|least)\b/.test(
-      text
-    )
-  ) {
-    return "minimum";
-  }
-
-  if (
-    /\b(?:maximum|max|highest|largest|greatest)\b/.test(
-      text
-    )
-  ) {
-    return "maximum";
-  }
-
-  return null;
-}
-
-
-
-function detectAnalyticalRankIndexFollowUp(
-  question
-) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  const numericOrdinal =
-    text.match(
-      /\b(\d{1,2})(?:st|nd|rd|th)\s+(?:highest|lowest|largest|smallest)\b/
-    );
-
-  if (
-    numericOrdinal?.[1]
-  ) {
-    const position =
-      Number(
-        numericOrdinal[1]
-      );
-
-    if (
-      Number.isInteger(
-        position
-      ) &&
-      position >= 1 &&
-      position <= 100
-    ) {
-      return position - 1;
-    }
-  }
-
-  const wordOrdinals =
-    new Map([
-      ["first", 0],
-      ["second", 1],
-      ["third", 2],
-      ["fourth", 3],
-      ["fifth", 4],
-      ["sixth", 5],
-      ["seventh", 6],
-      ["eighth", 7],
-      ["ninth", 8],
-      ["tenth", 9],
-    ]);
-
-  const wordMatch =
-    text.match(
-      /\b(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+(?:highest|lowest|largest|smallest)\b/
-    );
-
-  if (
-    wordMatch?.[1] &&
-    wordOrdinals.has(
-      wordMatch[1]
-    )
-  ) {
-    return wordOrdinals.get(
-      wordMatch[1]
-    );
-  }
-
-  return null;
-}
-
-
-function detectAnalyticalLimitFollowUp(
-  question
-) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  const explicit =
-    text.match(
-      /\b(?:top|bottom|first|last)\s+(\d{1,3})\b/
-    );
-
-  if (explicit?.[1]) {
-    const value =
-      Number(
-        explicit[1]
-      );
-
-    if (
-      Number.isInteger(value)
-    ) {
-      return Math.min(
-        Math.max(
-          value,
-          1
-        ),
-        100
-      );
-    }
-  }
-
-  const rankIndex =
-    detectAnalyticalRankIndexFollowUp(
-      question
-    );
-
-  if (
-    rankIndex !== null
-  ) {
-    return rankIndex + 1;
-  }
-
-  return null;
-}
-
-
-function detectAnalyticalDirectionFollowUp(
-  question
-) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (
-    /\b(bottom|lowest|smallest|least|minimum|min)\b/.test(
-      text
-    )
-  ) {
-    return "asc";
-  }
-
-  if (
-    /\b(top|highest|largest|greatest|maximum|max)\b/.test(
-      text
-    )
-  ) {
-    return "desc";
-  }
-
-  return null;
-}
-
-
-function isAnalyticalTransformQuestion(
-  question
-) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return false;
-  }
-
-  return (
-    /^(?:what|how) about\b/.test(
-      text
-    ) ||
-    /\b(?:top|bottom)\s+\d{1,3}\b/.test(
-      text
-    ) ||
-    /\b(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d{1,2}(?:st|nd|rd|th))\s+(?:highest|lowest|largest|smallest)\b/.test(
-      text
-    ) ||
-    /\binstead\b/.test(
-      text
-    ) ||
-    /\b(?:exclude|excluding|without|except|remove|omit|leave out)\b/.test(
-      text
-    ) ||
-    /\b(?:recalculate|recompute|run again|calculate again)\b/.test(
-      text
-    ) ||
-    /\bcompare\s+(?:it|that|this|the result)\s+with\s+(?:the\s+)?(?:highest|lowest|largest|smallest)\b/.test(
-      text
-    )
-  );
-}
-
-
-function aggregationToGroupedOperation(
-  aggregation
-) {
-  const map = {
-    sum:
-      "group_sum",
-
-    average:
-      "group_average",
-
-    count:
-      "group_count",
-
-    minimum:
-      "group_minimum",
-
-    maximum:
-      "group_maximum",
-  };
-
-  return (
-    map[
-      String(
-        aggregation || ""
-      )
-        .trim()
-        .toLowerCase()
-    ] ||
-    null
-  );
-}
-
-
-
-function detectAnalyticalExtremeComparison(
-  question
-) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  if (
-    /\bcompare\s+(?:it|that|this|the result)\s+with\s+(?:the\s+)?(?:lowest|smallest|least|minimum|min)\b/.test(
-      text
-    )
-  ) {
-    return "asc";
-  }
-
-  if (
-    /\bcompare\s+(?:it|that|this|the result)\s+with\s+(?:the\s+)?(?:highest|largest|greatest|maximum|max)\b/.test(
-      text
-    )
-  ) {
-    return "desc";
-  }
-
-  return null;
-}
-
-
-function getLastVerifiedAnalyticalLabel(
-  context
-) {
-  const result =
-    context?.lastResult;
-
-  if (
-    !result ||
-    !Array.isArray(
-      result.results
-    ) ||
-    result.results.length !== 1
-  ) {
-    return null;
-  }
-
-  const label =
-    result.results[0]
-      ?.label;
-
-  if (
-    label === null ||
-    label === undefined ||
-    String(label).trim() === ""
-  ) {
-    return null;
-  }
-
-  return String(label).trim();
-}
-
-
-function detectAnalyticalExclusions({
-  datasets,
-  context,
-  question,
-}) {
-  const previous =
-    context?.analyticalContext;
-
-  if (
-    !previous ||
-    !previous.dataset
-  ) {
-    return [];
-  }
-
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (
-    !/\b(?:exclude|excluding|without|except|remove|omit|leave out)\b/.test(
-      text
-    )
-  ) {
-    return [];
-  }
-
-  const groupColumn =
-    previous.groupBy ||
-    previous.labelColumn ||
-    null;
-
-  const rows =
-    datasets?.[
-      previous.dataset
-    ];
-
-  if (
-    !groupColumn ||
-    !Array.isArray(rows) ||
-    !rows.length
-  ) {
-    return [];
-  }
-
-  const uniqueValues =
-    getUniqueColumnValues(
-      rows,
-      groupColumn
-    )
-      .map(
-        (value) => ({
-          value,
-          normalized:
-            normalizeText(
-              value
-            ),
-        })
-      )
-      .filter(
-        (item) =>
-          item.normalized
-      )
-      .sort(
-        (a, b) =>
-          b.normalized.length -
-          a.normalized.length
-      );
-
-  const matched = [];
-
-  for (
-    const item of
-    uniqueValues
-  ) {
-    const escaped =
-      item.normalized.replace(
-        /[.*+?^${}()|[\]\\]/g,
-        "\\$&"
-      );
-
-    const regex =
-      new RegExp(
-        `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
-        "u"
-      );
-
-    if (
-      regex.test(text)
-    ) {
-      matched.push(
-        item.value
-      );
-    }
-  }
-
-  if (
-    !matched.length &&
-    /\b(?:that|this|it|the same)\s+(?:group|one|result|item)?\b/.test(
-      text
-    )
-  ) {
-    const lastLabel =
-      getLastVerifiedAnalyticalLabel(
-        context
-      );
-
-    if (lastLabel) {
-      matched.push(
-        lastLabel
-      );
-    }
-  }
-
-  return [
-    ...new Set(
-      matched
-    ),
-  ];
-}
-
-
-function mergeAnalyticalExclusionFilter({
-  filters,
-  groupColumn,
-  excludedValues,
-}) {
-  const cloned =
-    Array.isArray(filters)
-      ? filters.map(
-          (filter) => ({
-            ...filter,
-
-            value:
-              Array.isArray(
-                filter?.value
-              )
-                ? [
-                    ...filter.value,
-                  ]
-                : filter?.value,
-          })
-        )
-      : [];
-
-  if (
-    !groupColumn ||
-    !Array.isArray(
-      excludedValues
-    ) ||
-    !excludedValues.length
-  ) {
-    return cloned;
-  }
-
-  const normalizedGroup =
-    normalizeText(
-      groupColumn
-    );
-
-  const existing =
-    cloned.find(
-      (filter) =>
-        normalizeText(
-          filter?.column ||
-          ""
-        ) ===
-          normalizedGroup &&
-        [
-          "not_equals",
-          "not_in",
-        ].includes(
-          String(
-            filter?.operator ||
-            ""
-          )
-            .trim()
-            .toLowerCase()
-        )
-    );
-
-  if (existing) {
-    const oldValues =
-      Array.isArray(
-        existing.value
-      )
-        ? existing.value
-        : [
-            existing.value,
-          ].filter(
-            (value) =>
-              value !== null &&
-              value !== undefined &&
-              String(value).trim() !== ""
-          );
-
-    existing.operator =
-      "not_in";
-
-    existing.value = [
-      ...new Set([
-        ...oldValues,
-        ...excludedValues,
-      ]),
-    ];
-
-    return cloned;
-  }
-
-  cloned.push({
-    column:
-      groupColumn,
-
-    operator:
-      excludedValues.length === 1
-        ? "not_equals"
-        : "not_in",
-
-    value:
-      excludedValues.length === 1
-        ? excludedValues[0]
-        : [
-            ...excludedValues,
-          ],
-  });
-
-  return cloned;
-}
-
-
-function buildAnalyticalFollowUpPlan({
-  schema,
-  datasets,
-  context,
-  question,
-}) {
-  const previous =
-    context?.analyticalContext;
-
-  if (
-    !previous ||
-    !previous.dataset ||
-    !isAnalyticalTransformQuestion(
-      question
-    )
-  ) {
-    return null;
-  }
-
-  const previousOperation =
-    String(
-      previous.operation ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-
-  const wasRanking =
-    previousOperation ===
-      "rank_groups" ||
-    previousOperation ===
-      "rank_rows";
-
-  const hasGrouping =
-    Boolean(
-      previous.groupBy ||
-      previous.labelColumn
-    );
-
-  const nextAggregation =
-    detectAnalyticalAggregationFollowUp(
-      question
-    );
-
-  const nextDirection =
-    detectAnalyticalDirectionFollowUp(
-      question
-    );
-
-  const nextLimit =
-    detectAnalyticalLimitFollowUp(
-      question
-    );
-
-  const analyticalRankIndex =
-    detectAnalyticalRankIndexFollowUp(
-      question
-    );
-
-  /**
-   * Resolve a newly requested REAL schema metric.
-   *
-   * If the wording is only "what about the total?" this may resolve
-   * nothing, which is correct: keep the previous metric.
-   */
-  /**
-   * Resolve a NEW metric only when the user explicitly names a real
-   * schema column.
-   *
-   * IMPORTANT:
-   * Do NOT use fuzzy column inference for aggregation-only follow-ups.
-   *
-   * Example:
-   *
-   *   previous metric: ACTUAL SALARY
-   *   question: "What about the average?"
-   *
-   * The word "average" must change ONLY the aggregation. It must not
-   * fuzzy-match an unrelated column such as AGE.
-   *
-   * But:
-   *
-   *   "What about authorized salary?"
-   *
-   * explicitly names a real schema field, so the metric should change.
-   */
-  const explicitMetricMatches =
-    findExplicitSchemaColumns({
-      schema,
-      question,
-
-      preferredDataset:
-        previous.dataset,
-    })
-      .filter(
-        (item) =>
-          normalizeText(
-            item?.column ||
-            ""
-          ) !==
-          normalizeText(
-            previous.groupBy ||
-            ""
-          ) &&
-          normalizeText(
-            item?.column ||
-            ""
-          ) !==
-          normalizeText(
-            previous.labelColumn ||
-            ""
-          )
-      );
-
-  const requestedMetric =
-    explicitMetricMatches[0] ||
-    null;
-
-  let metricColumn =
-    previous.column ||
-    null;
-
-  if (
-    requestedMetric?.column
-  ) {
-    metricColumn =
-      requestedMetric.column;
-  }
-
-  let aggregation =
-    nextAggregation ||
-    previous.aggregation ||
-    null;
-
-  /**
-   * CONVERSATIONAL ANALYTICS SAFEGUARD
-   * ==================================
-   *
-   * "number of <numeric metric>" describes the metric itself.
-   * It must NOT become aggregation = "count".
-   *
-   * Example:
-   *
-   *   Show me the top 5 associations by number of members.
-   *
-   * If the live schema resolves "number of members" to a real numeric
-   * field such as "No. of members", rank that numeric value directly.
-   *
-   * This also repairs stale conversation state from an earlier bad plan
-   * where previous.aggregation was already "count".
-   */
-  const questionText =
-    normalizeText(
-      question
-    );
-
-  const metricDatasetSchema =
-    (schema || []).find(
-      (item) =>
-        String(
-          item?.name || ""
-        ) ===
-        String(
-          previous.dataset || ""
-        )
-    );
-
-  const metricDatasetRows =
-    datasets?.[
-      previous.dataset
-    ];
-
-  const metricSchemaColumn =
-    metricDatasetSchema
-      ?.columns
-      ?.find(
-        (column) =>
-          String(
-            column?.name || ""
-          ) ===
-          String(
-            metricColumn || ""
-          )
-      ) ||
-    null;
-
-  const metricIsNumeric =
-    metricSchemaColumn &&
-    Array.isArray(
-      metricDatasetRows
-    ) &&
-    isNumericLikeColumn({
-      column:
-        metricSchemaColumn,
-
-      rows:
-        metricDatasetRows,
-    });
-
-  const numberOfPhrase =
-    /\bnumber\s+of\b/.test(
-      questionText
-    );
-
-  const explicitCountPhrase =
-    /\b(?:count|how many)\b/.test(
-      questionText
-    );
-
-  if (
-    metricIsNumeric &&
-    numberOfPhrase &&
-    !explicitCountPhrase
-  ) {
-    aggregation =
-      null;
-  }
-
-  /**
-   * Rank operations express highest/lowest through direction.
-   * Words like "highest" should not accidentally replace an existing
-   * aggregate such as average with maximum.
-   */
-  if (
-    wasRanking &&
-    !/\b(?:average|avg|mean|total|sum|combined|count|how many|number of)\b/.test(
-      questionText
-    )
-  ) {
-    aggregation =
-      previous.aggregation ||
-      aggregation;
-  }
-
-  /**
-   * Re-apply the numeric "number of" safeguard AFTER the ranking
-   * inheritance block so a stale previous aggregation="count" cannot
-   * leak back into the new plan.
-   */
-  if (
-    metricIsNumeric &&
-    numberOfPhrase &&
-    !explicitCountPhrase
-  ) {
-    aggregation =
-      null;
-  }
-
-  let operation =
-    previousOperation;
-
-  if (wasRanking) {
-    operation =
-      hasGrouping &&
-      aggregation
-        ? "rank_groups"
-        : "rank_rows";
-  } else if (
-    hasGrouping &&
-    aggregation
-  ) {
-    operation =
-      aggregationToGroupedOperation(
-        aggregation
-      ) ||
-      previousOperation;
-  } else if (
-    aggregation === "sum"
-  ) {
-    operation =
-      "sum";
-  } else if (
-    aggregation === "average"
-  ) {
-    operation =
-      "average";
-  } else if (
-    aggregation === "minimum"
-  ) {
-    operation =
-      "minimum";
-  } else if (
-    aggregation === "maximum"
-  ) {
-    operation =
-      "maximum";
-  }
-
-  /**
-   * "Show top/bottom N" turns a grouped calculation into a ranking.
-   */
-  if (
-    nextLimit &&
-    hasGrouping
-  ) {
-    operation =
-      aggregation
-        ? "rank_groups"
-        : "rank_rows";
-  }
-
-  const groupBy =
-    operation === "rank_rows"
-      ? null
-      : (
-          previous.groupBy ||
-          previous.labelColumn ||
-          null
-        );
-
-  const excludedValues =
-    detectAnalyticalExclusions({
-      datasets,
-      context,
-      question,
-    });
-
-  const labelColumn =
-    previous.labelColumn ||
-    groupBy ||
-    null;
-
-  const direction =
-    nextDirection ||
-    previous.direction ||
-    (
-      operation ===
-        "rank_groups" ||
-      operation ===
-        "rank_rows"
-        ? "desc"
-        : null
-    );
-
-  const limit =
-    nextLimit ||
-    previous.limit ||
-    (
-      operation ===
-        "rank_groups" ||
-      operation ===
-        "rank_rows"
-        ? 1
-        : 100
-    );
-
-  const selectColumns =
-    [
-      groupBy,
-      labelColumn,
-      metricColumn,
-    ].filter(
-      (value, index, array) =>
-        value &&
-        array.indexOf(value) ===
-          index
-    );
-
-  return {
-    route:
-      "dataset",
-
-    dataset:
-      previous.dataset,
-
-    operation,
-
-    column:
-      metricColumn,
-
-    labelColumn,
-
-    groupBy,
-
-    aggregation:
-      operation ===
-        "rank_groups"
-        ? aggregation
-        : (
-            operation.startsWith(
-              "group_"
-            )
-              ? null
-              : aggregation
-          ),
-
-    direction,
-
-    filters:
-      mergeAnalyticalExclusionFilter({
-        filters:
-          previous.filters,
-
-        groupColumn:
-          groupBy,
-
-        excludedValues,
-      }),
-
-    filterGroups:
-      Array.isArray(
-        previous.filterGroups
-      )
-        ? previous.filterGroups.map(
-            (group) => ({
-              ...group,
-
-              filters:
-                Array.isArray(
-                  group?.filters
-                )
-                  ? group.filters.map(
-                      (filter) => ({
-                        ...filter,
-
-                        value:
-                          Array.isArray(
-                            filter?.value
-                          )
-                            ? [
-                                ...filter.value,
-                              ]
-                            : filter?.value,
-                      })
-                    )
-                  : [],
-            })
-          )
-        : [],
-
-    filterGroupLogic:
-      previous.filterGroupLogic ||
-      null,
-
-    selectColumns,
-
-    outputRequested:
-      true,
-
-    transform:
-      null,
-
-    limit,
-
-    showAll:
-      false,
-
-    /**
-     * This flag is ignored by the calculation engine. It is useful
-     * in debug output to show that the plan came from verified memory.
-     */
-    conversationalAnalytics:
-      true,
-
-    /**
-     * Optional zero-based ordinal selection.
-     *
-     * Example:
-     *   "What is the second highest?"
-     *   -> execute top 2
-     *   -> keep result index 1
-     */
-    analyticalRankIndex:
-      analyticalRankIndex !==
-        null
-        ? analyticalRankIndex
-        : null,
-  };
-}
-
-
-/**
- * ==========================================================
- * CHAINED MULTI-ROW FOLLOW-UPS
- * ==========================================================
- *
- * Examples:
- *
- *   "Who are those persons?"
- *   -> [two verified rows]
- *
- *   "What are their position titles?"
- *   "What are their stations?"
- *
- * The same filter groups are preserved and only the requested
- * output field changes.
- *
- * This is schema-driven and dataset-agnostic.
- */
-
-function hasPluralSelectionReference(
-  question
-) {
-  const text =
-    normalizeText(question);
-
-  if (!text) {
-    return false;
-  }
-
-  return (
-    /\b(their|them|those|these|the two|both)\b/i.test(
-      text
-    )
-  );
-}
-
-
-function buildMultiRowFieldFollowUpPlan({
-  schema,
-  context,
-  question,
-}) {
-  if (
-    !context?.isFollowUp ||
-    !hasPluralSelectionReference(
-      question
-    )
-  ) {
-    return null;
-  }
-
-  const previousPlan =
-    context.lastPlan;
-
-  if (
-    !previousPlan ||
-    previousPlan.route !==
-      "dataset" ||
-    !previousPlan.dataset ||
-    !Array.isArray(
-      previousPlan.filterGroups
-    ) ||
-    previousPlan.filterGroups.length <
-      2
-  ) {
-    return null;
-  }
-
-  /**
-   * The new follow-up must explicitly resolve to a real field.
-   * Otherwise questions such as "compare them" should continue to
-   * the existing comparison follow-up logic.
-   */
-  const requested =
-    inferRequestedColumnFromQuestion({
-      schema,
-      question,
-
-      preferredDataset:
-        previousPlan.dataset,
-
-      excludedColumns:
-        [],
-    });
-
-  if (!requested?.column) {
-    return null;
-  }
-
-  const requestedColumn =
-    requested.column;
-
-  /**
-   * Preserve the previous identity/label column when available.
-   * That lets the natural response pair each requested value with
-   * the same person/project/municipality/etc. from the prior turn.
-   */
-  const previousIdentityColumn =
-    previousPlan.labelColumn ||
-    (
-      Array.isArray(
-        previousPlan.selectColumns
-      )
-        ? previousPlan.selectColumns.find(
-            (column) =>
-              column &&
-              normalizeText(
-                column
-              ) !==
-                normalizeText(
-                  previousPlan.column ||
-                  ""
-                )
-          )
-        : null
-    ) ||
-    null;
-
-  const selectColumns = [];
-
-  if (
-    previousIdentityColumn &&
-    normalizeText(
-      previousIdentityColumn
-    ) !==
-      normalizeText(
-        requestedColumn
-      )
-  ) {
-    selectColumns.push(
-      previousIdentityColumn
-    );
-  }
-
-  selectColumns.push(
-    requestedColumn
-  );
-
-  return {
-    route:
-      "dataset",
-
-    dataset:
-      previousPlan.dataset,
-
-    operation:
-      "lookup",
-
-    column:
-      requestedColumn,
-
-    labelColumn:
-      previousIdentityColumn ||
-      null,
-
-    groupBy:
-      null,
-
-    aggregation:
-      null,
-
-    direction:
-      null,
-
-    filters:
-      [],
-
-    filterGroups:
-      previousPlan.filterGroups.map(
-        (group) => ({
-          ...group,
-
-          filters:
-            Array.isArray(
-              group?.filters
-            )
-              ? group.filters.map(
-                  (filter) => ({
-                    ...filter,
-
-                    value:
-                      Array.isArray(
-                        filter?.value
-                      )
-                        ? [
-                            ...filter.value,
-                          ]
-                        : filter?.value,
-                  })
-                )
-              : [],
-        })
-      ),
-
-    filterGroupLogic:
-      previousPlan.filterGroupLogic ||
-      "or",
-
-    selectColumns,
-
-    outputRequested:
-      true,
-
-    transform:
-      null,
-
-    limit:
-      100,
-
-    showAll:
-      true,
-  };
-}
-
-
-/**
- * ==========================================================
- * PREVIOUS-RESULT IDENTITY FOLLOW-UPS
- * ==========================================================
- *
- * Handles:
- *   "Who are those persons?"
- *   "Who are those employees?"
- *   "Show those records."
- *   "Which municipalities are those?"
- *
- * It uses the previous VERIFIED JavaScript result, not Groq prose.
- * No dashboard, worksheet, person, division, province, municipality,
- * or business field is hardcoded.
- */
-
-function detectPreviousResultIdentityRequest(
-  question
-) {
-  const text =
-    normalizeText(question);
-
-  if (!text) {
-    return false;
-  }
-
-  const hasReference =
-    /\b(those|these|them|the two)\b/i.test(
-      text
-    );
-
-  if (!hasReference) {
-    return false;
-  }
-
-  return (
-    /\bwho\b/i.test(text) ||
-    /\bwhich\b/i.test(text) ||
-    /\bwhat\b/i.test(text) ||
-    /\bshow\b/i.test(text) ||
-    /\blist\b/i.test(text) ||
-    /\bgive\b/i.test(text) ||
-    /\bpersons?\b/i.test(text) ||
-    /\bpeople\b/i.test(text) ||
-    /\bemployees?\b/i.test(text) ||
-    /\bincumbents?\b/i.test(text) ||
-    /\bstaff\b/i.test(text) ||
-    /\brecords?\b/i.test(text) ||
-    /\brows?\b/i.test(text)
-  );
-}
-
-
-function getDatasetSchema(
-  schema,
-  datasetName
-) {
-  return (
-    (schema || []).find(
-      (item) =>
-        String(item?.name || "") ===
-        String(datasetName || "")
-    ) ||
-    null
-  );
-}
-
-
-function findPreviousResultIdentityColumn({
-  schema,
-  rows,
-  datasetName,
-  question,
-  excludedColumns = [],
-}) {
-  const datasetSchema =
-    getDatasetSchema(
-      schema,
-      datasetName
-    );
-
-  if (!datasetSchema) {
-    return null;
-  }
-
-  const excluded =
-    new Set(
-      (excludedColumns || [])
-        .filter(Boolean)
-        .map(
-          (column) =>
-            normalizeText(column)
-        )
-    );
-
-  // Honor a real field explicitly requested by the follow-up.
-  const requested =
-    inferRequestedColumnFromQuestion({
-      schema,
-      question,
-      preferredDataset:
-        datasetName,
-      excludedColumns,
-    });
-
-  if (
-    requested?.column &&
-    !excluded.has(
-      normalizeText(
-        requested.column
-      )
-    )
-  ) {
-    return requested.column;
-  }
-
-  const normalizedQuestion =
-    normalizeText(question);
-
-  const asksForPerson =
-    /\b(who|person|persons|people|employee|employees|incumbent|incumbents|staff)\b/i.test(
-      normalizedQuestion
-    );
-
-  const candidates =
-    (datasetSchema.columns || [])
-      .filter(
-        (column) =>
-          column?.name &&
-          !excluded.has(
-            normalizeText(
-              column.name
-            )
-          )
-      )
-      .map(
-        (column, index) => {
-          const name =
-            normalizeText(
-              column.name
-            );
-
-          let score =
-            similarity(
-              normalizedQuestion,
-              name
-            );
-
-          const questionTokens =
-            new Set(
-              normalizedQuestion
-                .split(/\s+/)
-                .filter(Boolean)
-            );
-
-          const columnTokens =
-            name
-              .split(/\s+/)
-              .filter(Boolean);
-
-          if (
-            columnTokens.length
-          ) {
-            const overlap =
-              columnTokens.filter(
-                (token) =>
-                  questionTokens.has(token)
-              ).length;
-
-            score +=
-              overlap /
-              columnTokens.length;
-          }
-
-          if (asksForPerson) {
-            if (
-              /\b(full name|name of incumbent|employee name|person name)\b/.test(
-                name
-              )
-            ) {
-              score += 3;
-            } else if (
-              /\b(name|incumbent|employee|person|staff)\b/.test(
-                name
-              )
-            ) {
-              score += 2;
-            } else if (
-              /\b(first name|last name|surname)\b/.test(
-                name
-              )
-            ) {
-              score += 1;
-            }
-          }
-
-          const samples =
-            (rows || [])
-              .slice(0, 40)
-              .map(
-                (row) =>
-                  row?.[
-                    column.name
-                  ]
-              )
-              .filter(
-                (value) =>
-                  value !== null &&
-                  value !== undefined &&
-                  String(value).trim() !== ""
-              );
-
-          if (
-            samples.some(
-              (value) =>
-                /[\p{L}]/u.test(
-                  String(value)
-                )
-            )
-          ) {
-            score += 0.25;
-          }
-
-          if (
-            samples.some(
-              (value) =>
-                /^[\p{L}.'-]+(?:\s+[\p{L}.'-]+)+$/u.test(
-                  String(value).trim()
-                )
-            )
-          ) {
-            score += 0.25;
-          }
-
-          return {
-            column:
-              column.name,
-            score,
-            index,
-          };
-        })
-      .sort(
-        (a, b) =>
-          b.score -
-            a.score ||
-          a.index -
-            b.index
-      );
-
-  return (
-    candidates[0]?.column ||
-    null
-  );
-}
-
-
-function valuesMatchForPreviousResult(
-  actual,
-  expected
-) {
-  if (
-    actual === null ||
-    actual === undefined ||
-    expected === null ||
-    expected === undefined
-  ) {
-    return false;
-  }
-
-  const actualNumber =
-    parseNumber(actual);
-
-  const expectedNumber =
-    parseNumber(expected);
-
-  if (
-    actualNumber !== null &&
-    expectedNumber !== null
-  ) {
-    const tolerance =
-      Math.max(
-        1e-9,
-        Math.abs(
-          expectedNumber
-        ) * 1e-9
-      );
-
-    return (
-      Math.abs(
-        actualNumber -
-        expectedNumber
-      ) <= tolerance
-    );
-  }
-
-  return (
-    normalizeText(actual) ===
-    normalizeText(expected)
-  );
-}
-
-
-function buildPreviousResultIdentityPlan({
-  datasets,
-  schema,
-  context,
-  question,
-}) {
-  const previousPlan =
-    context?.lastPlan;
-
-  const previousResult =
-    context?.lastResult;
-
-  if (
-    !previousPlan ||
-    !previousResult ||
-    previousPlan.route !==
-      "dataset"
-  ) {
-    return null;
-  }
-
-  const datasetName =
-    previousPlan.dataset;
-
-  const groupColumn =
-    previousPlan.groupBy;
-
-  const metricColumn =
-    previousPlan.column;
-
-  const rows =
-    datasets?.[
-      datasetName
-    ];
-
-  if (
-    !datasetName ||
-    !groupColumn ||
-    !metricColumn ||
-    !Array.isArray(rows) ||
-    !rows.length
-  ) {
-    return null;
-  }
-
-  const verifiedRows =
-    Array.isArray(
-      previousResult.results
-    )
-      ? previousResult.results
-      : [];
-
-  if (!verifiedRows.length) {
-    return null;
-  }
-
-  const identityColumn =
-    findPreviousResultIdentityColumn({
-      schema,
-      rows,
-      datasetName,
-      question,
-      excludedColumns: [
-        groupColumn,
-        metricColumn,
-      ],
-    });
-
-  if (!identityColumn) {
-    return null;
-  }
-
-  const filterGroups = [];
-  const seen =
-    new Set();
-
-  for (
-    const resultRow of
-    verifiedRows
-  ) {
-    if (
-      !resultRow ||
-      typeof resultRow !==
-        "object"
-    ) {
-      continue;
-    }
-
-    let groupValue =
-      resultRow[
-        groupColumn
-      ];
-
-    let metricValue =
-      resultRow[
-        metricColumn
-      ];
-
-    if (
-      groupValue === undefined
-    ) {
-      groupValue =
-        resultRow.label ??
-        resultRow.group ??
-        resultRow.groupValue;
-    }
-
-    if (
-      metricValue === undefined
-    ) {
-      metricValue =
-        resultRow.value ??
-        resultRow.result ??
-        resultRow.maximum ??
-        resultRow.minimum ??
-        resultRow.average ??
-        resultRow.sum;
-    }
-
-    if (
-      groupValue === undefined ||
-      groupValue === null ||
-      metricValue === undefined ||
-      metricValue === null
-    ) {
-      continue;
-    }
-
-    // Resolve calculated values back to a real worksheet row.
-    const matchingRow =
-      rows.find(
-        (row) =>
-          valuesMatchForPreviousResult(
-            row?.[
-              groupColumn
-            ],
-            groupValue
-          ) &&
-          valuesMatchForPreviousResult(
-            row?.[
-              metricColumn
-            ],
-            metricValue
-          )
-      );
-
-    if (!matchingRow) {
-      continue;
-    }
-
-    const realGroupValue =
-      matchingRow[
-        groupColumn
-      ];
-
-    const realMetricValue =
-      matchingRow[
-        metricColumn
-      ];
-
-    const key = [
-      normalizeText(
-        realGroupValue
-      ),
-      normalizeText(
-        realMetricValue
-      ),
-    ].join("::");
-
-    if (seen.has(key)) {
-      continue;
-    }
-
-    seen.add(key);
-
-    filterGroups.push({
-      logic:
-        "and",
-
-      filters: [
-        {
-          column:
-            groupColumn,
-          operator:
-            "equals",
-          value:
-            realGroupValue,
-        },
-
-        {
-          column:
-            metricColumn,
-          operator:
-            "equals",
-          value:
-            realMetricValue,
-        },
-      ],
-    });
-  }
-
-  if (!filterGroups.length) {
-    return null;
-  }
-
-  return {
-    route:
-      "dataset",
-
-    dataset:
-      datasetName,
-
-    operation:
-      "lookup",
-
-    column:
-      identityColumn,
-
-    labelColumn:
-      identityColumn,
-
-    groupBy:
-      null,
-
-    aggregation:
-      null,
-
-    direction:
-      null,
-
-    filters:
-      [],
-
-    filterGroups,
-
-    filterGroupLogic:
-      "or",
-
-    selectColumns: [
-      identityColumn,
-      groupColumn,
-      metricColumn,
-    ],
-
-    outputRequested:
-      true,
-
-    transform:
-      null,
-
-    limit:
-      100,
-
-    showAll:
-      true,
-  };
-}
-
-
-/**
- * ==========================================================
- * STEP 10 — DETECT ANALYTICAL COMPARISONS
- * ==========================================================
- *
- * Examples:
- *
- * "Who has the higher salary?"
- * "Which one is lower?"
- * "What is the difference?"
- * "Compare them."
- *
- * This does NOT perform calculations.
- *
- * It only determines which comparison operation
- * JavaScript should execute.
- */
-function detectComparisonRequest(
-  question
-) {
-  const text = String(
-    question || ""
-  )
-    .toLowerCase()
-    .trim();
-
-  if (!text) {
-    return null;
-  }
-
-  // ========================================================
-  // PERCENTAGE COMPARISONS
-  // ========================================================
-
-  if (
-    /\b(?:what|how much|how many)?\s*(?:is\s+the\s+)?percentage\s+difference\b/i.test(
-      text
-    ) ||
-    /\bpercent(?:age)?\s+difference\b/i.test(
-      text
-    )
-  ) {
-    return "percentage_difference";
-  }
-
-  if (
-    /\b(?:what|how much|how many)?\s*(?:percentage|percent)\s+higher\b/i.test(
-      text
-    ) ||
-    /\bhow many percent higher\b/i.test(
-      text
-    )
-  ) {
-    return "percentage_higher";
-  }
-
-  if (
-    /\b(?:what|how much|how many)?\s*(?:percentage|percent)\s+lower\b/i.test(
-      text
-    ) ||
-    /\bhow many percent lower\b/i.test(
-      text
-    )
-  ) {
-    return "percentage_lower";
-  }
-
-  // ========================================================
-  // RATIO / TIMES COMPARISON
-  // ========================================================
-
-  if (
-    /\b(?:what(?:'s| is) )?(?:the )?ratio\b/i.test(
-      text
-    ) ||
-    /\bhow many times\b/i.test(
-      text
-    ) ||
-    /\b(?:times|x) (?:higher|larger|greater|more)\b/i.test(
-      text
-    )
-  ) {
-    return "ratio";
-  }
-
-  // ========================================================
-  // PERCENT HIGHER / LOWER — conversational variants
-  // ========================================================
-
-  if (
-    /\bby what percent(?:age)?\b/i.test(
-      text
-    ) ||
-    /\bwhat percent(?:age)? (?:more|greater)\b/i.test(
-      text
-    )
-  ) {
-    return "percentage_higher";
-  }
-
-  if (
-    /\bwhat percent(?:age)? less\b/i.test(
-      text
-    )
-  ) {
-    return "percentage_lower";
-  }
-
-  // ========================================================
-  // DIFFERENCE
-  // ========================================================
-
-  if (
-    /\b(?:what(?:'s| is) )?(?:the )?difference\b/i.test(
-      text
-    ) ||
-    /\bhow much (?:more|less|higher|lower)\b/i.test(
-      text
-    )
-  ) {
-    return "difference";
-  }
-
-  // ========================================================
-  // LOWER
-  // ========================================================
-
-  if (
-    /\bwhich (?:one )?is (?:the )?lower\b/i.test(
-      text
-    ) ||
-    /\bwho (?:has|have) (?:the )?lower\b/i.test(
-      text
-    ) ||
-    /\bwhich (?:one )?has (?:the )?lower\b/i.test(
-      text
-    )
-  ) {
-    return "lower";
-  }
-
-  // ========================================================
-  // HIGHER
-  // ========================================================
-
-  if (
-    /\bwhich (?:one )?is (?:the )?higher\b/i.test(
-      text
-    ) ||
-    /\bwho (?:has|have) (?:the )?higher\b/i.test(
-      text
-    ) ||
-    /\bwhich (?:one )?has (?:the )?higher\b/i.test(
-      text
-    )
-  ) {
-    return "higher";
-  }
-
-  // ========================================================
-  // GENERIC COMPARISON
-  // ========================================================
-
-  if (
-    /\bcompare (?:them|those|the two)\b/i.test(
-      text
-    )
-  ) {
-    return "higher";
-  }
-
-  return null;
-}
-
-
-/**
- * ==========================================================
- * CONVERSATIONAL ANALYTICS V2 — RESULT COMPARISONS
- * ==========================================================
- *
- * Compare two values that were returned inside ONE verified grouped/
- * ranked analytical result.
- *
- * Example:
- *   Compare average X for Group A and Group B
- *   -> [{ label: A, value: ... }, { label: B, value: ... }]
- *
- * Follow-ups:
- *   "Which one is higher?"
- *   "What is the difference?"
- *   "What percentage higher?"
- *
- * This is fully schema/dataset agnostic.
- */
-
-function formatAnalyticalNumber(
-  value
-) {
-  return Number(value)
-    .toLocaleString(
-      "en-US",
-      {
-        maximumFractionDigits:
-          2,
-      }
-    );
-}
-
-
-function getVerifiedAnalyticalPair(
-  context
-) {
-  const lastResult =
-    context?.lastResult;
-
-  const lastPlan =
-    context?.lastPlan;
-
-  if (
-    !lastResult ||
-    !lastPlan ||
-    lastResult.success === false
-  ) {
-    return null;
-  }
-
-  const operation =
-    String(
-      lastResult.operation ||
-      lastPlan.operation ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-
-  const isAnalytical =
-    operation ===
-      "rank_groups" ||
-    operation ===
-      "group_sum" ||
-    operation ===
-      "group_average" ||
-    operation ===
-      "group_minimum" ||
-    operation ===
-      "group_maximum" ||
-    operation ===
-      "group_count";
-
-  if (!isAnalytical) {
-    return null;
-  }
-
-  const usable =
-    Array.isArray(
-      lastResult.results
-    )
-      ? lastResult.results
-          .map(
-            (item) => ({
-              label:
-                item?.label ??
-                null,
-
-              value:
-                Number(
-                  item?.value
-                ),
-            })
-          )
-          .filter(
-            (item) =>
-              item.label !==
-                null &&
-              item.label !==
-                undefined &&
-              String(
-                item.label
-              ).trim() !==
-                "" &&
-              Number.isFinite(
-                item.value
-              )
-          )
-      : [];
-
-  if (
-    usable.length !== 2
-  ) {
-    return {
-      ambiguous:
-        usable.length > 2,
-
-      count:
-        usable.length,
-
-      items:
-        usable,
-
-      metric:
-        lastResult.column ||
-        lastPlan.column ||
-        "value",
-    };
-  }
-
-  return {
-    ambiguous:
-      false,
-
-    count:
-      2,
-
-    items:
-      usable,
-
-    metric:
-      lastResult.column ||
-      lastPlan.column ||
-      "value",
-  };
-}
-
-
-
-function cleanAnalyticalLabel(
-  value
-) {
-  return String(
-    value ?? ""
-  )
-    .replace(
-      /[\r\n]+/g,
-      " "
-    )
-    .replace(
-      /\s+/g,
-      " "
-    )
-    .trim();
-}
-
-
-function getVerifiedAnalyticalSet(
-  context
-) {
-  const lastResult =
-    context?.lastResult;
-
-  const lastPlan =
-    context?.lastPlan;
-
-  if (
-    !lastResult ||
-    !lastPlan ||
-    lastResult.success === false
-  ) {
-    return null;
-  }
-
-  const operation =
-    String(
-      lastResult.operation ||
-      lastPlan.operation ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-
-  const isAnalytical =
-    [
-      "rank_groups",
-      "rank_rows",
-      "group_sum",
-      "group_average",
-      "group_minimum",
-      "group_maximum",
-      "group_count",
-    ].includes(
-      operation
-    );
-
-  if (!isAnalytical) {
-    return null;
-  }
-
-  const items =
-    Array.isArray(
-      lastResult.results
-    )
-      ? lastResult.results
-          .map(
-            (item, index) => ({
-              index,
-
-              label:
-                item?.label ??
-                item?.name ??
-                null,
-
-              value:
-                Number(
-                  item?.value
-                ),
-            })
-          )
-          .filter(
-            (item) =>
-              item.label !==
-                null &&
-              item.label !==
-                undefined &&
-              cleanAnalyticalLabel(
-                item.label
-              ) !==
-                "" &&
-              Number.isFinite(
-                item.value
-              )
-          )
-      : [];
-
-  if (!items.length) {
-    return null;
-  }
-
-  return {
-    items,
-
-    count:
-      items.length,
-
-    metric:
-      lastResult.column ||
-      lastPlan.column ||
-      "value",
-
-    aggregation:
-      lastResult.aggregation ||
-      lastPlan.aggregation ||
-      null,
-
-    groupBy:
-      lastResult.groupBy ||
-      lastResult.labelColumn ||
-      lastPlan.groupBy ||
-      lastPlan.labelColumn ||
-      "group",
-
-    direction:
-      lastResult.direction ||
-      lastPlan.direction ||
-      null,
-  };
-}
-
-
-function detectRequestedResultSubset(
-  question
-) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return null;
-  }
-
-  const topMatch =
-    text.match(
-      /\b(?:top|first)\s+(\d{1,2})\b/
-    );
-
-  if (topMatch?.[1]) {
-    return {
-      direction:
-        "top",
-      limit:
-        Math.max(
-          1,
-          Math.min(
-            Number(
-              topMatch[1]
-            ),
-            100
-          )
-        ),
-    };
-  }
-
-  const bottomMatch =
-    text.match(
-      /\b(?:bottom|last)\s+(\d{1,2})\b/
-    );
-
-  if (bottomMatch?.[1]) {
-    return {
-      direction:
-        "bottom",
-      limit:
-        Math.max(
-          1,
-          Math.min(
-            Number(
-              bottomMatch[1]
-            ),
-            100
-          )
-        ),
-    };
-  }
-
-  return null;
-}
-
-
-function detectMultiResultIntent({
-  question,
-  mode,
-}) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  const normalizedMode =
-    String(
-      mode || ""
-    )
-      .trim()
-      .toLowerCase();
-
-  if (
-    /\b(?:explain|summarize|summary|interpret|what does this mean|what do these mean|tell me about|describe)\b/.test(
-      text
-    )
-  ) {
-    return "summary";
-  }
-
-  if (
-    /\b(?:largest|biggest|greatest)\s+(?:gap|difference|drop)\b/.test(
-      text
-    ) ||
-    /\bwhere is the biggest (?:gap|drop)\b/.test(
-      text
-    )
-  ) {
-    return "largest_gap";
-  }
-
-  if (
-    /\b(?:smallest|closest|nearest)\s+(?:gap|difference|values?|pair)\b/.test(
-      text
-    ) ||
-    /\bwhich (?:two|ones?) are closest\b/.test(
-      text
-    )
-  ) {
-    return "closest_pair";
-  }
-
-  if (
-    /\b(?:above|higher than)\s+(?:the\s+)?(?:overall\s+)?average\b/.test(
-      text
-    )
-  ) {
-    return "above_average";
-  }
-
-  if (
-    /\b(?:below|lower than)\s+(?:the\s+)?(?:overall\s+)?average\b/.test(
-      text
-    )
-  ) {
-    return "below_average";
-  }
-
-  if (
-    /\b(?:outlier|outliers|stand out|stands out|unusual|extreme values?)\b/.test(
-      text
-    )
-  ) {
-    return "outliers";
-  }
-
-  if (
-    /\bmedian\b/.test(
-      text
-    )
-  ) {
-    return "median";
-  }
-
-  if (
-    /\b(?:average|mean)\s+(?:of\s+)?(?:these|them|the results?|the values?)\b/.test(
-      text
-    ) ||
-    /\bwhat(?:'s| is) the average\b/.test(
-      text
-    )
-  ) {
-    return "average";
-  }
-
-  if (
-    /\b(?:range|spread|overall difference|difference across|how spread out)\b/.test(
-      text
-    )
-  ) {
-    return "spread";
-  }
-
-  if (
-    /\b(?:highest|largest|maximum|max|top one)\b/.test(
-      text
-    ) &&
-    !/\bsecond|third|fourth|fifth|\d+(?:st|nd|rd|th)\b/.test(
-      text
-    )
-  ) {
-    return "highest";
-  }
-
-  if (
-    /\b(?:lowest|smallest|minimum|min|bottom one)\b/.test(
-      text
-    ) &&
-    !/\bsecond|third|fourth|fifth|\d+(?:st|nd|rd|th)\b/.test(
-      text
-    )
-  ) {
-    return "lowest";
-  }
-
-  if (
-    /\b(?:trend|pattern|distribution|how do they compare|compare all|compare these|compare them)\b/.test(
-      text
-    )
-  ) {
-    return "summary";
-  }
-
-  if (
-    normalizedMode ===
-      "difference"
-  ) {
-    return "spread";
-  }
-
-  if (
-    normalizedMode ===
-      "ratio"
-  ) {
-    return "top_bottom_ratio";
-  }
-
-  if (
-    normalizedMode ===
-      "percentage_higher" ||
-    normalizedMode ===
-      "percentage_lower" ||
-    normalizedMode ===
-      "percentage_difference"
-  ) {
-    return normalizedMode;
-  }
-
-  if (
-    normalizedMode ===
-      "higher"
-  ) {
-    return "highest";
-  }
-
-  if (
-    normalizedMode ===
-      "lower"
-  ) {
-    return "lowest";
-  }
-
-  return "summary";
-}
-
-
-function findExplicitAnalyticalItems({
-  items,
-  question,
-}) {
-  const text =
-    normalizeText(
-      question
-    );
-
-  if (!text) {
-    return [];
-  }
-
-  const matches =
-    items
-      .filter(
-        (item) => {
-          const label =
-            normalizeText(
-              item.label
-            );
-
-          if (!label) {
-            return false;
-          }
-
-          const escaped =
-            label.replace(
-              /[.*+?^${}()|[\]\\]/g,
-              "\\$&"
-            );
-
-          return new RegExp(
-            `(^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`,
-            "u"
-          ).test(
-            text
-          );
-        }
-      );
-
-  if (
-    matches.length >= 2
-  ) {
-    return matches.slice(
-      0,
-      2
-    );
-  }
-
-  const ordinalMap = [
-    ["first", 0],
-    ["second", 1],
-    ["third", 2],
-    ["fourth", 3],
-    ["fifth", 4],
-    ["sixth", 5],
-    ["seventh", 6],
-    ["eighth", 7],
-    ["ninth", 8],
-    ["tenth", 9],
-  ];
-
-  const ordinalIndexes = [];
-
-  for (
-    const [word, index]
-    of ordinalMap
-  ) {
-    if (
-      new RegExp(
-        `\\b${word}\\b`
-      ).test(
-        text
-      )
-    ) {
-      ordinalIndexes.push(
-        index
-      );
-    }
-  }
-
-  const numericRefs =
-    [
-      ...text.matchAll(
-        /(?:#|number\s+)?(\d{1,2})(?:st|nd|rd|th)?/g
-      ),
-    ]
-      .map(
-        (match) =>
-          Number(
-            match[1]
-          ) - 1
-      )
-      .filter(
-        (index) =>
-          Number.isInteger(
-            index
-          ) &&
-          index >= 0 &&
-          index < items.length
-      );
-
-  const indexes = [
-    ...new Set([
-      ...ordinalIndexes,
-      ...numericRefs,
-    ]),
-  ];
-
-  if (
-    indexes.length >= 2
-  ) {
-    return indexes
-      .slice(
-        0,
-        2
-      )
-      .map(
-        (index) =>
-          items[index]
-      )
-      .filter(Boolean);
-  }
-
-  if (
-    /\b(?:highest|top|first)\b/.test(
-      text
-    ) &&
-    /\b(?:lowest|bottom|last)\b/.test(
-      text
-    )
-  ) {
-    const sorted =
-      [...items].sort(
-        (a, b) =>
-          b.value -
-          a.value
-      );
-
-    return [
-      sorted[0],
-      sorted[
-        sorted.length - 1
-      ],
-    ].filter(Boolean);
-  }
-
-  return matches;
-}
-
-
-function calculateMedian(
-  values
-) {
-  const sorted =
-    [...values].sort(
-      (a, b) =>
-        a - b
-    );
-
-  const middle =
-    Math.floor(
-      sorted.length / 2
-    );
-
-  if (
-    sorted.length % 2
-  ) {
-    return sorted[
-      middle
-    ];
-  }
-
-  return (
-    sorted[
-      middle - 1
-    ] +
-    sorted[
-      middle
-    ]
-  ) / 2;
-}
-
-
-function analyzeVerifiedAnalyticalSet({
-  context,
-  question,
-  mode,
-}) {
-  const set =
-    getVerifiedAnalyticalSet(
-      context
-    );
-
-  if (
-    !set ||
-    set.count < 2
-  ) {
-    return null;
-  }
-
-  const metric =
-    cleanAnalyticalLabel(
-      set.metric
-    );
-
-  const groupLabel =
-    cleanAnalyticalLabel(
-      set.groupBy
-    );
-
-  const explicitPair =
-    findExplicitAnalyticalItems({
-      items:
-        set.items,
-      question,
-    });
-
-  if (
-    explicitPair.length === 2
-  ) {
-    const [
-      left,
-      right,
-    ] = explicitPair;
-
-    const difference =
-      Math.abs(
-        left.value -
-        right.value
-      );
-
-    const higher =
-      left.value >= right.value
-        ? left
-        : right;
-
-    const lower =
-      left.value <= right.value
-        ? left
-        : right;
-
-    const normalizedMode =
-      String(
-        mode || "difference"
-      )
-        .trim()
-        .toLowerCase();
-
-    if (
-      normalizedMode ===
-        "ratio"
-    ) {
-      if (
-        Math.abs(
-          lower.value
-        ) === 0
-      ) {
-        return {
-          success: false,
-          source:
-            "conversation-analytics",
-          operation:
-            "clarify",
-          answer:
-            `I can't calculate the ratio because ${cleanAnalyticalLabel(
-              lower.label
-            )}'s ${metric} is zero.`,
-        };
-      }
-
-      const ratio =
-        Math.abs(
-          higher.value
-        ) /
-        Math.abs(
-          lower.value
-        );
-
-      return {
-        success: true,
-        source:
-          "conversation-analytics",
-        operation:
-          "ratio",
-        metric,
-        results:
-          explicitPair,
-        ratio,
-        answer:
-          `${cleanAnalyticalLabel(
-            higher.label
-          )}'s ${metric} is approximately ${formatAnalyticalNumber(
-            ratio
-          )} times ${cleanAnalyticalLabel(
-            lower.label
-          )}'s.`,
-      };
-    }
-
-    if (
-      normalizedMode ===
-        "percentage_higher" ||
-      normalizedMode ===
-        "percentage_lower"
-    ) {
-      const denominator =
-        normalizedMode ===
-          "percentage_higher"
-          ? Math.abs(
-              lower.value
-            )
-          : Math.abs(
-              higher.value
-            );
-
-      if (denominator === 0) {
-        return {
-          success: false,
-          source:
-            "conversation-analytics",
-          operation:
-            "clarify",
-          answer:
-            "I can't calculate that percentage because the comparison baseline is zero.",
-        };
-      }
-
-      const percentage =
-        difference /
-        denominator *
-        100;
-
-      return {
-        success: true,
-        source:
-          "conversation-analytics",
-        operation:
-          normalizedMode,
-        metric,
-        results:
-          explicitPair,
-        percentage,
-        answer:
-          normalizedMode ===
-            "percentage_higher"
-            ? `${cleanAnalyticalLabel(
-                higher.label
-              )} is ${formatAnalyticalNumber(
-                percentage
-              )}% higher than ${cleanAnalyticalLabel(
-                lower.label
-              )} for ${metric}.`
-            : `${cleanAnalyticalLabel(
-                lower.label
-              )} is ${formatAnalyticalNumber(
-                percentage
-              )}% lower than ${cleanAnalyticalLabel(
-                higher.label
-              )} for ${metric}.`,
-      };
-    }
-
-    if (
-      normalizedMode ===
-        "higher"
-    ) {
-      return {
-        success: true,
-        source:
-          "conversation-analytics",
-        operation:
-          "compare",
-        metric,
-        results:
-          explicitPair,
-        winner:
-          higher.label,
-        answer:
-          `${cleanAnalyticalLabel(
-            higher.label
-          )} is higher at ${formatAnalyticalNumber(
-            higher.value
-          )}, compared with ${cleanAnalyticalLabel(
-            lower.label
-          )} at ${formatAnalyticalNumber(
-            lower.value
-          )}.`,
-      };
-    }
-
-    if (
-      normalizedMode ===
-        "lower"
-    ) {
-      return {
-        success: true,
-        source:
-          "conversation-analytics",
-        operation:
-          "compare",
-        metric,
-        results:
-          explicitPair,
-        winner:
-          lower.label,
-        answer:
-          `${cleanAnalyticalLabel(
-            lower.label
-          )} is lower at ${formatAnalyticalNumber(
-            lower.value
-          )}, compared with ${cleanAnalyticalLabel(
-            higher.label
-          )} at ${formatAnalyticalNumber(
-            higher.value
-          )}.`,
-      };
-    }
-
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "difference",
-      metric,
-      results:
-        explicitPair,
-      difference,
-      answer:
-        `The difference between ${cleanAnalyticalLabel(
-          left.label
-        )} and ${cleanAnalyticalLabel(
-          right.label
-        )} for ${metric} is ${formatAnalyticalNumber(
-          difference
-        )}.`,
-    };
-  }
-
-  const sortedDesc =
-    [...set.items].sort(
-      (a, b) =>
-        b.value -
-        a.value
-    );
-
-  const highest =
-    sortedDesc[0];
-
-  const lowest =
-    sortedDesc[
-      sortedDesc.length - 1
-    ];
-
-  const values =
-    set.items.map(
-      (item) =>
-        item.value
-    );
-
-  const average =
-    values.reduce(
-      (sum, value) =>
-        sum + value,
-      0
-    ) /
-    values.length;
-
-  const median =
-    calculateMedian(
-      values
-    );
-
-  const range =
-    highest.value -
-    lowest.value;
-
-  const sortedByValue =
-    [...set.items].sort(
-      (a, b) =>
-        b.value -
-        a.value
-    );
-
-  const adjacentGaps = [];
-
-  for (
-    let index = 0;
-    index <
-      sortedByValue.length - 1;
-    index += 1
-  ) {
-    const upper =
-      sortedByValue[index];
-
-    const lower =
-      sortedByValue[
-        index + 1
-      ];
-
-    adjacentGaps.push({
-      upper,
-      lower,
-      gap:
-        Math.abs(
-          upper.value -
-          lower.value
-        ),
-    });
-  }
-
-  const largestGap =
-    [...adjacentGaps].sort(
-      (a, b) =>
-        b.gap -
-        a.gap
-    )[0] ||
-    null;
-
-  const closestPair =
-    [...adjacentGaps].sort(
-      (a, b) =>
-        a.gap -
-        b.gap
-    )[0] ||
-    null;
-
-  const subset =
-    detectRequestedResultSubset(
-      question
-    );
-
-  if (subset) {
-    const chosen =
-      subset.direction ===
-        "top"
-        ? sortedDesc.slice(
-            0,
-            subset.limit
-          )
-        : [...sortedDesc]
-            .reverse()
-            .slice(
-              0,
-              subset.limit
-            );
-
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "multi_result_subset",
-      metric,
-      groupBy:
-        groupLabel,
-      results:
-        chosen,
-      answer:
-        `${subset.direction === "top" ? "Top" : "Bottom"} ${chosen.length} ${groupLabel.toLowerCase()}${chosen.length === 1 ? "" : "s"} by ${metric}:\n\n` +
-        chosen
-          .map(
-            (item, index) =>
-              `${index + 1}. **${cleanAnalyticalLabel(
-                item.label
-              )}** — ${formatAnalyticalNumber(
-                item.value
-              )}`
-          )
-          .join(
-            "\n"
-          ),
-    };
-  }
-
-  const intent =
-    detectMultiResultIntent({
-      question,
-      mode,
-    });
-
-  if (
-    intent ===
-      "highest"
-  ) {
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "multi_result_highest",
-      metric,
-      result:
-        highest,
-      answer:
-        `${cleanAnalyticalLabel(
-          highest.label
-        )} is the highest at ${formatAnalyticalNumber(
-          highest.value
-        )} for ${metric}.`,
-    };
-  }
-
-  if (
-    intent ===
-      "lowest"
-  ) {
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "multi_result_lowest",
-      metric,
-      result:
-        lowest,
-      answer:
-        `${cleanAnalyticalLabel(
-          lowest.label
-        )} is the lowest at ${formatAnalyticalNumber(
-          lowest.value
-        )} for ${metric}.`,
-    };
-  }
-
-  if (
-    intent ===
-      "average"
-  ) {
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "multi_result_average",
-      metric,
-      average,
-      answer:
-        `The average ${metric} across these ${set.count} results is ${formatAnalyticalNumber(
-          average
-        )}.`,
-    };
-  }
-
-  if (
-    intent ===
-      "median"
-  ) {
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "multi_result_median",
-      metric,
-      median,
-      answer:
-        `The median ${metric} across these ${set.count} results is ${formatAnalyticalNumber(
-          median
-        )}.`,
-    };
-  }
-
-  if (
-    intent ===
-      "above_average" ||
-    intent ===
-      "below_average"
-  ) {
-    const matched =
-      set.items.filter(
-        (item) =>
-          intent ===
-            "above_average"
-            ? item.value >
-              average
-            : item.value <
-              average
-      );
-
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        intent,
-      metric,
-      average,
-      results:
-        matched,
-      answer:
-        `${matched.length} of the ${set.count} ${groupLabel.toLowerCase()}${set.count === 1 ? "" : "s"} are ${intent === "above_average" ? "above" : "below"} the returned-results average of ${formatAnalyticalNumber(
-          average
-        )}:\n\n` +
-        (
-          matched.length
-            ? matched
-                .sort(
-                  (a, b) =>
-                    b.value -
-                    a.value
-                )
-                .map(
-                  (item) =>
-                    `- **${cleanAnalyticalLabel(
-                      item.label
-                    )}** — ${formatAnalyticalNumber(
-                      item.value
-                    )}`
-                )
-                .join(
-                  "\n"
-                )
-            : "None."
-        ),
-    };
-  }
-
-  if (
-    intent ===
-      "largest_gap" &&
-    largestGap
-  ) {
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "largest_gap",
-      metric,
-      gap:
-        largestGap.gap,
-      results: [
-        largestGap.upper,
-        largestGap.lower,
-      ],
-      answer:
-        `The largest gap is between ${cleanAnalyticalLabel(
-          largestGap.upper.label
-        )} (${formatAnalyticalNumber(
-          largestGap.upper.value
-        )}) and ${cleanAnalyticalLabel(
-          largestGap.lower.label
-        )} (${formatAnalyticalNumber(
-          largestGap.lower.value
-        )}), a difference of ${formatAnalyticalNumber(
-          largestGap.gap
-        )}.`,
-    };
-  }
-
-  if (
-    intent ===
-      "closest_pair" &&
-    closestPair
-  ) {
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "closest_pair",
-      metric,
-      gap:
-        closestPair.gap,
-      results: [
-        closestPair.upper,
-        closestPair.lower,
-      ],
-      answer:
-        `${cleanAnalyticalLabel(
-          closestPair.upper.label
-        )} and ${cleanAnalyticalLabel(
-          closestPair.lower.label
-        )} are the closest, separated by ${formatAnalyticalNumber(
-          closestPair.gap
-        )}.`,
-    };
-  }
-
-  if (
-    intent ===
-      "top_bottom_ratio"
-  ) {
-    if (
-      Math.abs(
-        lowest.value
-      ) === 0
-    ) {
-      return {
-        success: false,
-        source:
-          "conversation-analytics",
-        operation:
-          "clarify",
-        answer:
-          `I can't calculate the highest-to-lowest ratio because ${cleanAnalyticalLabel(
-            lowest.label
-          )}'s ${metric} is zero.`,
-      };
-    }
-
-    const ratio =
-      Math.abs(
-        highest.value
-      ) /
-      Math.abs(
-        lowest.value
-      );
-
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "top_bottom_ratio",
-      metric,
-      ratio,
-      results: [
-        highest,
-        lowest,
-      ],
-      answer:
-        `${cleanAnalyticalLabel(
-          highest.label
-        )}'s ${metric} is approximately ${formatAnalyticalNumber(
-          ratio
-        )} times ${cleanAnalyticalLabel(
-          lowest.label
-        )}'s.`,
-    };
-  }
-
-  if (
-    intent ===
-      "percentage_higher" ||
-    intent ===
-      "percentage_lower"
-  ) {
-    const denominator =
-      intent ===
-        "percentage_higher"
-        ? Math.abs(
-            lowest.value
-          )
-        : Math.abs(
-            highest.value
-          );
-
-    if (denominator === 0) {
-      return {
-        success: false,
-        source:
-          "conversation-analytics",
-        operation:
-          "clarify",
-        answer:
-          "I can't calculate that percentage because the comparison baseline is zero.",
-      };
-    }
-
-    const percentage =
-      range /
-      denominator *
-      100;
-
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        intent,
-      metric,
-      percentage,
-      results: [
-        highest,
-        lowest,
-      ],
-      answer:
-        intent ===
-          "percentage_higher"
-          ? `${cleanAnalyticalLabel(
-              highest.label
-            )} is ${formatAnalyticalNumber(
-              percentage
-            )}% higher than ${cleanAnalyticalLabel(
-              lowest.label
-            )} among these results.`
-          : `${cleanAnalyticalLabel(
-              lowest.label
-            )} is ${formatAnalyticalNumber(
-              percentage
-            )}% lower than ${cleanAnalyticalLabel(
-              highest.label
-            )} among these results.`,
-    };
-  }
-
-  if (
-    intent ===
-      "percentage_difference"
-  ) {
-    const denominator =
-      (
-        Math.abs(
-          highest.value
-        ) +
-        Math.abs(
-          lowest.value
-        )
-      ) / 2;
-
-    const percentage =
-      denominator === 0
-        ? 0
-        : range /
-          denominator *
-          100;
-
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "percentage_difference",
-      metric,
-      percentage,
-      results: [
-        highest,
-        lowest,
-      ],
-      answer:
-        `The percentage difference between the highest and lowest ${metric} in these results is ${formatAnalyticalNumber(
-          percentage
-        )}%.`,
-    };
-  }
-
-  if (
-    intent ===
-      "outliers"
-  ) {
-    const sortedValues =
-      [...values].sort(
-        (a, b) =>
-          a - b
-      );
-
-    const percentile = (
-      arr,
-      p
-    ) => {
-      if (
-        arr.length === 1
-      ) {
-        return arr[0];
-      }
-
-      const position =
-        (
-          arr.length - 1
-        ) * p;
-
-      const lowerIndex =
-        Math.floor(
-          position
-        );
-
-      const upperIndex =
-        Math.ceil(
-          position
-        );
-
-      if (
-        lowerIndex ===
-        upperIndex
-      ) {
-        return arr[
-          lowerIndex
-        ];
-      }
-
-      const weight =
-        position -
-        lowerIndex;
-
-      return (
-        arr[
-          lowerIndex
-        ] *
-          (
-            1 - weight
-          ) +
-        arr[
-          upperIndex
-        ] *
-          weight
-      );
-    };
-
-    const q1 =
-      percentile(
-        sortedValues,
-        0.25
-      );
-
-    const q3 =
-      percentile(
-        sortedValues,
-        0.75
-      );
-
-    const iqr =
-      q3 - q1;
-
-    let outliers =
-      set.items.filter(
-        (item) =>
-          item.value <
-            q1 -
-              1.5 *
-                iqr ||
-          item.value >
-            q3 +
-              1.5 *
-                iqr
-      );
-
-    if (
-      !outliers.length
-    ) {
-      const farthest =
-        [...set.items].sort(
-          (a, b) =>
-            Math.abs(
-              b.value -
-              average
-            ) -
-            Math.abs(
-              a.value -
-              average
-            )
-        )[0];
-
-      return {
-        success: true,
-        source:
-          "conversation-analytics",
-        operation:
-          "outliers",
-        metric,
-        results:
-          [],
-        standout:
-          farthest,
-        answer:
-          `No clear 1.5×IQR outlier appears among these ${set.count} values. The value farthest from their average is ${cleanAnalyticalLabel(
-            farthest.label
-          )} at ${formatAnalyticalNumber(
-            farthest.value
-          )}.`,
-      };
-    }
-
-    outliers =
-      outliers.sort(
-        (a, b) =>
-          b.value -
-          a.value
-      );
-
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "outliers",
-      metric,
-      results:
-        outliers,
-      answer:
-        `Using the 1.5×IQR rule, ${outliers.length} result${outliers.length === 1 ? "" : "s"} stand out as outliers:\n\n` +
-        outliers
-          .map(
-            (item) =>
-              `- **${cleanAnalyticalLabel(
-                item.label
-              )}** — ${formatAnalyticalNumber(
-                item.value
-              )}`
-          )
-          .join(
-            "\n"
-          ),
-    };
-  }
-
-  const summaryParts = [
-    `${cleanAnalyticalLabel(
-      highest.label
-    )} is highest at ${formatAnalyticalNumber(
-      highest.value
-    )}, while ${cleanAnalyticalLabel(
-      lowest.label
-    )} is lowest at ${formatAnalyticalNumber(
-      lowest.value
-    )}.`,
-    `The overall range is ${formatAnalyticalNumber(
-      range
-    )}.`,
-    `The average of these ${set.count} returned values is ${formatAnalyticalNumber(
-      average
-    )}, and the median is ${formatAnalyticalNumber(
-      median
-    )}.`,
-  ];
-
-  if (
-    largestGap
-  ) {
-    summaryParts.push(
-      `The largest adjacent gap is ${formatAnalyticalNumber(
-        largestGap.gap
-      )}, between ${cleanAnalyticalLabel(
-        largestGap.upper.label
-      )} and ${cleanAnalyticalLabel(
-        largestGap.lower.label
-      )}.`
-    );
-  }
-
-  return {
-    success: true,
-    source:
-      "conversation-analytics",
-    operation:
-      intent ===
-        "spread"
-        ? "multi_result_spread"
-        : "multi_result_summary",
-    metric,
-    groupBy:
-      groupLabel,
-    count:
-      set.count,
-    highest,
-    lowest,
-    range,
-    average,
-    median,
-    largestGap,
-    answer:
-      summaryParts.join(
-        " "
-      ),
-  };
-}
-
-
-function compareVerifiedAnalyticalPair({
-  context,
-  mode,
-  question = "",
-}) {
-  const pair =
-    getVerifiedAnalyticalPair(
-      context
-    );
-
-  if (!pair) {
-    return null;
-  }
-
-  if (
-    pair.ambiguous
-  ) {
-    return analyzeVerifiedAnalyticalSet({
-      context,
-      question,
-      mode,
-    });
-  }
-
-  if (
-    pair.count !== 2
-  ) {
-    return null;
-  }
-
-  const [
-    left,
-    right,
-  ] = pair.items;
-
-  const difference =
-    Math.abs(
-      left.value -
-      right.value
-    );
-
-  const higher =
-    left.value >=
-    right.value
-      ? left
-      : right;
-
-  const lower =
-    left.value <=
-    right.value
-      ? left
-      : right;
-
-  const normalizedMode =
-    String(
-      mode || "higher"
-    )
-      .trim()
-      .toLowerCase();
-
-  if (
-    normalizedMode ===
-      "ratio"
-  ) {
-    const denominator =
-      Math.abs(
-        lower.value
-      );
-
-    if (denominator === 0) {
-      return {
-        success: false,
-        source:
-          "conversation-analytics",
-        operation:
-          "clarify",
-        answer:
-          `I can't calculate the ratio because ${lower.label}'s ${pair.metric} is zero.`,
-      };
-    }
-
-    const ratio =
-      Math.abs(
-        higher.value
-      ) / denominator;
-
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "ratio",
-
-      metric:
-        pair.metric,
-
-      leftLabel:
-        left.label,
-      rightLabel:
-        right.label,
-
-      leftValue:
-        left.value,
-      rightValue:
-        right.value,
-
-      ratio,
-
-      answer:
-        `${higher.label}'s ${pair.metric} is approximately ${formatAnalyticalNumber(
-          ratio
-        )} times ${lower.label}'s.`,
-    };
-  }
-
-  if (
-    normalizedMode ===
-      "difference"
-  ) {
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "difference",
-
-      metric:
-        pair.metric,
-
-      leftLabel:
-        left.label,
-      rightLabel:
-        right.label,
-
-      leftValue:
-        left.value,
-      rightValue:
-        right.value,
-
-      difference,
-
-      answer:
-        `The difference between ${left.label} and ${right.label} for ${pair.metric} is ${formatAnalyticalNumber(
-          difference
-        )}.`,
-    };
-  }
-
-  if (
-    normalizedMode ===
-      "percentage_higher" ||
-    normalizedMode ===
-      "percentage_lower" ||
-    normalizedMode ===
-      "percentage_difference"
-  ) {
-    let percentage = null;
-    let answer = "";
-
-    if (
-      normalizedMode ===
-        "percentage_higher"
-    ) {
-      const denominator =
-        Math.abs(
-          lower.value
-        );
-
-      if (denominator === 0) {
-        return {
-          success: false,
-          source:
-            "conversation-analytics",
-          operation:
-            "clarify",
-          answer:
-            `I can't calculate how many percent higher ${higher.label} is because the comparison baseline is zero.`,
-        };
-      }
-
-      percentage =
-        difference /
-        denominator *
-        100;
-
-      answer =
-        `${higher.label} is ${formatAnalyticalNumber(
-          percentage
-        )}% higher than ${lower.label} for ${pair.metric}.`;
-    } else if (
-      normalizedMode ===
-        "percentage_lower"
-    ) {
-      const denominator =
-        Math.abs(
-          higher.value
-        );
-
-      if (denominator === 0) {
-        return {
-          success: false,
-          source:
-            "conversation-analytics",
-          operation:
-            "clarify",
-          answer:
-            `I can't calculate how many percent lower ${lower.label} is because the comparison baseline is zero.`,
-        };
-      }
-
-      percentage =
-        difference /
-        denominator *
-        100;
-
-      answer =
-        `${lower.label} is ${formatAnalyticalNumber(
-          percentage
-        )}% lower than ${higher.label} for ${pair.metric}.`;
-    } else {
-      const denominator =
-        (
-          Math.abs(
-            left.value
-          ) +
-          Math.abs(
-            right.value
-          )
-        ) / 2;
-
-      percentage =
-        denominator === 0
-          ? 0
-          : difference /
-            denominator *
-            100;
-
-      answer =
-        `The percentage difference between ${left.label} and ${right.label} for ${pair.metric} is ${formatAnalyticalNumber(
-          percentage
-        )}%.`;
-    }
-
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        normalizedMode,
-
-      metric:
-        pair.metric,
-
-      leftLabel:
-        left.label,
-      rightLabel:
-        right.label,
-
-      leftValue:
-        left.value,
-      rightValue:
-        right.value,
-
-      difference,
-      percentage,
-
-      answer,
-    };
-  }
-
-  if (
-    left.value ===
-    right.value
-  ) {
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "compare",
-
-      metric:
-        pair.metric,
-
-      leftLabel:
-        left.label,
-      rightLabel:
-        right.label,
-
-      leftValue:
-        left.value,
-      rightValue:
-        right.value,
-
-      difference:
-        0,
-
-      answer:
-        `${left.label} and ${right.label} have the same ${pair.metric}: ${formatAnalyticalNumber(
-          left.value
-        )}.`,
-    };
-  }
-
-  if (
-    normalizedMode ===
-      "lower"
-  ) {
-    return {
-      success: true,
-      source:
-        "conversation-analytics",
-      operation:
-        "compare",
-
-      metric:
-        pair.metric,
-
-      winner:
-        lower.label,
-
-      leftLabel:
-        left.label,
-      rightLabel:
-        right.label,
-
-      leftValue:
-        left.value,
-      rightValue:
-        right.value,
-
-      difference,
-
-      answer:
-        `${lower.label} has the lower ${pair.metric} at ${formatAnalyticalNumber(
-          lower.value
-        )}.`,
-    };
-  }
-
-  return {
-    success: true,
-    source:
-      "conversation-analytics",
-    operation:
-      "compare",
-
-    metric:
-      pair.metric,
-
-    winner:
-      higher.label,
-
-    leftLabel:
-      left.label,
-    rightLabel:
-      right.label,
-
-    leftValue:
-      left.value,
-    rightValue:
-      right.value,
-
-    difference,
-
-    answer:
-      `${higher.label} has the higher ${pair.metric} at ${formatAnalyticalNumber(
-        higher.value
-      )}.`,
-  };
-}
-
-
-
-/**
- * ==========================================================
- * ORDINAL ANALYTICAL RESPONSE HELPERS
- * ==========================================================
- *
- * These helpers are schema/dataset agnostic.
- *
- * They only describe a VERIFIED ranked result that has already been
- * calculated by calculationEngine.js.
- */
-
-function formatConversationNumber(
-  value
-) {
-  const numeric =
-    Number(value);
-
-  if (
-    !Number.isFinite(
-      numeric
-    )
-  ) {
-    return String(
-      value ?? ""
-    );
-  }
-
-  return numeric.toLocaleString(
-    "en-US",
-    {
-      maximumFractionDigits:
-        2,
-    }
-  );
-}
-
-
-function ordinalLabel(
-  position
-) {
-  const value =
-    Number(position);
-
-  const words = {
-    1: "highest",
-    2: "second highest",
-    3: "third highest",
-    4: "fourth highest",
-    5: "fifth highest",
-    6: "sixth highest",
-    7: "seventh highest",
-    8: "eighth highest",
-    9: "ninth highest",
-    10: "tenth highest",
-  };
-
-  return (
-    words[value] ||
-    `${value}${(
-      value % 100 >= 11 &&
-      value % 100 <= 13
-    )
-      ? "th"
-      : value % 10 === 1
-        ? "st"
-        : value % 10 === 2
-          ? "nd"
-          : value % 10 === 3
-            ? "rd"
-            : "th"} highest`
-  );
-}
-
-
-function ordinalDirectionLabel(
-  position,
-  direction
-) {
-  const base =
-    ordinalLabel(
-      position
-    );
-
-  if (
-    String(
-      direction || ""
-    )
-      .trim()
-      .toLowerCase() ===
-      "asc"
-  ) {
-    return base.replace(
-      /highest$/,
-      "lowest"
-    );
-  }
-
-  return base;
-}
-
-
-function buildOrdinalAnalyticalAnswer({
-  result,
-  plan,
-}) {
-  const item =
-    Array.isArray(
-      result?.results
-    )
-      ? result.results[0]
-      : null;
-
-  if (
-    !item ||
-    item.label ===
-      null ||
-    item.label ===
-      undefined ||
-    !Number.isFinite(
-      Number(
-        item.value
-      )
-    )
-  ) {
-    return null;
-  }
-
-  const position =
-    Number(
-      result?.rankPosition ||
-      (
-        Number.isInteger(
-          plan?.analyticalRankIndex
-        )
-          ? plan.analyticalRankIndex +
-            1
-          : 1
-      )
-    );
-
-  const rankText =
-    ordinalDirectionLabel(
-      position,
-      plan?.direction ||
-      result?.direction
-    );
-
-  const groupLabel =
-    String(
-      result?.labelColumn ||
-      result?.groupBy ||
-      plan?.labelColumn ||
-      plan?.groupBy ||
-      "group"
-    )
-      .replace(
-        /[\r\n]+/g,
-        " "
-      )
-      .replace(
-        /\s+/g,
-        " "
-      )
-      .trim();
-
-  const metricLabel =
-    String(
-      result?.column ||
-      plan?.column ||
-      "value"
-    )
-      .replace(
-        /[\r\n]+/g,
-        " "
-      )
-      .replace(
-        /\s+/g,
-        " "
-      )
-      .trim();
-
-  const aggregation =
-    String(
-      result?.aggregation ||
-      plan?.aggregation ||
-      ""
-    )
-      .trim()
-      .toLowerCase();
-
-  const aggregationText =
-    aggregation === "average"
-      ? "average "
-      : aggregation === "sum"
-        ? "total "
-        : aggregation === "count"
-          ? "count of "
-          : "";
-
-  return (
-    `The ${rankText} ${groupLabel.toLowerCase()} ` +
-    `by ${aggregationText}${metricLabel.toLowerCase()} is ` +
-    `**${item.label}**, at ${formatConversationNumber(
-      item.value
-    )}.`
-  );
-}
-
-
-
-/**
- * ==========================================================
- * DETERMINISTIC MULTI-CATEGORY COUNT RESOLVER
- * ==========================================================
- *
- * Handles count questions that mention multiple real category
- * values, even when those values live in different columns.
- *
- * No worksheet names, column names, category values, project
- * names, report names, or IDs are hardcoded.
- */
-
-function containsNormalizedPhrase(
-  normalizedQuestion,
-  normalizedValue
-) {
-  const questionText =
-    String(
-      normalizedQuestion || ""
-    ).trim();
-
-  const valueText =
-    String(
-      normalizedValue || ""
-    ).trim();
-
-  if (
-    !questionText ||
-    !valueText
-  ) {
-    return -1;
-  }
-
-  const paddedQuestion =
-    ` ${questionText} `;
-
-  const paddedValue =
-    ` ${valueText} `;
-
-  const index =
-    paddedQuestion.indexOf(
-      paddedValue
-    );
-
-  return index < 0
-    ? -1
-    : Math.max(
-        0,
-        index - 1
-      );
-}
-
-
-function isUsefulCategoryColumn(
-  rows,
-  column
-) {
-  const values =
-    rows
-      .map(
-        (row) =>
-          row?.[column]
-      )
-      .filter(
-        (value) =>
-          value !== null &&
-          value !== undefined &&
-          String(value).trim() !== ""
-      );
-
-  if (
-    values.length < 2
-  ) {
-    return false;
-  }
-
-  const uniqueTextValues =
-    new Set();
-
-  for (
-    const rawValue of
-    values
-  ) {
-    const display =
-      String(
-        rawValue
-      ).trim();
-
-    if (
-      !display ||
-      parseNumber(display) !== null
-    ) {
-      continue;
-    }
-
-    const normalized =
-      normalizeText(
-        display
-      );
-
-    if (
-      !normalized
-    ) {
-      continue;
-    }
-
-    const words =
-      normalized
-        .split(/\s+/)
-        .filter(Boolean);
-
-    if (
-      words.length > 7 ||
-      normalized.length > 80
-    ) {
-      continue;
-    }
-
-    uniqueTextValues.add(
-      normalized
-    );
-  }
-
-  const uniqueCount =
-    uniqueTextValues.size;
-
-  if (
-    uniqueCount < 2
-  ) {
-    return false;
-  }
-
-  const maxUsefulDistinct =
-    Math.min(
-      80,
-      Math.max(
-        12,
-        Math.ceil(
-          rows.length * 0.65
-        )
-      )
-    );
-
-  return (
-    uniqueCount <=
-    maxUsefulDistinct
-  );
-}
-
-
-function findMentionedCategoriesInDataset({
-  rows,
-  question,
-}) {
-  if (
-    !Array.isArray(rows) ||
-    !rows.length
-  ) {
-    return [];
-  }
-
-  const normalizedQuestion =
-    normalizeText(
-      question
-    );
-
-  if (
-    !normalizedQuestion
-  ) {
-    return [];
-  }
-
-  const columns =
-    Array.from(
-      new Set(
-        rows.flatMap(
-          (row) =>
-            Object.keys(
-              row || {}
-            )
-        )
-      )
-    );
-
-  const candidates = [];
-
-  for (
-    const column of
-    columns
-  ) {
-    if (
-      !isUsefulCategoryColumn(
-        rows,
-        column
-      )
-    ) {
-      continue;
-    }
-
-    const distinctValues =
-      new Map();
-
-    for (
-      const row of
-      rows
-    ) {
-      const rawValue =
-        row?.[column];
-
-      if (
-        rawValue === null ||
-        rawValue === undefined
-      ) {
-        continue;
-      }
-
-      const displayValue =
-        String(
-          rawValue
-        ).trim();
-
-      if (
-        !displayValue ||
-        parseNumber(
-          displayValue
-        ) !== null
-      ) {
-        continue;
-      }
-
-      const normalizedValue =
-        normalizeText(
-          displayValue
-        );
-
-      if (
-        !normalizedValue ||
-        normalizedValue.length < 2
-      ) {
-        continue;
-      }
-
-      const words =
-        normalizedValue
-          .split(/\s+/)
-          .filter(Boolean);
-
-      if (
-        words.length > 7 ||
-        normalizedValue.length > 80
-      ) {
-        continue;
-      }
-
-      if (
-        !distinctValues.has(
-          normalizedValue
-        )
-      ) {
-        distinctValues.set(
-          normalizedValue,
-          displayValue
-        );
-      }
-    }
-
-    for (
-      const [
-        normalizedValue,
-        displayValue,
-      ] of
-      distinctValues.entries()
-    ) {
-      const mentionIndex =
-        containsNormalizedPhrase(
-          normalizedQuestion,
-          normalizedValue
-        );
-
-      if (
-        mentionIndex < 0
-      ) {
-        continue;
-      }
-
-      candidates.push({
-        column,
-        value:
-          displayValue,
-        normalizedValue,
-        mentionIndex,
-      });
-    }
-  }
-
-  const distinctCountCache =
-    new Map();
-
-  const getDistinctCount =
-    (columnName) => {
-      if (
-        distinctCountCache.has(
-          columnName
-        )
-      ) {
-        return distinctCountCache.get(
-          columnName
-        );
-      }
-
-      const count =
-        new Set(
-          rows
-            .map(
-              (row) =>
-                normalizeText(
-                  row?.[
-                    columnName
-                  ]
-                )
-            )
-            .filter(Boolean)
-        ).size;
-
-      distinctCountCache.set(
-        columnName,
-        count
-      );
-
-      return count;
-    };
-
-  const byValue =
-    new Map();
-
-  for (
-    const candidate of
-    candidates
-  ) {
-    const key =
-      candidate.normalizedValue;
-
-    const previous =
-      byValue.get(
-        key
-      );
-
-    if (
-      !previous ||
-      getDistinctCount(
-        candidate.column
-      ) <
-      getDistinctCount(
-        previous.column
-      )
-    ) {
-      byValue.set(
-        key,
-        candidate
-      );
-    }
-  }
-
-  let uniqueCandidates =
-    Array.from(
-      byValue.values()
-    );
-
-  uniqueCandidates =
-    uniqueCandidates.filter(
-      (candidate) =>
-        !uniqueCandidates.some(
-          (other) => {
-            if (
-              other === candidate
-            ) {
-              return false;
-            }
-
-            const candidateStart =
-              candidate.mentionIndex;
-
-            const candidateEnd =
-              candidateStart +
-              candidate
-                .normalizedValue
-                .length;
-
-            const otherStart =
-              other.mentionIndex;
-
-            const otherEnd =
-              otherStart +
-              other
-                .normalizedValue
-                .length;
-
-            const overlaps =
-              candidateStart <
-                otherEnd &&
-              otherStart <
-                candidateEnd;
-
-            return (
-              overlaps &&
-              other
-                .normalizedValue
-                .length >
-                candidate
-                  .normalizedValue
-                  .length
-            );
-          }
-        )
-    );
-
-  uniqueCandidates.sort(
-    (a, b) =>
-      a.mentionIndex -
-        b.mentionIndex ||
-      b.normalizedValue.length -
-        a.normalizedValue.length
-  );
-
-  return uniqueCandidates;
-}
-
-
-function buildMultiCategoryCountResolution({
-  datasets,
-  question,
-  preferredDataset,
-}) {
-  const isCountQuestion =
-    /\b(?:how many|number of|count(?: of)?|counts? of)\b/i.test(
-      String(
-        question || ""
-      )
-    );
-
-  if (
-    !isCountQuestion
-  ) {
-    return null;
-  }
-
-  const ranked = [];
-
-  for (
-    const [
-      datasetName,
-      rows,
-    ] of
-    Object.entries(
-      datasets || {}
-    )
-  ) {
-    const categories =
-      findMentionedCategoriesInDataset({
-        rows,
-        question,
-      });
-
-    if (
-      categories.length < 2
-    ) {
-      continue;
-    }
-
-    ranked.push({
-      datasetName,
-      rows,
-      categories,
-      preferred:
-        preferredDataset &&
-        datasetName ===
-          preferredDataset
-          ? 1
-          : 0,
-    });
-  }
-
-  if (
-    !ranked.length
-  ) {
-    return null;
-  }
-
-  ranked.sort(
-    (a, b) =>
-      b.categories.length -
-        a.categories.length ||
-      b.preferred -
-        a.preferred
-  );
-
-  const best =
-    ranked[0];
-
-  const second =
-    ranked[1];
-
-  if (
-    second &&
-    second.categories.length ===
-      best.categories.length &&
-    second.preferred ===
-      best.preferred
-  ) {
-    return null;
-  }
-
-  const categoryResults =
-    best.categories.map(
-      (category) => {
-        const target =
-          normalizeText(
-            category.value
-          );
-
-        const count =
-          best.rows.reduce(
-            (
-              total,
-              row
-            ) =>
-              normalizeText(
-                row?.[
-                  category.column
-                ]
-              ) === target
-                ? total + 1
-                : total,
-            0
-          );
-
-        return {
-          column:
-            category.column,
-          value:
-            category.value,
-          count,
-        };
-      }
-    );
-
-  if (
-    categoryResults.length < 2
-  ) {
-    return null;
-  }
-
-  const answer =
-    categoryResults
-      .map(
-        (item) =>
-          `${item.value}: ${item.count}`
-      )
-      .join("; ") +
-    ".";
-
-  const plan = {
-    route:
-      "dataset",
-    dataset:
-      best.datasetName,
-    operation:
-      "multi_category_count",
-    categories:
-      categoryResults.map(
-        (item) => ({
-          column:
-            item.column,
-          operator:
-            "equals",
-          value:
-            item.value,
-        })
-      ),
-    outputRequested:
-      true,
-  };
-
-  const result = {
-    success:
-      true,
-    source:
-      "dataset",
-    dataset:
-      best.datasetName,
-    operation:
-      "multi_category_count",
-    categories:
-      categoryResults,
-    answer,
-    responseStyle:
-      "natural",
-    debugPlan:
-      plan,
-    debugEntityChanges:
-      [],
-  };
-
-  return {
-    plan,
-    result,
-  };
-}
-
-
-/**
- * ==========================================================
- * GENERIC COMPOUND / MULTI-QUESTION SPLITTER
- * ==========================================================
- *
- * Allows multiple independent questions/calculations inside one
- * message while preserving normal category lists.
- *
- * No dataset, worksheet, field, category, or business term is
- * hardcoded.
- */
-
 function splitCompoundQuestions(
   question
 ) {
-  const original =
-    String(
-      question || ""
-    )
-      .replace(/\s+/g, " ")
-      .trim();
-
-  if (
-    !original
-  ) {
-    return [];
-  }
-
-  let pieces =
-    original
-      .split(
-        /\?\s*(?=[A-Za-z0-9])/g
-      )
-      .map(
-        (part) =>
-          String(
-            part || ""
-          )
-            .trim()
-            .replace(
-              /^[,;:\-\s]+/,
-              ""
-            )
-      )
-      .filter(Boolean);
-
-  if (
-    pieces.length === 1
-  ) {
-    pieces =
-      original
-        .split(
-          /\s*(?:,|;)?\s+\b(?:and|also|plus)\b\s+(?=(?:what|which|who|where|when|how\s+many|how\s+much|how|calculate|compute|find|give|show|tell)\b|(?:the\s+)?(?:total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number\s+of)\b)/i
-        )
-        .map(
-          (part) =>
-            String(
-              part || ""
-            )
-              .trim()
-              .replace(
-                /^[,;:\-\s]+/,
-                ""
-              )
-        )
-        .filter(Boolean);
-  }
-
-  if (
-    pieces.length === 1 &&
-    original.includes(";")
-  ) {
-    const semicolonParts =
-      original
-        .split(/\s*;\s*/)
-        .map(
-          (part) =>
-            part.trim()
-        )
-        .filter(Boolean);
-
-    const analyticalCue =
-      /\b(?:what|which|who|where|when|how|calculate|compute|find|give|show|tell|total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number)\b/i;
-
-    if (
-      semicolonParts.length > 1 &&
-      semicolonParts.every(
-        (part) =>
-          analyticalCue.test(
-            part
-          )
-      )
-    ) {
-      pieces =
-        semicolonParts;
-    }
-  }
-
-  if (
-    pieces.length < 2
-  ) {
-    return [
-      original,
-    ];
-  }
-
-  const meaningful =
-    pieces.filter(
-      (part) =>
-        normalizeText(
-          part
-        )
-          .split(/\s+/)
-          .filter(Boolean)
-          .length >= 2
+  /**
+   * Complex-question decomposition is intentionally shared before
+   * Groq/local routing. This guarantees planner parity: Groq and
+   * the local fallback receive the same subquestions and therefore
+   * neither path gains a complex-query feature the other lacks.
+   */
+  const decomposition =
+    decomposeComplexQuestion(
+      question
     );
 
-  return (
-    meaningful.length >= 2
-      ? meaningful
-      : [
-          original,
-        ]
+  return decomposition.clauses;
+}
+
+
+/**
+ * Split one coordinated "how many" request into independent metric clauses
+ * only when every coordinated noun phrase resolves to a DISTINCT numeric
+ * column in the SAME live worksheet.
+ *
+ * Example (schema-driven, no field names hardcoded):
+ *   "How many <metric A> and <metric B> were affected in <scope>?"
+ * becomes two ordinary questions that both Groq and the local planner process
+ * through the exact same compound pipeline.
+ *
+ * This deliberately runs before planner selection so a capability added here
+ * is available to both planner paths.
+ */
+function splitCoordinatedNumericMetricQuestion({
+  question,
+  schema,
+  datasets,
+}) {
+  const raw = String(question || "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[?!.]+$/, "");
+
+  if (!raw || !/^how\s+many\b/i.test(raw) || !/\band\b/i.test(raw)) {
+    return null;
+  }
+
+  const match = raw.match(
+    /^how\s+many\s+(.+?)\s+((?:was|were|is|are|has|have|had|do|does|did|can|could|will|would|should)\b.*)$/i
+  );
+
+  if (!match?.[1] || !match?.[2]) {
+    return null;
+  }
+
+  const metricPart = match[1].trim();
+  const sharedTail = match[2].trim();
+  const metricPhrases = metricPart
+    .split(/\s+(?:and|&)\s+/i)
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  if (metricPhrases.length < 2 || metricPhrases.length > 4) {
+    return null;
+  }
+
+  const resolved = metricPhrases.map((phrase) =>
+    findStrongMorphologicalQuestionColumn({
+      schema,
+      question: phrase,
+      preferredDataset: null,
+    })
+  );
+
+  if (resolved.some((item) => !item?.dataset || !item?.column)) {
+    return null;
+  }
+
+  const datasetNames = new Set(resolved.map((item) => String(item.dataset)));
+  const columnNames = new Set(resolved.map((item) => normalizeText(item.column)));
+
+  if (datasetNames.size !== 1 || columnNames.size !== resolved.length) {
+    return null;
+  }
+
+  const datasetName = resolved[0].dataset;
+  const rows = datasets?.[datasetName];
+  const datasetSchema = (schema || []).find(
+    (item) => String(item?.name || "") === String(datasetName)
+  );
+
+  if (!Array.isArray(rows) || !rows.length || !datasetSchema) {
+    return null;
+  }
+
+  const everyMetricIsNumeric = resolved.every((item) => {
+    const columnSchema = (datasetSchema.columns || []).find(
+      (column) => normalizeText(column?.name) === normalizeText(item.column)
+    );
+
+    return isNumericLikeColumn({
+      column: columnSchema,
+      rows,
+    });
+  });
+
+  if (!everyMetricIsNumeric) {
+    return null;
+  }
+
+  return metricPhrases.map(
+    (phrase) => `How many ${phrase} ${sharedTail}?`
   );
 }
 
@@ -11481,6 +3054,1422 @@ function buildCompoundAnswer(
 }
 
 
+
+
+/**
+ * ==========================================================
+ * USER-FACING ANSWER FORMATTER
+ * ==========================================================
+ * Presentation only. Dataset calculations are unchanged.
+ */
+function formatUserFacingAnswer(answer) {
+  let output = String(answer || "").trim();
+  if (!output) return output;
+
+  // I-DAMAG monetary values are presented in Philippine pesos.
+  output = output.replace(/\$(?=\s*[\d,.])/g, "₱");
+
+  // Avoid raw Markdown markers in the chatbot bubble.
+  output = output.replace(/\*\*/g, "");
+
+  return finalizeUserFacingGrammar(
+    output
+  );
+}
+
+
+function normalizeSemanticReferentialQuestion(question) {
+  const original =
+    String(
+      question || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (!original) {
+    return null;
+  }
+
+  const text =
+    normalizeText(
+      original
+    );
+
+  /**
+   * Copular/prepositional relationships should keep their original wording.
+   *
+   * Examples:
+   *   "What AMIA villages are they from?"
+   *   "Which office are they under?"
+   *   "What category are they in?"
+   *
+   * responseNarrativeEngine understands these relationships directly and can
+   * safely produce human-like paired answers such as:
+   *   "They are from Sison, Binalonan, Anda, and Mabini..."
+   *
+   * Returning the original question here enables the semantic narrative while
+   * preserving the exact verified dataset plan/result.
+   */
+  if (
+    /\b(?:are|were|is|was)\s+(?:they|these|those|them|it|he|she)\s+(?:from|in|at|under|within|inside|on|of|for|with|without|near|around|through|across|over|below|above|between|among|into|onto|to)\b/i.test(
+      original
+    )
+  ) {
+    return original;
+  }
+
+  /**
+   * 1. Standard auxiliary action.
+   *
+   * Covers:
+   *   "What products do they sell?"
+   *   "Which services do those groups provide?"
+   *   "What projects did these teams manage?"
+   *
+   * The subject phrase may vary. We canonicalize only the grammatical shell;
+   * the actual requested field, label field, filters, and result values still
+   * come from the live verified plan/result.
+   */
+  let match =
+    original.match(
+      /\b(?:do|does|did)\s+(.+?)\s+([a-z][a-z-]*)\s*[?.!]*$/i
+    );
+
+  if (
+    match?.[2]
+  ) {
+    const verb =
+      normalizeText(
+        match[2]
+      );
+
+    if (
+      verb &&
+      !/^(?:be|am|is|are|was|were|been|being|do|does|did)$/.test(
+        verb
+      )
+    ) {
+      return `What values do they ${verb}?`;
+    }
+  }
+
+  /**
+   * 2. Direct/pronoun action without "do".
+   *
+   * Covers paraphrases such as:
+   *   "Tell me what they produce."
+   *   "What are the products they sell?"
+   *   "Show the activities they conduct."
+   */
+  match =
+    original.match(
+      /\b(?:they|these|those)\s+([a-z][a-z-]*)\b/i
+    );
+
+  if (
+    match?.[1]
+  ) {
+    const verb =
+      normalizeText(
+        match[1]
+      );
+
+    const auxiliaries =
+      /^(?:am|is|are|was|were|be|been|being|do|does|did|have|has|had|can|could|may|might|must|shall|should|will|would)$/;
+
+    if (
+      verb &&
+      !auxiliaries.test(
+        verb
+      )
+    ) {
+      return `What values do they ${verb}?`;
+    }
+  }
+
+  /**
+   * 3. Progressive action.
+   *
+   * Keep the user's wording because responseNarrativeEngine already handles
+   * action-progressive questions. This expands routing to paraphrases such as:
+   *   "What products are they selling?"
+   *   "Which systems are they using?"
+   */
+  if (
+    /\b(?:am|is|are|was|were)\s+(?:they|these|those|them|it|he|she)\s+[a-z][a-z-]*ing\b/i.test(
+      original
+    )
+  ) {
+    return original;
+  }
+
+  /**
+   * 4. Possessive field paraphrase.
+   *
+   * Examples:
+   *   "Tell me their commodities."
+   *   "Show me their activities."
+   *   "What are their services?"
+   *
+   * At this stage the explicit referential-field resolver has already
+   * identified the real live-schema field. We only normalize the grammatical
+   * relation so the deterministic narrative can render a compact natural
+   * answer instead of raw "<label> - <value>" pairs.
+   */
+  if (
+    /\btheir\b/i.test(
+      original
+    )
+  ) {
+    return "What values do they have?";
+  }
+
+  /**
+   * 4. Passive paraphrase.
+   *
+   * Examples:
+   *   "What products are produced by them?"
+   *   "Which services were provided by those groups?"
+   *
+   * The deterministic formatter may not safely recover every English base
+   * verb from an arbitrary past participle. Instead of inventing a malformed
+   * verb, route the verified relation through the neutral "have" wording.
+   * This preserves correct data and natural grammar without domain hardcoding.
+   */
+  if (
+    /\b(?:is|are|was|were|be|been|being)\s+[a-z][a-z-]*(?:ed|en)\s+by\s+(?:them|these|those)\b/i.test(
+      original
+    )
+  ) {
+    return "What values do they have?";
+  }
+
+  return null;
+}
+
+function shouldUseSemanticReferentialNarrative(question) {
+  return Boolean(
+    normalizeSemanticReferentialQuestion(
+      question
+    )
+  );
+}
+
+
+function recoverLocalReferentialPlanFromConversation({
+  plan,
+  question,
+  context,
+  schema,
+}) {
+  if (
+    !plan ||
+    typeof plan !== "object" ||
+    context?.isFollowUp !== true ||
+    !normalizeSemanticReferentialQuestion(
+      question
+    )
+  ) {
+    return plan;
+  }
+
+  /**
+   * A valid local dataset plan may still be incomplete for a referential
+   * relationship question. Do not return early just because dataset+column
+   * exist; enrich the CURRENT field with the PREVIOUS verified pair column.
+   */
+  const datasetName =
+    plan.dataset ||
+    context.lastDataset ||
+    context.semanticPlan?.dataset ||
+    null;
+
+  if (!datasetName) {
+    return plan;
+  }
+
+  const datasetSchema =
+    Array.isArray(schema)
+      ? schema.find(
+          (item) =>
+            normalizeText(
+              item?.name
+            ) ===
+            normalizeText(
+              datasetName
+            )
+        )
+      : null;
+
+  const liveColumns =
+    Array.isArray(
+      datasetSchema?.columns
+    )
+      ? datasetSchema.columns
+          .map(
+            (item) =>
+              typeof item === "string"
+                ? item
+                : item?.name
+          )
+          .filter(Boolean)
+      : [];
+
+  const findLiveColumn =
+    (candidate) => {
+      const normalized =
+        normalizeText(
+          candidate
+        );
+
+      if (!normalized) {
+        return null;
+      }
+
+      return liveColumns.find(
+        (column) =>
+          normalizeText(
+            column
+          ) ===
+          normalized
+      ) || null;
+    };
+
+  /**
+   * The current question's locally resolved live field wins.
+   * Previous conversation fields are only fallbacks.
+   */
+  const valueColumn =
+    findLiveColumn(
+      plan.column
+    ) ||
+    findLiveColumn(
+      context.lastMetric
+    ) ||
+    findLiveColumn(
+      context.lastSubjectColumn
+    ) ||
+    findLiveColumn(
+      context.lastPlan?.column
+    ) ||
+    findLiveColumn(
+      context.semanticPlan?.metricColumn
+    ) ||
+    findLiveColumn(
+      context.semanticPlan?.column
+    ) ||
+    null;
+
+  if (!valueColumn) {
+    return plan;
+  }
+
+  const pairColumnCandidates = [
+    context.lastPlan?.conversationalPairColumn,
+    context.lastPlan?.labelColumn,
+    context.semanticPlan?.labelColumn,
+    context.semanticPlan?.groupBy,
+  ];
+
+  let pairColumn = null;
+
+  for (
+    const candidate
+    of pairColumnCandidates
+  ) {
+    const live =
+      findLiveColumn(
+        candidate
+      );
+
+    if (
+      live &&
+      normalizeText(
+        live
+      ) !==
+      normalizeText(
+        valueColumn
+      )
+    ) {
+      pairColumn =
+        live;
+      break;
+    }
+  }
+
+  /**
+   * Prefer the current local plan's grounded filters. If it has no scope,
+   * inherit the previous VERIFIED conversation filters.
+   */
+  const sourceFilters =
+    Array.isArray(
+      plan.filters
+    ) &&
+    plan.filters.length
+      ? plan.filters
+      : (
+          Array.isArray(
+            context.lastFilters
+          )
+            ? context.lastFilters
+            : []
+        );
+
+  const filters =
+    sourceFilters.map(
+      (filter) => ({
+        ...filter,
+        value:
+          Array.isArray(
+            filter?.value
+          )
+            ? [
+                ...filter.value,
+              ]
+            : filter?.value,
+      })
+    );
+
+  const selectColumns =
+    [
+      pairColumn,
+      valueColumn,
+    ]
+      .filter(Boolean)
+      .filter(
+        (column, index, all) =>
+          all.findIndex(
+            (item) =>
+              normalizeText(
+                item
+              ) ===
+              normalizeText(
+                column
+              )
+          ) === index
+      );
+
+  /**
+   * Upgrade to a relationship lookup only when a distinct verified pair
+   * column exists. Otherwise keep the original local plan unchanged.
+   */
+  if (
+    !pairColumn ||
+    normalizeText(
+      pairColumn
+    ) ===
+    normalizeText(
+      valueColumn
+    )
+  ) {
+    return plan;
+  }
+
+  return {
+    ...plan,
+    route:
+      "dataset",
+    dataset:
+      datasetName,
+    operation:
+      "lookup",
+    column:
+      valueColumn,
+    labelColumn:
+      pairColumn,
+    groupBy:
+      null,
+    aggregation:
+      null,
+    direction:
+      null,
+    filters,
+    selectColumns,
+    outputRequested:
+      true,
+    transform:
+      null,
+    showAll:
+      true,
+    limit:
+      Math.max(
+        Number(
+          plan.limit
+        ) || 10,
+        100
+      ),
+    conversationalPairColumn:
+      pairColumn ||
+      null,
+    localReferentialRecovery:
+      true,
+  };
+}
+
+function isExternalLanguageServiceError(error) {
+  const message =
+    String(
+      error?.message ||
+      error ||
+      ""
+    )
+      .toLowerCase();
+
+  if (!message) {
+    return false;
+  }
+
+  return (
+    message.includes(
+      "rate limit"
+    ) ||
+    message.includes(
+      "tokens per day"
+    ) ||
+    message.includes(
+      "too many requests"
+    ) ||
+    message.includes(
+      "quota"
+    ) ||
+    message.includes(
+      "service unavailable"
+    ) ||
+    message.includes(
+      "temporarily unavailable"
+    ) ||
+    /\b429\b/.test(
+      message
+    )
+  );
+}
+
+function improveCompoundAnswerWording(subResults) {
+  const answers = subResults
+    .map((item) =>
+      formatUserFacingAnswer(item?.result?.answer)
+    )
+    .filter(Boolean);
+
+  if (!answers.length) {
+    return "I couldn't complete the requested questions.";
+  }
+
+  if (answers.length === 1) {
+    return answers[0];
+  }
+
+  const cleaned = answers.map((answer) =>
+    String(answer).replace(/[.!?]+$/, "").trim()
+  );
+
+  if (cleaned.length === 2) {
+    return `${cleaned[0]}. ${cleaned[1]}.`;
+  }
+
+  return cleaned
+    .map((answer, index) => `${index + 1}. ${answer}.`)
+    .join("\n");
+}
+
+
+
+/**
+ * ==========================================================
+ * LINKED MULTI-FIELD REQUEST DETECTOR
+ * ==========================================================
+ *
+ * Handles related requests such as:
+ *
+ *   "What are the <field A> in <scope> and give me <field B>"
+ *   "Show <field A> for <scope> and include <field B>"
+ *
+ * These are NOT two independent questions. They are one
+ * row-aware lookup with shared filters and multiple outputs.
+ *
+ * No worksheet names, field names, values, or business terms
+ * are hardcoded.
+ */
+
+function splitLinkedMultiFieldRequest(
+  question
+) {
+  const original =
+    String(
+      question || ""
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+  if (!original) {
+    return null;
+  }
+
+  const match =
+    original.match(
+      /^(.+?)\s+(?:,?\s*)\band\b\s+(?:(?:also\s+)?(?:give|show|tell)\s+(?:me\s+)?|include\s+)(.+)$/i
+    );
+
+  if (
+    !match?.[1] ||
+    !match?.[2]
+  ) {
+    return null;
+  }
+
+  const firstClause =
+    match[1].trim();
+
+  const secondClause =
+    match[2].trim();
+
+  /**
+   * If the second clause explicitly asks for its own analytical
+   * operation, it is a true compound calculation and should
+   * continue through the compound-question path.
+   */
+  const secondIsIndependentCalculation =
+    /\b(?:how\s+many|how\s+much|total|sum|average|avg|mean|median|minimum|maximum|max|min|count|number\s+of|difference|ratio|percentage|percent)\b/i.test(
+      secondClause
+    );
+
+  if (
+    secondIsIndependentCalculation
+  ) {
+    return null;
+  }
+
+  return {
+    firstClause,
+    secondClause,
+  };
+}
+
+
+function filterClearlyMentionedLiveFilters(
+  filters,
+  question
+) {
+  const normalizedQuestion =
+    ` ${normalizeText(
+      question
+    )} `;
+
+  return (
+    Array.isArray(filters)
+      ? filters
+      : []
+  ).filter(
+    (filter) => {
+      const rawValues =
+        Array.isArray(
+          filter?.value
+        )
+          ? filter.value
+          : [
+              filter?.value,
+            ];
+
+      if (
+        !rawValues.length
+      ) {
+        return false;
+      }
+
+      return rawValues.every(
+        (rawValue) => {
+          const normalizedValue =
+            normalizeText(
+              rawValue
+            );
+
+          if (
+            !normalizedValue
+          ) {
+            return false;
+          }
+
+          /**
+           * Require the inferred value to appear as a complete
+           * normalized phrase in the user's scope clause.
+           *
+           * This blocks accidental substring matches such as
+           * a short value being inferred from inside a longer word.
+           */
+          return normalizedQuestion.includes(
+            ` ${normalizedValue} `
+          );
+        }
+      );
+    }
+  );
+}
+
+
+function buildLinkedMultiFieldPlan({
+  datasets,
+  schema,
+  question,
+}) {
+  const linked =
+    splitLinkedMultiFieldRequest(
+      question
+    );
+
+  if (!linked) {
+    return null;
+  }
+
+  const firstField =
+    inferRequestedColumnFromQuestion({
+      schema,
+      question:
+        linked.firstClause,
+      preferredDataset:
+        null,
+    });
+
+  if (!firstField) {
+    return null;
+  }
+
+  const datasetName =
+    firstField.dataset;
+
+  const rows =
+    datasets?.[
+      datasetName
+    ];
+
+  if (
+    !Array.isArray(rows) ||
+    !rows.length
+  ) {
+    return null;
+  }
+
+  /**
+   * Collect 2+ requested output fields from the live schema.
+   * This allows:
+   *   "what are X in Y and give me Z"
+   *   "what are X in Y and give me Z and W"
+   *   "show X in Y and include Z, W, and Q"
+   */
+  const requestedColumns = [];
+
+  const addColumn =
+    (columnName) => {
+      const value =
+        String(
+          columnName || ""
+        ).trim();
+
+      if (
+        !value ||
+        requestedColumns.some(
+          (existing) =>
+            normalizeText(existing) ===
+            normalizeText(value)
+        )
+      ) {
+        return;
+      }
+
+      requestedColumns.push(value);
+    };
+
+  addColumn(firstField.column);
+
+  const explicitFields =
+    findExplicitSchemaColumns({
+      schema,
+      question,
+      preferredDataset:
+        datasetName,
+    });
+
+  for (
+    const item of
+    explicitFields
+  ) {
+    if (
+      String(item.dataset) ===
+      String(datasetName)
+    ) {
+      addColumn(item.column);
+    }
+  }
+
+  /**
+   * Fuzzy/abbreviation fallback for misspelled requested fields.
+   */
+  const inferredSecondField =
+    inferRequestedColumnFromQuestion({
+      schema,
+      question:
+        linked.secondClause,
+      preferredDataset:
+        datasetName,
+      excludedColumns:
+        requestedColumns,
+    });
+
+  if (
+    inferredSecondField &&
+    String(
+      inferredSecondField.dataset
+    ) ===
+      String(datasetName)
+  ) {
+    addColumn(
+      inferredSecondField.column
+    );
+  }
+
+  if (
+    requestedColumns.length < 2
+  ) {
+    return null;
+  }
+
+  /**
+   * Infer scope ONLY from the first clause.
+   */
+  const rawFilters =
+    inferValueFilters(
+      rows,
+      linked.firstClause,
+      requestedColumns
+    );
+
+  const filters =
+    filterClearlyMentionedLiveFilters(
+      rawFilters,
+      linked.firstClause
+    );
+
+  if (!filters.length) {
+    return null;
+  }
+
+  return {
+    route:
+      "dataset",
+    dataset:
+      datasetName,
+    operation:
+      "lookup",
+    column:
+      null,
+    labelColumn:
+      firstField.column,
+    groupBy:
+      null,
+    aggregation:
+      null,
+    direction:
+      null,
+    filters,
+    selectColumns:
+      requestedColumns,
+    outputRequested:
+      true,
+    transform:
+      null,
+    showAll:
+      true,
+    limit:
+      100,
+    linkedMultiField:
+      true,
+  };
+}
+
+
+
+/**
+ * ==========================================================
+ * CONVERSATION SCOPE SAFEGUARDS
+ * ==========================================================
+ *
+ * Two distinct behaviors are needed:
+ *
+ * 1. A fully self-contained analytical question starts a NEW
+ *    scope and must not silently inherit an old entity filter.
+ *
+ * 2. A short "what about <field>?" question may be a metric
+ *    switch, not an entity/value switch.
+ *
+ * Both behaviors are derived only from the live schema and the
+ * user's wording. No report, worksheet, column, or entity value
+ * is hardcoded.
+ */
+
+function hasReferentialScopeLanguage(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return false;
+  }
+
+  return (
+    /^(?:what|how)\s+about\b/.test(
+      text
+    ) ||
+    /^(?:and|also|then|for)\b/.test(
+      text
+    ) ||
+    /\b(?:there|those|these|them|they|that|this|same|previous|above|earlier)\b/.test(
+      text
+    ) ||
+    /\b(?:of|for|among|within)\s+(?:those|these|them|that|this|the same)\b/.test(
+      text
+    )
+  );
+}
+
+
+function isSelfContainedAnalyticalQuestion({
+  schema,
+  question,
+}) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return false;
+  }
+
+  /**
+   * Require an explicit analytical instruction.
+   * This includes the main scalar operations and rankings.
+   */
+  const hasAnalyticalInstruction =
+    /\b(?:total|sum|average|avg|mean|median|minimum|maximum|min|max|highest|lowest|largest|smallest|top|bottom|count|how many|number of|difference|ratio|percentage|percent)\b/.test(
+      text
+    );
+
+  if (
+    !hasAnalyticalInstruction
+  ) {
+    return false;
+  }
+
+  /**
+   * Require the user to explicitly name at least one REAL field
+   * from the current live schema. This keeps vague follow-ups such
+   * as "what about the total?" connected to prior context.
+   */
+  const explicitColumns =
+    findExplicitSchemaColumns({
+      schema,
+      question,
+      preferredDataset:
+        null,
+    });
+
+  if (
+    !Array.isArray(
+      explicitColumns
+    ) ||
+    !explicitColumns.length
+  ) {
+    return false;
+  }
+
+  /**
+   * Referential wording means the user is intentionally continuing
+   * the previous scope, so do not reset it.
+   *
+   * Examples that KEEP context:
+   *   "What is the total quantity there?"
+   *   "What about the average?"
+   *   "And total project cost?"
+   */
+  if (
+    hasReferentialScopeLanguage(
+      question
+    )
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+
+function findFollowUpMetricColumn({
+  schema,
+  question,
+  preferredDataset = null,
+}) {
+  const target =
+    extractFollowUpTargetPhrase(
+      question
+    );
+
+  if (!target) {
+    return null;
+  }
+
+  /**
+   * Prefer an explicit real schema-column match.
+   */
+  const exact =
+    findExplicitSchemaColumn({
+      schema,
+      question:
+        target,
+      preferredDataset,
+    });
+
+  if (exact) {
+    return exact;
+  }
+
+  /**
+   * Then allow the existing conservative schema-aware fuzzy
+   * resolver for abbreviations/minor misspellings.
+   */
+  return (
+    inferRequestedColumnFromQuestion({
+      schema,
+      question:
+        target,
+      preferredDataset,
+      excludedColumns:
+        [],
+    }) ||
+    null
+  );
+}
+
+
+
+
+/**
+ * ==========================================================
+ * GENERIC CONTINUOUS-CONVERSATION RECOVERY
+ * ==========================================================
+ *
+ * Some short follow-up questions are semantically obvious to a human but
+ * may not be classified as follow-ups by conversationManager. Examples:
+ *
+ *   "What are they?"
+ *   "Who are those?"
+ *   "What about La Union?"
+ *   "And the total cost?"
+ *   "What are their commodities?"
+ *   "How about the same municipality?"
+ *
+ * The verified previous turn is already stored by updateConversation().
+ * When the current wording is referential, recover that VERIFIED turn from
+ * getRecentResults() and hydrate only missing conversational fields.
+ *
+ * No worksheet, field name, business value, province, status, entity type,
+ * or dashboard is hardcoded here.
+ */
+function looksLikeContinuousFollowUp(
+  question
+) {
+  const text =
+    normalizeText(
+      question
+    );
+
+  if (!text) {
+    return false;
+  }
+
+  return (
+    /\b(?:those|these|them|they|their|theirs|it|its|that|this|there|therein|same|previous|above|earlier|former|latter|ones?)\b/.test(
+      text
+    ) ||
+    /^(?:what|how)\s+about\b/.test(
+      text
+    ) ||
+    /^(?:and|also|then|next)\b/.test(
+      text
+    ) ||
+    /\b(?:of|for|among|within)\s+(?:those|these|them|that|this|the same)\b/.test(
+      text
+    ) ||
+    /\b(?:his|her|their|its)\s+[\p{L}\p{N}_-]+/u.test(
+      text
+    )
+  );
+}
+
+function hydrateContinuousConversationContext({
+  context,
+  recentResults,
+  question,
+}) {
+  if (
+    !context ||
+    typeof context !== "object" ||
+    !looksLikeContinuousFollowUp(
+      question
+    ) ||
+    !Array.isArray(
+      recentResults
+    ) ||
+    !recentResults.length
+  ) {
+    return context;
+  }
+
+  /**
+   * Use the most recent VERIFIED entry that contains a usable plan/result.
+   * Clarifications/errors do not become conversational scope.
+   */
+  const latestVerifiedEntry =
+    [...recentResults]
+      .reverse()
+      .find(
+        (entry) =>
+          entry?.plan &&
+          entry?.result &&
+          entry.result.success !== false &&
+          String(
+            entry.plan.route || ""
+          )
+            .trim()
+            .toLowerCase() !== "clarify"
+      ) ||
+    null;
+
+  if (!latestVerifiedEntry) {
+    return context;
+  }
+
+  const previousPlan =
+    latestVerifiedEntry.plan ||
+    {};
+
+  const previousResult =
+    latestVerifiedEntry.result ||
+    null;
+
+  const previousSelectColumns =
+    Array.isArray(
+      previousPlan.selectColumns
+    )
+      ? previousPlan.selectColumns
+          .filter(Boolean)
+      : [];
+
+  const previousMetric =
+    previousPlan.column ||
+    (
+      previousSelectColumns.length === 1
+        ? previousSelectColumns[0]
+        : previousSelectColumns.length
+          ? [...previousSelectColumns]
+          : null
+    );
+
+  const previousSubject =
+    previousPlan.labelColumn ||
+    previousPlan.groupBy ||
+    previousPlan.column ||
+    (
+      previousSelectColumns.length === 1
+        ? previousSelectColumns[0]
+        : null
+    );
+
+  const previousFilters =
+    Array.isArray(
+      previousPlan.filters
+    )
+      ? previousPlan.filters.map(
+          (filter) => ({
+            ...filter,
+            value:
+              Array.isArray(
+                filter?.value
+              )
+                ? [...filter.value]
+                : filter?.value,
+          })
+        )
+      : [];
+
+  const previousEntity =
+    previousFilters.length === 1
+      ? {
+          ...previousFilters[0],
+          value:
+            Array.isArray(
+              previousFilters[0]?.value
+            )
+              ? [
+                  ...previousFilters[0]
+                    .value,
+                ]
+              : previousFilters[0]
+                  ?.value,
+        }
+      : null;
+
+  /**
+   * IMPORTANT: current context still wins when conversationManager already
+   * provided a verified field. We only fill gaps and mark the turn as a
+   * follow-up. This avoids stale context overriding explicit current intent.
+   */
+  context.isFollowUp = true;
+
+  context.lastPlan =
+    context.lastPlan ||
+    previousPlan;
+
+  context.lastResult =
+    context.lastResult ||
+    previousResult;
+
+  context.lastDataset =
+    context.lastDataset ||
+    previousPlan.dataset ||
+    previousResult?.dataset ||
+    null;
+
+  if (
+    !Array.isArray(
+      context.lastFilters
+    ) ||
+    !context.lastFilters.length
+  ) {
+    context.lastFilters =
+      previousFilters;
+  }
+
+  context.lastEntity =
+    context.lastEntity ||
+    previousEntity;
+
+  context.lastMetric =
+    context.lastMetric ||
+    previousMetric;
+
+  context.lastSubjectColumn =
+    context.lastSubjectColumn ||
+    previousSubject;
+
+  context.lastSubjectQuestion =
+    context.lastSubjectQuestion ||
+    latestVerifiedEntry.question ||
+    null;
+
+  context.lastQuestion =
+    context.lastQuestion ||
+    latestVerifiedEntry.question ||
+    null;
+
+  context.lastIntent =
+    context.lastIntent ||
+    previousPlan.operation ||
+    previousResult?.operation ||
+    null;
+
+  return context;
+}
+
+
+/**
+ * Resolve a NEW output field explicitly requested by a conversational
+ * follow-up while preserving the last VERIFIED row scope.
+ *
+ * Examples of the shape handled:
+ *   "what municipalities are they from?"
+ *   "what barangays are those in?"
+ *   "what commodities do they have?"
+ *   "show their status"
+ *
+ * This is fully schema-driven. No worksheet, field, or business value is
+ * hardcoded. It intentionally handles non-analytical field/list follow-ups
+ * only; totals, averages, rankings, comparisons, etc. continue through the
+ * richer analytical pipeline.
+ */
+function buildExplicitReferentialFieldPlan({
+  schema,
+  context,
+  question,
+}) {
+  if (
+    !context ||
+    context.isFollowUp !== true ||
+    !context.lastDataset ||
+    !looksLikeContinuousFollowUp(question)
+  ) {
+    return null;
+  }
+
+  const text = normalizeText(question);
+
+  if (!text) {
+    return null;
+  }
+
+  // A self-contained absence query introduces its own condition and must not
+  // inherit a stale entity scope from the previous turn.
+  if (hasExplicitAbsenceIntent(question)) {
+    return null;
+  }
+
+  // Do not steal analytical follow-ups from their dedicated handlers.
+  if (
+    detectQuestionAggregation(question) ||
+    detectRankingDirection(question) ||
+    /\b(?:compare|comparison|difference|ratio|percentage|percent|median|range|spread|trend|increase|decrease|growth)\b/.test(
+      text
+    )
+  ) {
+    return null;
+  }
+
+  // Require an actual conversational reference to the prior verified scope.
+  //
+  // "that/which/who" can be relative-clause grammar in a fresh request:
+  //   "what are the associations that are in phase 2?"
+  //
+  // Do not route that grammar as a reference to previous conversation state.
+  const hasStrongPriorReference =
+    /\b(?:they|them|their|theirs|those|these|there|therein|same|ones?|it|its)\b/.test(
+      text
+    );
+
+  const hasStandaloneDemonstrativeReference =
+    /^(?:that|this)\b/.test(
+      text
+    ) ||
+    /\b(?:that|this)\s+(?:one|ones|same)\b/.test(
+      text
+    );
+
+  if (
+    !hasStrongPriorReference &&
+    !hasStandaloneDemonstrativeReference
+  ) {
+    return null;
+  }
+
+  const requested =
+    findStrongMorphologicalQuestionColumn({
+      schema,
+      question,
+      preferredDataset:
+        context.lastDataset,
+    }) ||
+    findExplicitSchemaColumn({
+      schema,
+      question,
+      preferredDataset:
+        context.lastDataset,
+    }) ||
+    inferRequestedColumnFromQuestion({
+      schema,
+      question,
+      preferredDataset:
+        context.lastDataset,
+      excludedColumns: [],
+    });
+
+  if (
+    !requested?.column ||
+    String(requested.dataset || context.lastDataset) !==
+      String(context.lastDataset)
+  ) {
+    return null;
+  }
+
+  const filters =
+    Array.isArray(context.lastFilters)
+      ? context.lastFilters.map(
+          (filter) => ({
+            ...filter,
+            value:
+              Array.isArray(filter?.value)
+                ? [...filter.value]
+                : filter?.value,
+          })
+        )
+      : [];
+
+  /**
+   * Preserve the most recent VERIFIED relationship label when the user repeats
+   * the same referential field question.
+   *
+   * Example conversation shape:
+   *   previous plan: labelColumn = <location>, column = <multi-value field>
+   *   repeated question asks for the same <multi-value field>
+   *
+   * conversationManager may now expose lastSubjectColumn as the requested
+   * field itself. Without this recovery the plan degrades from:
+   *
+   *   lookup(label + value)
+   *
+   * to:
+   *
+   *   list(value only)
+   *
+   * and the response loses the row relationship. Prefer the immediately
+   * previous verified pair/label column when it is different from the current
+   * requested field. No dataset or field name is hardcoded.
+   */
+  const previousPairCandidates = [
+    context.lastSubjectColumn,
+    context.lastPlan?.conversationalPairColumn,
+    context.lastPlan?.labelColumn,
+    context.semanticPlan?.labelColumn,
+    context.semanticPlan?.groupBy,
+  ];
+
+  const previousSubjectColumn =
+    previousPairCandidates.find(
+      (candidate) =>
+        candidate &&
+        normalizeText(candidate) !==
+          normalizeText(requested.column)
+    ) ||
+    null;
+
+  const selectColumns = [];
+  if (previousSubjectColumn) selectColumns.push(previousSubjectColumn);
+  selectColumns.push(requested.column);
+
+  return {
+    route: "dataset",
+    dataset:
+      context.lastDataset,
+    operation:
+      previousSubjectColumn ? "lookup" : "list",
+    column:
+      requested.column,
+    labelColumn:
+      previousSubjectColumn || requested.column,
+    groupBy: null,
+    aggregation: null,
+    direction: null,
+    filters,
+    selectColumns,
+    outputRequested: true,
+    transform: null,
+    showAll: true,
+    limit: 100,
+    explicitReferentialField: true,
+    explicitReferentialFieldMatch: "morphology-aware",
+    conversationalPairColumn:
+      previousSubjectColumn,
+  };
+}
 
 /**
  * ==========================================================
@@ -11551,6 +4540,14 @@ async function answerQuestion(
     };
   }
 
+  // Build the live schema once up front so shared pre-planner features
+  // (notably coordinated numeric-metric decomposition) are available to
+  // BOTH Groq and the local fallback. The same schema object is reused later.
+  const earlySchema =
+    buildSchema(
+      datasets
+    );
+
 
   // ========================================================
   // COMPOUND / MULTI-QUESTION REQUEST
@@ -11564,15 +4561,48 @@ async function answerQuestion(
     internalOptions
       ?.disableCompound !== true
   ) {
-    const compoundQuestions =
-      splitCompoundQuestions(
+    const linkedMultiFieldCandidate =
+      splitLinkedMultiFieldRequest(
         cleanQuestion
       );
+
+    const coordinatedMetricQuestions =
+      linkedMultiFieldCandidate
+        ? null
+        : splitCoordinatedNumericMetricQuestion({
+            question:
+              cleanQuestion,
+            schema:
+              earlySchema,
+            datasets,
+          });
+
+    const compoundQuestions =
+      linkedMultiFieldCandidate
+        ? [
+            cleanQuestion,
+          ]
+        : (
+            coordinatedMetricQuestions ||
+            splitCompoundQuestions(
+              cleanQuestion
+            )
+          );
 
     if (
       compoundQuestions.length > 1
     ) {
       const subResults = [];
+
+      /**
+       * Use ONE isolated session for all clauses in this compound
+       * request. Later clauses such as "what about their total?"
+       * may safely inherit VERIFIED scope from the immediately
+       * preceding clause, while the compound namespace prevents
+       * leakage into/out of the user's normal conversation.
+       */
+      const compoundSessionId =
+        `${sessionId}::compound::${Date.now()}`;
 
       for (
         let index = 0;
@@ -11584,9 +4614,6 @@ async function answerQuestion(
           compoundQuestions[
             index
           ];
-
-        const compoundSessionId =
-          `${sessionId}::compound::${Date.now()}::${index}`;
 
         let subResult;
 
@@ -11601,6 +4628,61 @@ async function answerQuestion(
                   true,
               }
             );
+
+          /**
+           * SHARED COMPOUND-SCOPE PARITY
+           *
+           * Do NOT ask either planner to rediscover scope that was already
+           * verified by the preceding clause. Merge the missing scope into
+           * the executable plan itself, then execute that exact plan through
+           * the same validation/grounding pipeline. This keeps Groq and the
+           * local planner behavior identical and prevents planner retries from
+           * changing the metric/operation while trying to restore scope.
+           */
+          if (
+            index > 0 &&
+            internalOptions?.compoundParityRetry !== true
+          ) {
+            const previousVerified =
+              [...subResults]
+                .reverse()
+                .find((item) =>
+                  item?.result?.success !== false &&
+                  item?.result?.debugPlan?.route === "dataset"
+                );
+
+            const previousPlan = previousVerified?.result?.debugPlan || null;
+            const currentPlan = subResult?.debugPlan || null;
+            const mergedScope = mergeInheritedScopeIntoPlan({
+              previousPlan,
+              currentPlan,
+              question: subQuestion,
+            });
+
+            if (mergedScope.changed && mergedScope.plan) {
+              const parityResult = await answerQuestion(
+                input,
+                subQuestion,
+                compoundSessionId,
+                {
+                  disableCompound: true,
+                  compoundParityRetry: true,
+                  forcedPlan: mergedScope.plan,
+                }
+              );
+
+              if (
+                parityResult?.success !== false &&
+                hasAllInheritedScopeColumns({
+                  previousPlan,
+                  currentPlan: parityResult?.debugPlan,
+                  question: subQuestion,
+                })
+              ) {
+                subResult = parityResult;
+              }
+            }
+          }
         } catch (error) {
           subResult = {
             success:
@@ -11622,6 +4704,21 @@ async function answerQuestion(
             subResult,
         });
       }
+
+      /**
+       * Persist the COMPLETE verified compound intent to the user's real
+       * session. This is what allows the next short turn, e.g.
+       * "what about Phase 2?", to preserve every previous operation rather
+       * than inheriting only the final clause.
+       */
+      saveCompoundContext(sessionId, {
+        question: cleanQuestion,
+        clauses: subResults.map((item) => ({
+          question: item.question,
+          plan: item.result?.debugPlan || null,
+          result: item.result || null,
+        })),
+      });
 
       return {
         success:
@@ -11676,7 +4773,7 @@ async function answerQuestion(
             })
           ),
         answer:
-          buildCompoundAnswer(
+          improveCompoundAnswerWording(
             subResults
           ),
         responseStyle:
@@ -11690,6 +4787,8 @@ async function answerQuestion(
             "compound",
           questions:
             compoundQuestions,
+          sharedCompoundContext:
+            true,
         },
       };
     }
@@ -11740,9 +4839,10 @@ async function answerQuestion(
   // ========================================================
 
   const schema =
-    buildSchema(
-      datasets
-    );
+    earlySchema;
+
+  const worksheetRelationships =
+    discoverWorksheetRelationships({ datasets, schema });
 
   // ========================================================
   // LOAD CONVERSATION CONTEXT
@@ -11753,6 +4853,105 @@ async function answerQuestion(
       sessionId,
       cleanQuestion
     );
+
+  Object.assign(
+    conversationContext,
+    applyConversationCorrection({
+      question: cleanQuestion,
+      context: conversationContext,
+      schema,
+    })
+  );
+
+  conversationContext.worksheetRelationships =
+    worksheetRelationships;
+
+  /**
+   * Recover short referential follow-ups from the latest VERIFIED turn even
+   * when conversationManager did not classify the wording as isFollowUp.
+   * This is what keeps multi-turn chains stable across:
+   *
+   *   count -> "what are they?" -> "what are their <field>?"
+   *   lookup -> "what about <new value>?" -> "and <new field>?"
+   *   ranking -> "what is the lowest?" -> "compare them"
+   *
+   * A complete self-contained analytical question is still allowed to reset
+   * scope immediately below, so explicit new questions are not contaminated
+   * by stale memory.
+   */
+  hydrateContinuousConversationContext({
+    context:
+      conversationContext,
+    recentResults:
+      getRecentResults(
+        sessionId
+      ),
+    question:
+      cleanQuestion,
+  });
+
+  /**
+   * ========================================================
+   * NEW SELF-CONTAINED QUESTION = NEW SCOPE
+   * ========================================================
+   *
+   * A complete analytical question that names its own metric
+   * should not inherit an older province/municipality/status/etc.
+   *
+   * Example structure:
+   *   previous: "... in <some place>"
+   *   current:  "What is the total <real metric>?"
+   *
+   * The current question is complete by itself, so clear only the
+   * conversational carry-over. The user's actual session/history is
+   * NOT deleted; this affects only planning for this turn.
+   */
+  const startsFreshAnalyticalScope =
+    isSelfContainedAnalyticalQuestion({
+      schema,
+      question:
+        cleanQuestion,
+    });
+
+  if (
+    startsFreshAnalyticalScope &&
+    !looksLikeContinuousFollowUp(
+      cleanQuestion
+    ) &&
+    conversationContext &&
+    typeof conversationContext ===
+      "object"
+  ) {
+    conversationContext.isFollowUp =
+      false;
+
+    conversationContext.lastDataset =
+      null;
+
+    conversationContext.lastPlan =
+      null;
+
+    conversationContext.lastResult =
+      null;
+
+    conversationContext.lastFilters =
+      [];
+
+    conversationContext.lastEntity =
+      null;
+
+    conversationContext.lastSubjectColumn =
+      null;
+
+    conversationContext.lastSubjectQuestion =
+      null;
+
+    conversationContext.lastIntent =
+      null;
+
+    conversationContext.analyticalContext =
+      null;
+  }
 
   if (
     process.env.NODE_ENV !==
@@ -12023,6 +5222,7 @@ async function answerQuestion(
             schema,
             plan:
               childPlan,
+            question: cleanQuestion,
           });
 
         if (
@@ -12075,6 +5275,7 @@ async function answerQuestion(
               childPlan,
             result:
               rawResult,
+            datasets,
           });
 
         if (
@@ -12202,6 +5403,164 @@ async function answerQuestion(
         );
       }
 
+      // Contract-defined count metrics are authoritative enough to rescue a
+      // stale row-count/non-empty-count/clarify plan before route-specific
+      // processing begins. This shared boundary is used by Groq, local
+      // fallback, conversation, and forced plans alike.
+      plan = repairSemanticContractCountIntent({
+        datasets,
+        plan,
+        question: cleanQuestion,
+      });
+
+      // Some shared semantic-rescue plans are already fully grounded from
+      // the live schema. Preserve their structural intent across later
+      // generic repair passes (which may otherwise reinterpret phrases like
+      // "number of members" as a grouped count).
+      const protectedSemanticStructure = plan?.universalSemanticRescue
+        ? {
+            operation: plan.operation,
+            column: plan.column,
+            labelColumn: plan.labelColumn,
+            groupBy: plan.groupBy,
+            aggregation: plan.aggregation,
+            direction: plan.direction,
+            selectColumns: Array.isArray(plan.selectColumns) ? [...plan.selectColumns] : [],
+            limit: plan.limit,
+            showAll: plan.showAll,
+            referentialDetailEnrichment: plan.referentialDetailEnrichment,
+            universalSemanticRescue: true,
+          }
+        : null;
+
+      /**
+       * ==================================================
+       * V7.36 COMMON PARITY GUARDS
+       * ==================================================
+       *
+       * These run for Groq, local fallback, conversation,
+       * conversation-local, and deterministic/general plans.
+       *
+       * 1) Reconstruct grounded AND/OR boolean filter logic.
+       * 2) Enforce universal live-data grounding.
+       */
+      if (
+        plan.route ===
+          "dataset" &&
+        plan.dataset &&
+        Array.isArray(
+          datasets?.[
+            plan.dataset
+          ]
+        )
+      ) {
+        /**
+         * Final shared planner normalization. Groq, local fallback,
+         * conversation continuations, and deterministic plans all pass
+         * through the same schema-driven ranking/output repair immediately
+         * before execution. This prevents later local-parity repairs from
+         * accidentally undoing an earlier correct ranking interpretation.
+         */
+        plan =
+          normalizePlannerPlan({
+            datasets,
+            schema,
+            plan,
+            question: cleanQuestion,
+          });
+
+        plan = enforcePlannerInvariants({
+          datasets,
+          schema,
+          plan,
+          question: cleanQuestion,
+        });
+
+        const parityRows =
+          datasets[
+            plan.dataset
+          ];
+
+        if (!plan?.referentialDetailEnrichment) {
+          plan =
+            resolveComplexFilterPlan({
+              plan,
+              question:
+                cleanQuestion,
+              rows:
+                parityRows,
+            });
+        }
+
+        // Boolean/filter reconstruction can introduce two equality filters
+        // on the same categorical column (e.g. Province=A and Province=B).
+        // Re-apply shared invariants after that reconstruction so such
+        // mutually exclusive equalities become an IN/OR scope before
+        // grounding and execution.
+        plan = enforcePlannerInvariants({
+          datasets,
+          schema,
+          plan,
+          question: cleanQuestion,
+        });
+
+        if (
+          plan?.complexFilterGroundingFailed ===
+            true
+        ) {
+          plan = {
+            route:
+              "clarify",
+            question:
+              `I could not safely ground every condition in this AND/OR request: ${plan.complexFilterUngroundedClauses.join(", ")}. Please use values that exist in the current report.`,
+            universalGroundingFailed:
+              true,
+            complexFilterGroundingFailed:
+              true,
+          };
+        } else {
+          const datasetSchema =
+            schema.find(
+              (item) =>
+                String(
+                  item?.name ||
+                  ""
+                ) ===
+                String(
+                  plan.dataset ||
+                  ""
+                )
+            );
+
+          const columns =
+            (
+              datasetSchema?.columns ||
+              []
+            )
+              .map(
+                (column) =>
+                  typeof column ===
+                    "string"
+                    ? column
+                    : column?.name
+              )
+              .filter(Boolean);
+
+          const grounding =
+            enforceUniversalGrounding({
+              plan,
+              question:
+                cleanQuestion,
+              rows:
+                parityRows,
+              columns,
+            });
+
+          plan =
+            grounding.plan;
+        }
+      }
+
       if (
         plan.route ===
           "dataset" &&
@@ -12215,6 +5574,149 @@ async function answerQuestion(
         );
       }
 
+      /**
+       * Synthetic multi-worksheet operations are produced by the
+       * deterministic engine and can also be reconstructed by Groq/local
+       * conversation follow-ups (for example, "what about the lowest?").
+       * calculationEngine intentionally does not own these cross-worksheet
+       * operations, so execute them here before ordinary dataset execution.
+       */
+      if (
+        plan.route === "dataset" &&
+        ["rank_worksheets", "multi_worksheet", "rank_across_worksheets"].includes(
+          String(plan.operation || "").trim().toLowerCase()
+        )
+      ) {
+        const operationName = String(plan.operation || "").trim().toLowerCase();
+        const distributedResult = operationName === "rank_across_worksheets"
+          ? executeCrossWorksheetGroupedPlan({
+              datasets,
+              schema,
+              plan,
+              question: cleanQuestion,
+            })
+          : executeDistributedWorksheetPlan({
+              datasets,
+              schema,
+              plan,
+              question: cleanQuestion,
+            });
+
+        if (distributedResult) {
+          updateConversation(sessionId, {
+            question: cleanQuestion,
+            plan,
+            result: distributedResult,
+          });
+
+          return distributedResult;
+        }
+      }
+
+      // ====================================================
+      // SEMANTIC PLAN GUARDS
+      // ====================================================
+
+      /**
+       * V7.36.5g — planner-source parity for explicit numeric metrics.
+       * Strong live numeric fields outrank generic "number" unit/value
+       * interpretations for Groq, local, conversation, and deterministic
+       * plans alike.
+       */
+      const explicitNumericMetricRepair =
+        resolveExplicitNumericMetricPlan({
+          plan,
+          question:
+            cleanQuestion,
+          schema,
+          datasets,
+          context:
+            conversationContext,
+        });
+
+      plan =
+        explicitNumericMetricRepair.plan;
+
+      // 1) Align explicit aggregate wording with a verified numeric field.
+      // 2) Suppress weak/report-context substring filters.
+      // These run for Groq, local fallback, and conversational plans.
+      plan =
+        repairSemanticAggregatePlan({
+          datasets,
+          schema,
+          plan,
+          question: cleanQuestion,
+        });
+
+      // Protect real stored fields whose names also look like operations
+      // (Average, Total, Count, Minimum, Maximum, etc.). Exact live-schema
+      // field meaning outranks a keyword-only aggregation guess.
+      plan = refineStoredMetricOperation({
+        plan,
+        question: cleanQuestion,
+        schema,
+      });
+
+      plan =
+        sanitizeSemanticPlanFilters({
+          datasets,
+          plan,
+          question: cleanQuestion,
+          reportContext:
+            internalOptions?.report ||
+            internalOptions?.reportTitle ||
+            null,
+        });
+
+      // Re-assert cross-planner invariants after all semantic aggregate
+      // repairs. This is important for grouped wording such as "for each
+      // province", because some generic metric guards intentionally collapse
+      // grouped operations back to scalar operations.
+      plan = enforcePlannerInvariants({
+        datasets,
+        schema,
+        plan,
+        question: cleanQuestion,
+      });
+
+      if (protectedSemanticStructure && plan?.route === "dataset") {
+        plan = {
+          ...plan,
+          ...protectedSemanticStructure,
+        };
+      }
+
+      plan = detectColumnAmbiguity({
+        plan,
+        datasets,
+        question: cleanQuestion,
+      });
+
+      if (plan?.route === "dataset" && plan?.column) {
+        const semantic = inferMetricSemantics({
+          column: plan.column,
+          dataset: plan.dataset,
+          schema,
+          datasets,
+        });
+        plan = {
+          ...plan,
+          metricSemantics: semantic.type,
+          unit: semantic.unit || inferUnitFromColumn(plan.column),
+        };
+
+        plan = enrichPlanMetricMeaning({
+          plan,
+          question: cleanQuestion,
+          datasets,
+          schema,
+          reportContext:
+            internalOptions?.report ||
+            internalOptions?.reportTitle ||
+            null,
+        });
+      }
+
       // ====================================================
       // QUERY VALIDATOR
       // ====================================================
@@ -12224,6 +5726,7 @@ async function answerQuestion(
           datasets,
           schema,
           plan,
+          question: cleanQuestion,
         });
 
       if (
@@ -12249,6 +5752,22 @@ async function answerQuestion(
 
       plan =
         entityResolution.plan;
+
+      // Problem #2 safeguard: after fuzzy/entity resolution, every
+      // categorical filter must still be supported by the selected live
+      // worksheet/field. A typo or cross-field fuzzy match must not silently
+      // execute as a confident answer.
+      const groundedValueValidation = validateResolvedFilterValues({
+        datasets,
+        plan,
+        question: cleanQuestion,
+      });
+
+      if (!groundedValueValidation.valid) {
+        throw new Error(groundedValueValidation.message);
+      }
+
+      plan = groundedValueValidation.plan;
 
       if (
         process.env.NODE_ENV !==
@@ -12367,6 +5886,7 @@ async function answerQuestion(
         validateResult({
           plan,
           result,
+          datasets,
         });
 
       if (
@@ -12396,6 +5916,46 @@ async function answerQuestion(
 
       result =
         resultValidation.result;
+
+      /**
+       * V7.36.5g — DISTINCT MULTI-VALUE PARITY
+       *
+       * Apply the same distinct/unique/different multi-value cell
+       * normalization after execution for every planner source.
+       */
+      if (
+        plan?.route ===
+          "dataset" &&
+        String(
+          plan?.operation ||
+          ""
+        )
+          .trim()
+          .toLowerCase() ===
+          "list"
+      ) {
+        result =
+          normalizeDirectSingleFieldResult({
+            plan,
+            result,
+            question:
+              cleanQuestion,
+          });
+      }
+
+      if (plan?.route === "dataset") {
+        const dataQuality = buildDataQualitySummary({ datasets, plan });
+        result = {
+          ...result,
+          unit: result?.unit || plan?.unit || null,
+          displayUnit: result?.displayUnit || plan?.displayUnit || null,
+          denominatorUnit: result?.denominatorUnit || plan?.denominatorUnit || null,
+          metricMeaning: result?.metricMeaning || plan?.metricMeaning || null,
+          metricSemantics: result?.metricSemantics || plan?.metricSemantics || null,
+          metricSource: result?.metricSource || plan?.metricSource || null,
+          dataQuality: result?.dataQuality || dataQuality || null,
+        };
+      }
 
       // ====================================================
       // CONVERSATIONAL ANALYTICS ORDINAL SELECTION
@@ -12494,6 +6054,7 @@ async function answerQuestion(
 
       if (
         result &&
+        result.success !== false &&
         plan.route !==
           "clarify"
       ) {
@@ -12562,8 +6123,25 @@ async function answerQuestion(
                 "object"
           );
 
+        const isGroupedListResult =
+          String(
+            plan?.operation ||
+            result?.operation ||
+            ""
+          )
+            .trim()
+            .toLowerCase() ===
+            "group_list" &&
+          Array.isArray(result?.results);
+
+        const groupedListAnswer =
+          isGroupedListResult
+            ? result.answer
+            : null;
+
         const primitiveListAnswer =
-          isPrimitiveListResult
+          isPrimitiveListResult &&
+          plan?.listProjectionGrounded !== true
             ? result.results
                 .filter(
                   (item) =>
@@ -12586,11 +6164,48 @@ async function answerQuestion(
                 )
             : null;
 
+        /**
+         * A grounded list projection carries semantic information that a raw
+         * numbered primitive list cannot express: the output field is the
+         * answer subject while the filter field is only the condition.
+         *
+         * Example, schema-driven (not dataset-specific):
+         *   output column: Association
+         *   filter column: Commodities contains X
+         *   -> "The associations whose commodities include X are ..."
+         *
+         * Route these plans through the shared deterministic response
+         * generator. generateNaturalResponse preserves the verified semantic
+         * list wording for both Groq and local fallback, so the two paths stay
+         * aligned and the filter field cannot be mislabeled as the output.
+         */
+        /**
+         * Final grounded-list answer guard.
+         *
+         * A list query can filter on one field while projecting another.
+         * Once listProjectionGrounded is true, the projected/output field is
+         * authoritative for the answer subject. Build that wording directly
+         * from the verified plan/result and do not allow a legacy response
+         * path (or optional LLM polish) to relabel the filter field as the
+         * returned entity. This runs for both Groq-created and local plans.
+         */
+        const groundedListAnswer =
+          isPrimitiveListResult &&
+          plan?.listProjectionGrounded === true
+            ? buildSemanticVerifiedAnswer({
+                question: cleanQuestion,
+                plan,
+                result,
+              })
+            : null;
+
         const naturalAnswer =
           isOrdinalAnalyticalResult &&
           result?.answer
             ? result.answer
             : (
+                groupedListAnswer ||
+                groundedListAnswer ||
                 primitiveListAnswer ||
                 await generateNaturalResponse({
                   question:
@@ -12647,6 +6262,1511 @@ async function answerQuestion(
     };
 
 
+  // ========================================================
+  // SHARED FORCED-PLAN EXECUTION
+  // ========================================================
+  // Internal only. Compound parity uses this to execute an already verified
+  // plan after adding inherited scope, without asking Groq or the local
+  // planner to reinterpret the clause. All normal validation, grounding,
+  // entity resolution and result verification still run inside
+  // executeResolvedPlan().
+  if (internalOptions?.forcedPlan) {
+    const forcedPlan = enforcePlannerInvariants({
+      datasets,
+      schema,
+      plan: internalOptions.forcedPlan,
+      question: cleanQuestion,
+    });
+    return executeResolvedPlan(forcedPlan);
+  }
+
+
+  // ========================================================
+  // V7.36.5p — EARLY CONTINUOUS COMPOUND FOLLOW-UP
+  // ========================================================
+  //
+  // This MUST run before Groq/local primary planning. Otherwise a short
+  // follow-up such as "what about Phase 2?" can be interpreted as a new
+  // single-field list request before the stored compound intent gets a
+  // chance to continue.
+  //
+  // The current question still wins: this path only activates for an
+  // elliptical follow-up that does not explicitly request a new operation.
+  // It is fully schema/data driven; no dataset, field, or business value is
+  // hardcoded.
+  const earlyPreviousCompoundContext =
+    conversationContext?.compoundContext;
+
+  const earlyCompoundFollowUpPrefix =
+    /^(?:what|how)\s+about\b|^and\b|^for\b|^also\b|^then\b/i.test(
+      String(cleanQuestion || "").trim()
+    );
+
+  const earlyExplicitOperationChange =
+    /\b(?:list|show|display|name|count|how many|number of|sum|total|average|avg|mean|minimum|maximum|highest|lowest|top|bottom|rank|compare|difference|median)\b/i.test(
+      String(cleanQuestion || "")
+    );
+
+  if (
+    conversationContext?.isFollowUp === true &&
+    earlyCompoundFollowUpPrefix &&
+    !earlyExplicitOperationChange &&
+    earlyPreviousCompoundContext &&
+    Array.isArray(earlyPreviousCompoundContext.clauses) &&
+    earlyPreviousCompoundContext.clauses.length > 1
+  ) {
+    const continuedClauses = [];
+    let foundExplicitScope = false;
+
+    for (const previousClause of earlyPreviousCompoundContext.clauses) {
+      const previousPlan = previousClause?.plan || {};
+      const previousDataset = previousPlan?.dataset;
+      const rows =
+        previousDataset && Array.isArray(datasets?.[previousDataset])
+          ? datasets[previousDataset]
+          : [];
+
+      if (!rows.length || previousPlan.route !== "dataset") {
+        continue;
+      }
+
+      let newFilters = inferCoherentFilters(rows, cleanQuestion);
+
+      if (!Array.isArray(newFilters) || !newFilters.length) {
+        const preferredColumns = new Set(
+          (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
+            .map((filter) => filter?.column)
+            .filter(Boolean)
+        );
+
+        newFilters = inferApproximateFollowUpFilter({
+          rows,
+          question: cleanQuestion,
+          preferredColumns,
+        });
+      }
+
+      if (!Array.isArray(newFilters) || !newFilters.length) {
+        continue;
+      }
+
+      foundExplicitScope = true;
+
+      const replacementColumns = new Set(
+        newFilters
+          .map((filter) => filter?.column)
+          .filter(Boolean)
+      );
+
+      /**
+       * Re-ground the PREVIOUS clause from its original wording before
+       * inheriting its scope. This prevents a planner-normalized value from
+       * becoming overly specific across follow-ups (for example preserving
+       * a whole multi-value cell instead of the explicitly asked token).
+       * The original user wording is the stable semantic source; the live
+       * worksheet still validates every reconstructed filter.
+       */
+      const previousExplicitFilters =
+        inferCoherentFilters(
+          rows,
+          earlyPreviousCompoundContext?.question ||
+            previousClause?.question ||
+            ""
+        );
+
+      const previousExplicitByColumn =
+        new Map(
+          (Array.isArray(previousExplicitFilters)
+            ? previousExplicitFilters
+            : [])
+            .filter((filter) => filter?.column)
+            .map((filter) => [filter.column, filter])
+        );
+
+      const inheritedFilters =
+        (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
+          .filter((filter) =>
+            filter?.column && !replacementColumns.has(filter.column)
+          )
+          .map((filter) => {
+            const explicit = previousExplicitByColumn.get(filter.column);
+            const source = explicit || filter;
+
+            return {
+              ...source,
+              value: Array.isArray(source?.value)
+                ? [...source.value]
+                : source?.value,
+            };
+          });
+
+      const finalFilters = [
+        ...inheritedFilters,
+        ...newFilters.map((filter) => ({
+          ...filter,
+          value: Array.isArray(filter?.value)
+            ? [...filter.value]
+            : filter?.value,
+        })),
+      ];
+
+      const continuedPlan = {
+        ...previousPlan,
+        route: "dataset",
+        dataset: previousDataset,
+        filters: finalFilters,
+        filterGroups: [],
+        filterGroupLogic: null,
+        outputRequested: true,
+        conversationalCompoundContinuation: true,
+      };
+
+      const continuedResult = await executeResolvedPlan(continuedPlan);
+
+      continuedClauses.push({
+        question: previousClause.question || cleanQuestion,
+        plan: continuedResult?.debugPlan || continuedPlan,
+        result: continuedResult,
+      });
+    }
+
+    if (
+      foundExplicitScope &&
+      continuedClauses.length === earlyPreviousCompoundContext.clauses.length
+    ) {
+      saveCompoundContext(sessionId, {
+        // Preserve the original compound semantic request across multiple
+        // elliptical follow-ups. The short follow-up changes scope, but it
+        // does not replace the subject/operations that define the compound.
+        question:
+          earlyPreviousCompoundContext.question ||
+          cleanQuestion,
+        clauses: continuedClauses,
+      });
+
+      const subResults = continuedClauses.map((item) => ({
+        question: item.question,
+        result: item.result,
+      }));
+
+      return {
+        success: continuedClauses.every(
+          (item) => item.result?.success !== false
+        ),
+        source: "dataset",
+        operation: "compound",
+        questionCount: continuedClauses.length,
+        questions: continuedClauses.map((item) => item.question),
+        results: continuedClauses.map((item) => ({
+          question: item.question,
+          success: item.result?.success,
+          dataset: item.result?.dataset || null,
+          operation: item.result?.operation || null,
+          value: item.result?.value,
+          categories: item.result?.categories,
+          answer: item.result?.answer,
+          plannerSource: "conversation",
+          debugPlan: item.result?.debugPlan || item.plan,
+        })),
+        answer: improveCompoundAnswerWording(subResults),
+        responseStyle: "natural",
+        plannerSource: "conversation-compound",
+        debugPlan: {
+          route: "compound",
+          operation: "compound",
+          conversationalCompoundContinuation: true,
+          inheritedOperationCount: continuedClauses.length,
+          previousCompoundQuestion:
+            earlyPreviousCompoundContext.question || null,
+        },
+      };
+    }
+  }
+
+
+
+
+
+
+  // ========================================================
+  // V7.36.5 — GROQ-FIRST PRIMARY PLANNER
+  // ========================================================
+  //
+  // New planning policy:
+  //   1. Groq gets the first semantic planning attempt.
+  //   2. Its plan is checked against the live schema/data and conversation.
+  //   3. Only a high-confidence Groq plan is executed.
+  //   4. A weak/invalid Groq plan is handed to deterministic/local logic.
+  //
+  // Pure calculations over already verified prior results may still be
+  // resolved earlier because they do not require a new dataset plan.
+  //
+  let groqPlan = null;
+  let groqPlanningError = null;
+  let groqReferentialRecovery = false;
+  let groqPrimaryAttempted = false;
+  let groqPrimaryConfidence = null;
+  let groqPrimaryIssues = [];
+  let groqPlanRepaired = false;
+  let groqRepairReasons = [];
+  let groqDiagnostic = {
+    status: "not_attempted",
+    httpStatus: null,
+    code: null,
+    message: null,
+    jsonRetryUsed: false,
+    jsonRetryRecovered: false,
+  };
+
+  const sameSimpleFilters = (
+    left = [],
+    right = []
+  ) => {
+    const normalizeFilters =
+      (filters) =>
+        (Array.isArray(filters)
+          ? filters
+          : []
+        )
+          .map(
+            (filter) => ({
+              column:
+                normalizeText(
+                  filter?.column
+                ),
+              operator:
+                normalizeText(
+                  filter?.operator ||
+                  "equals"
+                ),
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? filter.value
+                      .map(
+                        (value) =>
+                          normalizeText(
+                            value
+                          )
+                      )
+                      .sort()
+                      .join("|")
+                  : normalizeText(
+                      filter?.value
+                    ),
+            })
+          )
+          .sort(
+            (a, b) =>
+              JSON.stringify(a)
+                .localeCompare(
+                  JSON.stringify(b)
+                )
+          );
+
+    return (
+      JSON.stringify(
+        normalizeFilters(left)
+      ) ===
+      JSON.stringify(
+        normalizeFilters(right)
+      )
+    );
+  };
+
+
+  /**
+   * V7.36.5f — repair correct-but-incomplete Groq referential plans.
+   *
+   * If Groq correctly identifies the CURRENT target field and scope but
+   * omits a previously VERIFIED relationship label, restore only that
+   * missing relationship context before confidence evaluation.
+   *
+   * Wrong field, wrong dataset, or changed scope are NOT repaired here.
+   * Those still fall through to local validation/fallback.
+   */
+  const repairIncompleteGroqReferentialPlan =
+    (plan) => {
+      if (
+        !plan ||
+        conversationContext?.isFollowUp !==
+          true ||
+        !looksLikeContinuousFollowUp(
+          cleanQuestion
+        ) ||
+        !plan?.dataset ||
+        !plan?.column
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const operation =
+        normalizeText(
+          plan?.operation
+        );
+
+      if (
+        operation &&
+        ![
+          "list",
+          "lookup",
+        ].includes(
+          operation
+        )
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const datasetSchema =
+        (schema || []).find(
+          (item) =>
+            normalizeText(
+              item?.name
+            ) ===
+            normalizeText(
+              plan.dataset
+            )
+        );
+
+      const liveColumns =
+        (datasetSchema?.columns || [])
+          .map(
+            (item) =>
+              typeof item === "string"
+                ? item
+                : item?.name
+          )
+          .filter(Boolean);
+
+      const findLiveColumn =
+        (candidate) => {
+          const normalized =
+            normalizeText(
+              candidate
+            );
+
+          if (!normalized) {
+            return null;
+          }
+
+          return (
+            liveColumns.find(
+              (column) =>
+                normalizeText(
+                  column
+                ) ===
+                normalized
+            ) ||
+            null
+          );
+        };
+
+      const liveValueColumn =
+        findLiveColumn(
+          plan.column
+        );
+
+      if (!liveValueColumn) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const previousFilters =
+        Array.isArray(
+          conversationContext
+            ?.lastFilters
+        )
+          ? conversationContext
+              .lastFilters
+          : [];
+
+      /**
+       * Current explicit scope must win. Never graft stale verified
+       * relationship context across a changed scope.
+       */
+      if (
+        previousFilters.length &&
+        Array.isArray(
+          plan?.filters
+        ) &&
+        plan.filters.length &&
+        !sameSimpleFilters(
+          plan.filters,
+          previousFilters
+        )
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const explicitCandidate =
+        buildExplicitReferentialFieldPlan({
+          schema,
+          context:
+            conversationContext,
+          question:
+            cleanQuestion,
+        });
+
+      let pairColumn =
+        null;
+
+      if (
+        explicitCandidate &&
+        normalizeText(
+          explicitCandidate
+            ?.dataset
+        ) ===
+        normalizeText(
+          plan.dataset
+        ) &&
+        normalizeText(
+          explicitCandidate
+            ?.column
+        ) ===
+        normalizeText(
+          liveValueColumn
+        ) &&
+        (
+          !Array.isArray(
+            explicitCandidate
+              ?.filters
+          ) ||
+          !explicitCandidate
+            .filters.length ||
+          !Array.isArray(
+            plan?.filters
+          ) ||
+          !plan.filters.length ||
+          sameSimpleFilters(
+            plan.filters,
+            explicitCandidate
+              .filters
+          )
+        )
+      ) {
+        pairColumn =
+          findLiveColumn(
+            explicitCandidate
+              ?.labelColumn
+          );
+      }
+
+      if (!pairColumn) {
+        const priorPairCandidates = [
+          conversationContext
+            ?.lastPlan
+            ?.conversationalPairColumn,
+          conversationContext
+            ?.lastPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.groupBy,
+        ];
+
+        for (
+          const candidate
+          of priorPairCandidates
+        ) {
+          const live =
+            findLiveColumn(
+              candidate
+            );
+
+          if (
+            live &&
+            normalizeText(
+              live
+            ) !==
+            normalizeText(
+              liveValueColumn
+            )
+          ) {
+            pairColumn =
+              live;
+            break;
+          }
+        }
+      }
+
+      if (
+        !pairColumn ||
+        normalizeText(
+          pairColumn
+        ) ===
+        normalizeText(
+          liveValueColumn
+        )
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      if (
+        normalizeText(
+          plan?.labelColumn
+        ) ===
+        normalizeText(
+          pairColumn
+        ) &&
+        normalizeText(
+          plan?.operation
+        ) ===
+        "lookup"
+      ) {
+        return {
+          plan,
+          repaired: false,
+          reasons: [],
+        };
+      }
+
+      const repairedFilters =
+        (
+          Array.isArray(
+            plan?.filters
+          ) &&
+          plan.filters.length
+            ? plan.filters
+            : previousFilters
+        )
+          .map(
+            (filter) => ({
+              ...filter,
+              value:
+                Array.isArray(
+                  filter?.value
+                )
+                  ? [
+                      ...filter.value,
+                    ]
+                  : filter?.value,
+            })
+          );
+
+      const selectColumns =
+        [
+          pairColumn,
+          liveValueColumn,
+        ]
+          .filter(Boolean)
+          .filter(
+            (column, index, all) =>
+              all.findIndex(
+                (item) =>
+                  normalizeText(
+                    item
+                  ) ===
+                  normalizeText(
+                    column
+                  )
+              ) === index
+          );
+
+      return {
+        plan: {
+          ...plan,
+          route:
+            "dataset",
+          dataset:
+            plan.dataset,
+          operation:
+            "lookup",
+          column:
+            liveValueColumn,
+          labelColumn:
+            pairColumn,
+          groupBy:
+            null,
+          aggregation:
+            null,
+          direction:
+            null,
+          filters:
+            repairedFilters,
+          selectColumns,
+          outputRequested:
+            true,
+          transform:
+            null,
+          showAll:
+            true,
+          limit:
+            Math.max(
+              Number(
+                plan?.limit
+              ) || 10,
+              100
+            ),
+          conversationalPairColumn:
+            pairColumn,
+          groqContextRepaired:
+            true,
+        },
+        repaired: true,
+        reasons: [
+          "verified-referential-label-restored",
+        ],
+      };
+    };
+
+
+  const evaluateGroqPrimaryConfidence =
+    (plan) => {
+      const base =
+        evaluateLocalPlanConfidence({
+          plan,
+          datasets,
+          schema,
+        });
+
+      let score =
+        Number(
+          base.score || 0
+        );
+
+      const issues = [
+        ...(base.issues || []),
+      ];
+
+      if (
+        base.critical
+      ) {
+        return {
+          score,
+          issues,
+          critical: true,
+        };
+      }
+
+      /**
+       * Current explicit field/value questions are used only as a
+       * deterministic cross-check. They do not answer before Groq anymore.
+       */
+      const directFieldCandidate =
+        resolveDirectFilteredFieldPlan({
+          question:
+            cleanQuestion,
+          schema,
+          datasets,
+        });
+
+      if (
+        directFieldCandidate
+      ) {
+        if (
+          normalizeText(
+            plan?.column
+          ) !==
+          normalizeText(
+            directFieldCandidate
+              ?.column
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.45
+            );
+          issues.push(
+            "explicit-field-mismatch"
+          );
+        }
+
+        if (
+          directFieldCandidate
+            ?.dataset &&
+          plan?.dataset &&
+          normalizeText(
+            plan.dataset
+          ) !==
+          normalizeText(
+            directFieldCandidate
+              .dataset
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.5
+            );
+          issues.push(
+            "dataset-mismatch"
+          );
+        }
+
+        if (
+          Array.isArray(
+            directFieldCandidate
+              ?.filters
+          ) &&
+          directFieldCandidate
+            .filters.length &&
+          !sameSimpleFilters(
+            plan?.filters,
+            directFieldCandidate
+              .filters
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.65
+            );
+          issues.push(
+            "scope-filter-mismatch"
+          );
+        }
+      }
+
+      const directAggregateCandidate =
+        resolveDirectFilteredAggregatePlan({
+          question:
+            cleanQuestion,
+          schema,
+          datasets,
+        });
+
+      if (
+        directAggregateCandidate
+      ) {
+        if (
+          normalizeText(
+            plan?.operation
+          ) !==
+          normalizeText(
+            directAggregateCandidate
+              ?.operation
+          ) ||
+          (
+            directAggregateCandidate
+              ?.column &&
+            normalizeText(
+              plan?.column
+            ) !==
+            normalizeText(
+              directAggregateCandidate
+                ?.column
+            )
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.5
+            );
+          issues.push(
+            "aggregate-intent-mismatch"
+          );
+        }
+      }
+
+      /**
+       * Referential questions are also cross-checked against verified
+       * conversation scope. If Groq drops the identity/label relationship,
+       * do not execute it merely because its column exists.
+       */
+      const referentialCandidate =
+        buildExplicitReferentialFieldPlan({
+          schema,
+          context:
+            conversationContext,
+          question:
+            cleanQuestion,
+        });
+
+      if (
+        referentialCandidate
+      ) {
+        if (
+          normalizeText(
+            plan?.column
+          ) !==
+          normalizeText(
+            referentialCandidate
+              ?.column
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.4
+            );
+          issues.push(
+            "referential-field-mismatch"
+          );
+        }
+
+        if (
+          referentialCandidate
+            ?.labelColumn &&
+          normalizeText(
+            plan?.labelColumn
+          ) !==
+          normalizeText(
+            referentialCandidate
+              .labelColumn
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.55
+            );
+          issues.push(
+            "referential-label-missing-or-mismatched"
+          );
+        }
+
+        if (
+          Array.isArray(
+            referentialCandidate
+              ?.filters
+          ) &&
+          referentialCandidate
+            .filters.length &&
+          !sameSimpleFilters(
+            plan?.filters,
+            referentialCandidate
+              .filters
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.65
+            );
+          issues.push(
+            "referential-scope-mismatch"
+          );
+        }
+      }
+
+      /**
+       * Safety net after repair: if a referential follow-up still drops a
+       * previously verified live pair column, lower confidence and let the
+       * local path verify/repair it.
+       */
+      if (
+        conversationContext?.isFollowUp ===
+          true &&
+        looksLikeContinuousFollowUp(
+          cleanQuestion
+        ) &&
+        plan?.dataset &&
+        plan?.column
+      ) {
+        const liveDatasetSchema =
+          (schema || []).find(
+            (datasetSchema) =>
+              normalizeText(
+                datasetSchema?.name
+              ) ===
+              normalizeText(
+                plan.dataset
+              )
+          );
+
+        const liveColumns =
+          new Set(
+            (
+              liveDatasetSchema
+                ?.columns ||
+              []
+            ).map(
+              (column) =>
+                normalizeText(
+                  typeof column ===
+                    "string"
+                    ? column
+                    : column?.name
+                )
+            )
+          );
+
+        const priorPairCandidates = [
+          conversationContext
+            ?.lastPlan
+            ?.conversationalPairColumn,
+          conversationContext
+            ?.lastPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.labelColumn,
+          conversationContext
+            ?.semanticPlan
+            ?.groupBy,
+        ];
+
+        const verifiedPriorPair =
+          priorPairCandidates.find(
+            (candidate) => {
+              const normalized =
+                normalizeText(
+                  candidate
+                );
+
+              return (
+                normalized &&
+                normalized !==
+                  normalizeText(
+                    plan.column
+                  ) &&
+                liveColumns.has(
+                  normalized
+                )
+              );
+            }
+          ) ||
+          null;
+
+        if (
+          verifiedPriorPair &&
+          normalizeText(
+            plan?.labelColumn
+          ) !==
+          normalizeText(
+            verifiedPriorPair
+          )
+        ) {
+          score =
+            Math.min(
+              score,
+              0.55
+            );
+
+          issues.push(
+            "referential-label-dropped-from-verified-context"
+          );
+        }
+      }
+
+      return {
+        score:
+          Number(
+            score.toFixed(4)
+          ),
+        issues:
+          [...new Set(issues)],
+        critical: false,
+      };
+    };
+
+  const GROQ_PRIMARY_THRESHOLD =
+    0.85;
+
+  /**
+   * ========================================================
+   * DETERMINISTIC SEMANTIC-CONTRACT PRIMARY ROUTE
+   * ========================================================
+   *
+   * A self-contained question that strongly matches a declared semantic
+   * contract must not depend on which planner answers first. The contract is
+   * the authoritative routing source for stored metrics, so resolve it before
+   * Groq/local planning whenever the current turn is not referential.
+   *
+   * This is intentionally generic: the contract chooses the worksheet, metric,
+   * execution context, and allowed operation. Geography/entity filters are
+   * inferred only from values that exist in that chosen live worksheet.
+   */
+  if (conversationContext?.isFollowUp !== true) {
+    const semanticSeedPlan = {
+      route: "clarify",
+      operation: "clarify",
+      dataset: null,
+      column: null,
+      labelColumn: null,
+      groupBy: null,
+      aggregation: null,
+      direction: null,
+      filters: [],
+      filterGroups: [],
+      filterGroupLogic: null,
+      selectColumns: [],
+      outputRequested: true,
+      transform: null,
+      limit: 10,
+      showAll: false,
+    };
+
+    let deterministicContractPlan =
+      repairSemanticContractCountIntent({
+        datasets,
+        plan: semanticSeedPlan,
+        question: cleanQuestion,
+      });
+
+    if (
+      deterministicContractPlan?.semanticContractIntentRepaired === true &&
+      deterministicContractPlan?.dataset &&
+      Array.isArray(datasets?.[deterministicContractPlan.dataset])
+    ) {
+      const contractRows = datasets[deterministicContractPlan.dataset];
+      const inferredContractFilters = inferCoherentFilters(
+        contractRows,
+        cleanQuestion
+      );
+
+      if (
+        (!Array.isArray(deterministicContractPlan.filters) ||
+          deterministicContractPlan.filters.length === 0) &&
+        Array.isArray(inferredContractFilters) &&
+        inferredContractFilters.length
+      ) {
+        deterministicContractPlan = {
+          ...deterministicContractPlan,
+          filters: inferredContractFilters,
+        };
+      }
+
+      deterministicContractPlan = {
+        ...deterministicContractPlan,
+        deterministicSemanticContractRoute: true,
+      };
+
+      try {
+        const deterministicContractResult =
+          await executeResolvedPlan(deterministicContractPlan);
+
+        if (deterministicContractResult?.success !== false) {
+          return {
+            ...deterministicContractResult,
+            plannerSource: "semantic-contract",
+            deterministicSemanticContractRoute: true,
+          };
+        }
+      } catch (semanticContractError) {
+        if (process.env.NODE_ENV !== "production") {
+          console.warn(
+            "Deterministic semantic-contract route deferred to planners:",
+            semanticContractError?.message || semanticContractError
+          );
+        }
+      }
+    }
+  }
+
+  try {
+    groqPrimaryAttempted =
+      true;
+
+    groqPlan =
+      await createSchemaAwarePlan({
+        question:
+          cleanQuestion,
+        schema,
+        context:
+          conversationContext,
+        retrievalContext,
+      });
+
+    const groqPlanDiagnostics =
+      groqPlan?.__groqDiagnostics ||
+      null;
+
+    groqDiagnostic = {
+      status:
+        groqPlanDiagnostics
+          ?.jsonRetryRecovered
+          ? "ok_after_json_retry"
+          : "ok",
+      httpStatus: 200,
+      code: null,
+      message: null,
+      jsonRetryUsed:
+        Boolean(
+          groqPlanDiagnostics
+            ?.jsonRetryUsed
+        ),
+      jsonRetryRecovered:
+        Boolean(
+          groqPlanDiagnostics
+            ?.jsonRetryRecovered
+        ),
+    };
+
+    groqPlan =
+      normalizePlannerPlan({
+        datasets,
+        schema,
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+      });
+
+    groqPlan =
+      reconcileExplicitDatasetMention({
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+        datasets,
+        schema,
+      });
+
+    groqPlan =
+      repairMultiEntityFilters({
+        datasets,
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+      });
+
+    groqPlan =
+      enforceExplicitQuestionColumn({
+        plan:
+          groqPlan,
+        schema,
+        question:
+          cleanQuestion,
+      });
+
+    const numericMetricRepair =
+      resolveExplicitNumericMetricPlan({
+        plan:
+          groqPlan,
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
+
+    groqPlan =
+      numericMetricRepair.plan;
+
+    if (
+      numericMetricRepair.repaired
+    ) {
+      groqPlanRepaired =
+        true;
+
+      groqRepairReasons = [
+        ...new Set(
+          [
+            ...groqRepairReasons,
+            ...(
+              numericMetricRepair
+                .reasons ||
+              []
+            ),
+          ]
+        ),
+      ];
+    }
+
+    const groqRepair =
+      repairIncompleteGroqReferentialPlan(
+        groqPlan
+      );
+
+    groqPlan =
+      groqRepair.plan;
+
+    groqPlanRepaired =
+      groqPlanRepaired ||
+      Boolean(
+        groqRepair.repaired
+      );
+
+    groqRepairReasons = [
+      ...new Set(
+        [
+          ...groqRepairReasons,
+          ...(
+            groqRepair.reasons ||
+            []
+          ),
+        ]
+      ),
+    ];
+
+    const confidence =
+      evaluateGroqPrimaryConfidence(
+        groqPlan
+      );
+
+    groqPrimaryConfidence =
+      confidence.score;
+
+    groqPrimaryIssues =
+      confidence.issues;
+
+    if (
+      !confidence.critical &&
+      confidence.score >=
+        GROQ_PRIMARY_THRESHOLD
+    ) {
+      const result =
+        await executeResolvedPlan(
+          groqPlan
+        );
+
+      const semanticAnswer =
+        buildSemanticVerifiedAnswer({
+          question:
+            cleanQuestion,
+          plan:
+            groqPlan,
+          result,
+        });
+
+      updateConversation(
+        sessionId,
+        {
+          question:
+            cleanQuestion,
+          plan:
+            groqPlan,
+          result,
+        }
+      );
+
+      return {
+        ...result,
+
+        answer:
+          formatUserFacingAnswer(
+            semanticAnswer ||
+            result?.answer
+          ),
+
+        plannerSource:
+          groqPlanRepaired
+            ? "groq-repaired"
+            : (
+                groqDiagnostic
+                  .status ===
+                  "ok_after_json_retry"
+                  ? "groq-json-recovered"
+                  : "groq"
+              ),
+
+        groqPlanRepaired:
+          groqPlanRepaired,
+
+        groqRepairReasons:
+          groqRepairReasons,
+
+        groqStatus:
+          groqDiagnostic.status,
+
+        groqPlanConfidence:
+          groqPrimaryConfidence,
+
+        groqConfidenceIssues:
+          groqPrimaryIssues,
+
+        groqJsonRetryUsed:
+          Boolean(
+            groqDiagnostic
+              .jsonRetryUsed
+          ),
+
+        groqJsonRetryRecovered:
+          Boolean(
+            groqDiagnostic
+              .jsonRetryRecovered
+          ),
+      };
+    }
+
+    groqDiagnostic = {
+      ...groqDiagnostic,
+      status:
+        "low_confidence",
+      message:
+        `Groq plan confidence ${confidence.score} was below ${GROQ_PRIMARY_THRESHOLD}.`,
+    };
+
+    groqPlan =
+      null;
+  } catch (error) {
+    groqPlanningError =
+      error;
+
+    groqDiagnostic = {
+      ...classifyGroqError(
+        error
+      ),
+      jsonRetryUsed:
+        Boolean(
+          error
+            ?.groqJsonRetryUsed
+        ),
+      jsonRetryRecovered:
+        false,
+    };
+
+    groqPlan =
+      null;
+  }
+
+
+
+  const buildGroqHandoffDiagnostics =
+    () => ({
+      groqStatus:
+        groqDiagnostic.status,
+
+      groqPlanConfidence:
+        groqPrimaryConfidence,
+
+      groqConfidenceIssues:
+        groqPrimaryIssues,
+
+      groqHttpStatus:
+        groqDiagnostic.httpStatus,
+
+      groqErrorCode:
+        groqDiagnostic.code,
+
+      groqJsonRetryUsed:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryUsed
+        ),
+
+      groqJsonRetryRecovered:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryRecovered
+        ),
+
+      groqPlanningError:
+        groqPlanningError?.message ||
+        null,
+
+      groqPlanRepaired:
+        groqPlanRepaired,
+
+      groqRepairReasons:
+        groqRepairReasons,
+    });
+
+
+  // ========================================================
+  // UNIVERSAL RANKING + DETAIL RESCUE
+  // ========================================================
+  // Handles schema-driven requests such as:
+  //   "Which <entity> has the highest <metric>, and what <fields> ...?"
+  // This is not tied to any worksheet vocabulary. It only activates when
+  // live schema columns provide both a categorical label and numeric metric.
+  const rankingDetailRescuePlan = buildRankingDetailRescuePlan({
+    datasets,
+    schema,
+    question: cleanQuestion,
+  });
+
+  if (rankingDetailRescuePlan) {
+    const rankingDetailResult = await executeResolvedPlan(rankingDetailRescuePlan);
+    updateConversation(sessionId, {
+      question: cleanQuestion,
+      plan: rankingDetailRescuePlan,
+      result: rankingDetailResult,
+    });
+    return {
+      ...rankingDetailResult,
+      plannerSource: "shared-semantic-rescue",
+      ...buildGroqHandoffDiagnostics(),
+    };
+  }
+
+  // ========================================================
+  // DETERMINISTIC LINKED MULTI-FIELD LOOKUP
+  // ========================================================
+  //
+  // Example structure:
+  //
+  //   "What are the <A> in <scope> and give me <B>"
+  //
+  // This is handled as ONE lookup so the scope/filter from the
+  // first clause remains attached to every requested output.
+  //
+  const linkedMultiFieldPlan =
+    buildLinkedMultiFieldPlan({
+      datasets,
+      schema,
+      question:
+        cleanQuestion,
+    });
+
+  if (
+    linkedMultiFieldPlan
+  ) {
+    const linkedResult =
+      await executeResolvedPlan(
+        linkedMultiFieldPlan
+      );
+
+    /**
+     * Preserve the calculation engine's row-aware rendering so
+     * all requested output fields remain attached to each row.
+     */
+    const linkedAnswer =
+      linkedResult?.answer;
+
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          linkedMultiFieldPlan,
+        result:
+          linkedResult,
+      }
+    );
+
+    return {
+      ...linkedResult,
+
+      answer:
+        formatUserFacingAnswer(
+          linkedAnswer ||
+          linkedResult?.answer
+        ),
+
+      responseStyle:
+        "natural",
+
+      debugPlan:
+        linkedMultiFieldPlan,
+
+      debugEntityChanges:
+        [],
+
+      plannerSource:
+        "deterministic-linked-multifield",
+    };
+  }
+
 
 
 
@@ -12693,11 +7813,25 @@ async function answerQuestion(
         directFilteredAggregatePlan
       );
 
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          directFilteredAggregatePlan,
+        result:
+          directFilteredAggregateResult,
+      }
+    );
+
     return {
       ...directFilteredAggregateResult,
 
       plannerSource:
         "conversation-local",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -12738,34 +7872,197 @@ async function answerQuestion(
       );
     }
 
-    const directFilteredFieldResult =
+    const rawDirectFilteredFieldResult =
       await executeResolvedPlan(
         directFilteredFieldPlan
       );
+
+    /**
+     * Direct single-field lookups are value-set questions, not row dumps.
+     * Collapse duplicate rows before storing the conversational result and
+     * before formatting the answer.
+     */
+    // executeResolvedPlan may apply shared planner invariants (for example,
+    // collapsing Province=A + Province=B into Province IN [A,B]). Use the
+    // VERIFIED executed plan for all downstream formatting and memory so the
+    // response cannot fall back to the narrower pre-repair planner draft.
+    const executedDirectFilteredFieldPlan =
+      rawDirectFilteredFieldResult?.debugPlan ||
+      directFilteredFieldPlan;
+
+    const directFilteredFieldResult =
+      normalizeDirectSingleFieldResult({
+        plan:
+          executedDirectFilteredFieldPlan,
+        result:
+          rawDirectFilteredFieldResult,
+        question:
+          cleanQuestion,
+      });
+
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          executedDirectFilteredFieldPlan,
+        result:
+          directFilteredFieldResult,
+      }
+    );
+
+    const directSingleFieldAnswer =
+      (
+        executedDirectFilteredFieldPlan
+          .operation ===
+        "list"
+      )
+        ? (
+            buildSemanticVerifiedAnswer({
+              question:
+                cleanQuestion,
+              plan:
+                executedDirectFilteredFieldPlan,
+              result:
+                directFilteredFieldResult,
+            }) ||
+            buildVerifiedListAnswer({
+              result:
+                directFilteredFieldResult,
+              subjectColumn:
+                executedDirectFilteredFieldPlan
+                  .column,
+            })
+          )
+        : buildVerifiedListAnswer({
+            result:
+              directFilteredFieldResult,
+            subjectColumn:
+              executedDirectFilteredFieldPlan
+                .column,
+          });
 
     return {
       ...directFilteredFieldResult,
 
       answer:
-        directFilteredFieldPlan
-          .operation ===
-          "list"
-          ? buildVerifiedListAnswer({
-              result:
-                directFilteredFieldResult,
-
-              subjectColumn:
-                directFilteredFieldPlan
-                  .column,
-            })
-          : directFilteredFieldResult
-              .answer,
+        directSingleFieldAnswer,
 
       plannerSource:
         "conversation-local",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
+
+
+  // ========================================================
+  // EXPLICIT REFERENTIAL FIELD FOLLOW-UP — PLANNER INDEPENDENT
+  // ========================================================
+  //
+  // Example:
+  //   "How many associations are in Pangasinan?"
+  //   "what municipalities are they from?"
+  //
+  // The current question's requested LIVE schema field wins, while the
+  // previous VERIFIED filters remain the row scope. This prevents a planner
+  // from returning an unrelated value column and merely using the requested
+  // field as a label.
+  //
+  const explicitReferentialFieldPlan =
+    buildExplicitReferentialFieldPlan({
+      schema,
+      context:
+        conversationContext,
+      question:
+        cleanQuestion,
+    });
+
+  if (explicitReferentialFieldPlan) {
+    if (
+      process.env.NODE_ENV !==
+        "production"
+    ) {
+      console.log(
+        "Chatbot explicit referential-field plan:",
+        JSON.stringify(
+          explicitReferentialFieldPlan,
+          null,
+          2
+        )
+      );
+    }
+
+    const explicitReferentialFieldResult =
+      await executeResolvedPlan(
+        explicitReferentialFieldPlan
+      );
+
+    updateConversation(
+      sessionId,
+      {
+        question:
+          cleanQuestion,
+        plan:
+          explicitReferentialFieldPlan,
+        result:
+          explicitReferentialFieldResult,
+      }
+    );
+
+    const semanticReferentialAnswer =
+      (
+        explicitReferentialFieldPlan.conversationalPairColumn &&
+        shouldUseSemanticReferentialNarrative(
+          cleanQuestion
+        )
+      )
+        ? buildSemanticVerifiedAnswer({
+            question:
+              normalizeSemanticReferentialQuestion(
+                cleanQuestion
+              ) ||
+              cleanQuestion,
+            plan:
+              explicitReferentialFieldPlan,
+            result:
+              explicitReferentialFieldResult,
+          })
+        : null;
+
+    return {
+      ...explicitReferentialFieldResult,
+      answer:
+        formatUserFacingAnswer(
+          semanticReferentialAnswer ||
+          buildContextAwareContinuousListAnswer({
+            result:
+              explicitReferentialFieldResult,
+            subjectColumn:
+              explicitReferentialFieldPlan.column,
+            pairColumn:
+              explicitReferentialFieldPlan.conversationalPairColumn ||
+              null,
+            context:
+              conversationContext,
+            preferScopeValue:
+              false,
+          })
+        ),
+      responseStyle:
+        "natural",
+      debugPlan:
+        explicitReferentialFieldPlan,
+      debugEntityChanges:
+        [],
+      plannerSource:
+        "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
+    };
+  }
 
   // ========================================================
   // SAME QUERY — NEW FILTER VALUE FOLLOW-UP
@@ -12794,6 +8091,61 @@ async function answerQuestion(
       cleanQuestion
     );
 
+  /**
+   * Before interpreting "what about X?" as a NEW ENTITY/FILTER,
+   * check whether X is actually a real schema metric/field.
+   *
+   * Example structure:
+   *   previous: "total <metric A>"
+   *   follow-up: "what about <metric B>"
+   *
+   * If <metric B> is a real field, the analytical follow-up
+   * handler later in the pipeline should switch the metric while
+   * preserving the previous operation.
+   */
+  const sameQueryCandidateRows =
+    conversationContext
+      ?.lastDataset &&
+    Array.isArray(
+      datasets?.[
+        conversationContext.lastDataset
+      ]
+    )
+      ? datasets[
+          conversationContext.lastDataset
+        ]
+      : [];
+
+  const sameQueryExplicitValueFilters =
+    sameQueryCandidateRows.length
+      ? inferCoherentFilters(
+          sameQueryCandidateRows,
+          cleanQuestion
+        )
+      : [];
+
+  const sameQueryMetricColumn =
+    findFollowUpMetricColumn({
+      schema,
+      question:
+        cleanQuestion,
+      preferredDataset:
+        conversationContext
+          ?.lastDataset ||
+        null,
+    });
+
+  const preferExplicitValueFilter =
+    shouldPreferExplicitValueFilter({
+      isFollowUp:
+        conversationContext
+          .isFollowUp,
+      question:
+        cleanQuestion,
+      explicitValueFilters:
+        sameQueryExplicitValueFilters,
+    });
+
   const looksLikeSameQueryNewFilter =
     conversationContext
       .isFollowUp === true &&
@@ -12801,7 +8153,411 @@ async function answerQuestion(
       sameQueryFilterText
     ) &&
     conversationContext
-      .lastDataset;
+      .lastDataset &&
+    (
+      preferExplicitValueFilter ||
+      !sameQueryMetricColumn
+    );
+
+  // ========================================================
+  // CONTINUOUS COMPOUND FOLLOW-UP
+  // ========================================================
+  //
+  // Example:
+  //   Q1: "How many <rows> are in X, and what is their total <metric>?"
+  //   Q2: "What about Y?"
+  //
+  // Preserve ALL verified operations from Q1 and replace only the scope
+  // explicitly mentioned in Q2. This runs before ordinary single-plan
+  // continuity so a compound question is never collapsed to its last clause.
+  //
+  const previousCompoundContext =
+    conversationContext?.compoundContext;
+
+  const compoundFollowUpPrefix =
+    /^(?:what|how)\s+about\b|^and\b|^for\b|^also\b|^then\b/i.test(
+      String(cleanQuestion || "").trim()
+    );
+
+  const explicitlyChangesOperation =
+    /\b(?:list|show|display|name|count|how many|number of|sum|total|average|avg|mean|minimum|maximum|highest|lowest|top|bottom|rank|compare|difference|median)\b/i.test(
+      String(cleanQuestion || "")
+    );
+
+  if (
+    conversationContext?.isFollowUp === true &&
+    compoundFollowUpPrefix &&
+    !explicitlyChangesOperation &&
+    previousCompoundContext &&
+    Array.isArray(previousCompoundContext.clauses) &&
+    previousCompoundContext.clauses.length > 1
+  ) {
+    const continuedClauses = [];
+    let foundExplicitScope = false;
+
+    for (const previousClause of previousCompoundContext.clauses) {
+      const previousPlan = previousClause?.plan || {};
+      const previousDataset = previousPlan?.dataset;
+      const rows =
+        previousDataset && Array.isArray(datasets?.[previousDataset])
+          ? datasets[previousDataset]
+          : [];
+
+      if (!rows.length || previousPlan.route !== "dataset") {
+        continue;
+      }
+
+      let newFilters = inferCoherentFilters(
+        rows,
+        cleanQuestion
+      );
+
+      if (!Array.isArray(newFilters) || !newFilters.length) {
+        const preferredColumns = new Set(
+          (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
+            .map((filter) => filter?.column)
+            .filter(Boolean)
+        );
+
+        newFilters = inferApproximateFollowUpFilter({
+          rows,
+          question: cleanQuestion,
+          preferredColumns,
+        });
+      }
+
+      if (!Array.isArray(newFilters) || !newFilters.length) {
+        continue;
+      }
+
+      foundExplicitScope = true;
+
+      const replacementColumns = new Set(
+        newFilters
+          .map((filter) => filter?.column)
+          .filter(Boolean)
+      );
+
+      const inheritedFilters =
+        (Array.isArray(previousPlan.filters) ? previousPlan.filters : [])
+          .filter((filter) =>
+            filter?.column &&
+            !replacementColumns.has(filter.column)
+          )
+          .map((filter) => ({
+            ...filter,
+            value: Array.isArray(filter?.value)
+              ? [...filter.value]
+              : filter?.value,
+          }));
+
+      const finalFilters = [
+        ...inheritedFilters,
+        ...newFilters.map((filter) => ({
+          ...filter,
+          value: Array.isArray(filter?.value)
+            ? [...filter.value]
+            : filter?.value,
+        })),
+      ];
+
+      const continuedPlan = {
+        ...previousPlan,
+        route: "dataset",
+        dataset: previousDataset,
+        filters: finalFilters,
+        filterGroups: [],
+        filterGroupLogic: null,
+        outputRequested: true,
+        conversationalCompoundContinuation: true,
+      };
+
+      const continuedResult =
+        await executeResolvedPlan(continuedPlan);
+
+      continuedClauses.push({
+        question: previousClause.question || cleanQuestion,
+        plan: continuedResult?.debugPlan || continuedPlan,
+        result: continuedResult,
+      });
+    }
+
+    if (
+      foundExplicitScope &&
+      continuedClauses.length === previousCompoundContext.clauses.length
+    ) {
+      saveCompoundContext(sessionId, {
+        // Preserve the original compound semantic request across multiple
+        // elliptical follow-ups. The short follow-up changes scope, but it
+        // does not replace the subject/operations that define the compound.
+        question:
+          earlyPreviousCompoundContext.question ||
+          cleanQuestion,
+        clauses: continuedClauses,
+      });
+
+      const subResults = continuedClauses.map((item) => ({
+        question: item.question,
+        result: item.result,
+      }));
+
+      return {
+        success: continuedClauses.every(
+          (item) => item.result?.success !== false
+        ),
+        source: "dataset",
+        operation: "compound",
+        questionCount: continuedClauses.length,
+        questions: continuedClauses.map((item) => item.question),
+        results: continuedClauses.map((item) => ({
+          question: item.question,
+          success: item.result?.success,
+          dataset: item.result?.dataset || null,
+          operation: item.result?.operation || null,
+          value: item.result?.value,
+          categories: item.result?.categories,
+          answer: item.result?.answer,
+          plannerSource: "conversation",
+          debugPlan: item.result?.debugPlan || item.plan,
+        })),
+        answer: improveCompoundAnswerWording(subResults),
+        responseStyle: "natural",
+        plannerSource: "conversation-compound",
+        debugPlan: {
+          route: "compound",
+          operation: "compound",
+          conversationalCompoundContinuation: true,
+          inheritedOperationCount: continuedClauses.length,
+          previousCompoundQuestion: previousCompoundContext.question || null,
+        },
+      };
+    }
+  }
+
+  // ========================================================
+  // EXPLICIT WORKSHEET SWITCH FOLLOW-UP
+  // ========================================================
+  //
+  // A follow-up such as "what about <worksheet name>?" may be trying to
+  // switch the active worksheet rather than match <worksheet name> as a
+  // row value inside the PREVIOUS worksheet.
+  //
+  // Example shape (fully generic):
+  //   previous dataset: "Sheet A"
+  //   follow-up:        "what about Sheet B?"
+  //
+  // If Sheet B is an exact live worksheet name, preserve the previous
+  // analytical/list intent and compatible filters, switch to Sheet B,
+  // then infer any explicit filters from Sheet B's own live rows.
+  //
+  // No worksheet names or business values are hardcoded here.
+  const explicitFollowUpWorksheet = (() => {
+    if (!conversationContext?.isFollowUp) {
+      return null;
+    }
+
+    const normalizedQuestion =
+      normalizeText(cleanQuestion);
+
+    if (!normalizedQuestion) {
+      return null;
+    }
+
+    const candidates =
+      (schema || [])
+        .map((datasetSchema) =>
+          datasetSchema?.name
+        )
+        .filter(Boolean)
+        .map((name) => ({
+          name,
+          normalized:
+            normalizeText(name),
+        }))
+        .filter((item) =>
+          item.normalized &&
+          (
+            normalizedQuestion === item.normalized ||
+            normalizedQuestion.includes(
+              ` ${item.normalized} `
+            ) ||
+            normalizedQuestion.startsWith(
+              `${item.normalized} `
+            ) ||
+            normalizedQuestion.endsWith(
+              ` ${item.normalized}`
+            ) ||
+            normalizeFollowUpPhrase(cleanQuestion) ===
+              item.normalized
+          )
+        )
+        .sort(
+          (a, b) =>
+            b.normalized.length -
+            a.normalized.length
+        );
+
+    return candidates[0]?.name || null;
+  })();
+
+  if (
+    looksLikeSameQueryNewFilter &&
+    explicitFollowUpWorksheet &&
+    String(explicitFollowUpWorksheet) !==
+      String(conversationContext.lastDataset || "")
+  ) {
+    const targetDataset =
+      explicitFollowUpWorksheet;
+
+    const targetRows =
+      Array.isArray(datasets?.[targetDataset])
+        ? datasets[targetDataset]
+        : [];
+
+    if (targetRows.length) {
+      const previousPlan =
+        conversationContext.lastPlan || {};
+
+      // Keep only previous filters that can still match at least one row
+      // in the newly selected worksheet. This automatically drops stale
+      // worksheet-specific scope filters while preserving compatible
+      // commodity/year/month/status/etc. filters.
+      const compatibleInheritedFilters =
+        Array.isArray(conversationContext.lastFilters)
+          ? conversationContext.lastFilters
+              .filter((filter) => {
+                if (!filter?.column) {
+                  return false;
+                }
+
+                return targetRows.some((row) =>
+                  filterRowsBySimpleFilters(
+                    [row],
+                    [filter]
+                  ).length > 0
+                );
+              })
+              .map((filter) => ({
+                ...filter,
+                value:
+                  Array.isArray(filter?.value)
+                    ? [...filter.value]
+                    : filter?.value,
+              }))
+          : [];
+
+      const explicitlyMentionedFilters =
+        inferCoherentFilters(
+          targetRows,
+          cleanQuestion
+        );
+
+      const replacementColumns =
+        new Set(
+          (Array.isArray(explicitlyMentionedFilters)
+            ? explicitlyMentionedFilters
+            : []
+          )
+            .map((filter) => filter?.column)
+            .filter(Boolean)
+        );
+
+      const finalFilters = [
+        ...compatibleInheritedFilters.filter(
+          (filter) =>
+            !replacementColumns.has(
+              filter?.column
+            )
+        ),
+        ...(Array.isArray(explicitlyMentionedFilters)
+          ? explicitlyMentionedFilters
+          : []
+        ).map((filter) => ({
+          ...filter,
+          value:
+            Array.isArray(filter?.value)
+              ? [...filter.value]
+              : filter?.value,
+        })),
+      ];
+
+      const previousOperation =
+        String(
+          previousPlan.operation ||
+          conversationContext.lastIntent ||
+          ""
+        )
+          .trim()
+          .toLowerCase();
+
+      const rememberedSubject =
+        inferRememberedSubjectColumn({
+          schema,
+          datasetName: targetDataset,
+          previousQuestion:
+            conversationContext.lastSubjectQuestion ||
+            conversationContext.lastQuestion,
+          context: conversationContext,
+        }) ||
+        previousPlan.column ||
+        null;
+
+      const operation =
+        previousOperation ||
+        (rememberedSubject
+          ? "list"
+          : "lookup");
+
+      const worksheetSwitchPlan = {
+        ...previousPlan,
+        route: "dataset",
+        dataset: targetDataset,
+        operation,
+        filters: finalFilters,
+        filterGroups: [],
+        filterGroupLogic: null,
+        outputRequested: true,
+        conversationalWorksheetSwitch: true,
+      };
+
+      if (
+        operation === "list" &&
+        rememberedSubject
+      ) {
+        worksheetSwitchPlan.column =
+          rememberedSubject;
+        worksheetSwitchPlan.labelColumn =
+          rememberedSubject;
+        worksheetSwitchPlan.selectColumns = [
+          rememberedSubject,
+        ];
+        worksheetSwitchPlan.showAll = true;
+        worksheetSwitchPlan.limit = Math.max(
+          Number(previousPlan.limit) || 10,
+          100
+        );
+      }
+
+      const worksheetSwitchResult =
+        await executeResolvedPlan(
+          worksheetSwitchPlan
+        );
+
+      updateConversation(sessionId, {
+        question: cleanQuestion,
+        plan: worksheetSwitchPlan,
+        result: worksheetSwitchResult,
+      });
+
+      return {
+        ...worksheetSwitchResult,
+        plannerSource: "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
+        conversationalWorksheetSwitch: true,
+      };
+    }
+  }
 
   if (
     looksLikeSameQueryNewFilter
@@ -12831,10 +8587,27 @@ async function answerQuestion(
        * phases, etc. without hardcoding their names.
        */
       let newlyMentionedFilters =
-        inferCoherentFilters(
-          previousRows,
-          cleanQuestion
-        );
+        Array.isArray(
+          sameQueryExplicitValueFilters
+        ) &&
+        sameQueryExplicitValueFilters.length
+          ? sameQueryExplicitValueFilters.map(
+              (filter) => ({
+                ...filter,
+                value:
+                  Array.isArray(
+                    filter?.value
+                  )
+                    ? [
+                        ...filter.value,
+                      ]
+                    : filter?.value,
+              })
+            )
+          : inferCoherentFilters(
+              previousRows,
+              cleanQuestion
+            );
 
       if (
         !Array.isArray(
@@ -12884,6 +8657,11 @@ async function answerQuestion(
           {};
 
         const rememberedSubject =
+          chooseContinuitySubjectColumn({
+            previousPlan,
+            newFilters:
+              newlyMentionedFilters,
+          }) ||
           inferRememberedSubjectColumn({
             schema,
 
@@ -12900,18 +8678,6 @@ async function answerQuestion(
               conversationContext,
           }) ||
           previousPlan.column ||
-          (
-            Array.isArray(
-              previousPlan
-                .selectColumns
-            ) &&
-            previousPlan
-              .selectColumns
-              .length === 1
-              ? previousPlan
-                  .selectColumns[0]
-              : null
-          ) ||
           null;
 
         /**
@@ -13086,6 +8852,18 @@ async function answerQuestion(
             sameQueryPlan
           );
 
+        updateConversation(
+          sessionId,
+          {
+            question:
+              cleanQuestion,
+            plan:
+              sameQueryPlan,
+            result:
+              sameQueryResult,
+          }
+        );
+
         let sameQueryAnswer =
           sameQueryResult
             .answer;
@@ -13093,26 +8871,39 @@ async function answerQuestion(
         if (
           operation === "list"
         ) {
-          const matchingRows =
-            filterRowsBySimpleFilters(
-              previousRows,
-              finalFilters
-            );
+          const narrativeQuestion =
+            rewriteContinuityQuestionWithFilters({
+              subjectQuestion:
+                conversationContext
+                  .lastSubjectQuestion ||
+                conversationContext
+                  .lastQuestion,
 
-          const oneToManyAnswer =
-            buildOneToManyListAnswer({
-              rows:
-                matchingRows,
+              previousFilters:
+                conversationContext
+                  .lastFilters,
 
-              subjectColumn:
-                rememberedSubject,
+              newFilters:
+                newlyMentionedFilters,
 
-              filters:
-                finalFilters,
+              fallbackQuestion:
+                cleanQuestion,
+            });
+
+          const semanticContinuityAnswer =
+            buildSemanticVerifiedAnswer({
+              question:
+                narrativeQuestion,
+
+              plan:
+                sameQueryPlan,
+
+              result:
+                sameQueryResult,
             });
 
           sameQueryAnswer =
-            oneToManyAnswer ||
+            semanticContinuityAnswer ||
             buildVerifiedListAnswer({
               result:
                 sameQueryResult,
@@ -13135,6 +8926,8 @@ async function answerQuestion(
 
           plannerSource:
             "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
         };
       }
     }
@@ -13183,6 +8976,8 @@ async function answerQuestion(
 
       plannerSource:
         "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
     };
   }
 
@@ -13335,6 +9130,18 @@ async function answerQuestion(
           referentialListPlan
         );
 
+      updateConversation(
+        sessionId,
+        {
+          question:
+            cleanQuestion,
+          plan:
+            referentialListPlan,
+          result:
+            referentialListResult,
+        }
+      );
+
       /**
        * calculationEngine may return a list as primitive strings:
        *
@@ -13357,16 +9164,24 @@ async function answerQuestion(
         ...referentialListResult,
 
         answer:
-          buildVerifiedListAnswer({
+          buildContextAwareContinuousListAnswer({
             result:
               referentialListResult,
 
             subjectColumn:
               rememberedSubject,
+
+            context:
+              conversationContext,
+
+            preferScopeValue:
+              true,
           }),
 
         plannerSource:
           "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -13416,9 +9231,52 @@ async function answerQuestion(
       multiResultContext
     );
 
+  const explicitCurrentColumns =
+    findExplicitSchemaColumns({
+      schema,
+      question: cleanQuestion,
+      preferredDataset:
+        conversationContext?.lastDataset ||
+        null,
+    });
+
+  const explicitCurrentGroupOverride =
+    currentQuestionOverridesAnalyticalGroup({
+      datasets,
+      schema,
+      question: cleanQuestion,
+      previousGroupBy:
+        verifiedMultiResultSet?.groupBy,
+      preferredDataset:
+        conversationContext?.lastDataset ||
+        null,
+    });
+
+  const explicitSelfContainedAnalytics =
+    explicitCurrentColumns.length > 0 &&
+    isSelfContainedAnalyticalQuestion({
+      schema,
+      question: cleanQuestion,
+    });
+
+  // CURRENT question semantics always beat shortcuts over the previous
+  // verified result array. If the user changes group, worksheet scope,
+  // distributed scope, or any explicit filter/value, force normal planning
+  // so compatible semantic memory can be merged safely instead of ranking
+  // stale rows from the prior answer.
+  const currentSemanticOverride =
+    currentQuestionRequiresReplan({
+      datasets,
+      question: cleanQuestion,
+      conversationContext: multiResultContext,
+      explicitGroupOverride: explicitCurrentGroupOverride,
+    });
+
   const looksLikeMultiResultAnalysis =
     verifiedMultiResultSet
       ?.count >= 3 &&
+    !currentSemanticOverride.requiresReplan &&
+    !explicitSelfContainedAnalytics &&
     (
       /\b(?:explain|summarize|summary|interpret|describe|difference|range|spread|gap|closest|average|mean|median|highest|lowest|above average|below average|outlier|outliers|stand out|trend|pattern|distribution|compare|ratio|percent|percentage|top\s+\d+|bottom\s+\d+)\b/i.test(
         cleanQuestion
@@ -13910,6 +9768,8 @@ async function answerQuestion(
 
         plannerSource:
           "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -13966,6 +9826,8 @@ async function answerQuestion(
         ...previousIdentityResult,
         plannerSource:
           "conversation",
+
+      ...buildGroqHandoffDiagnostics(),
       };
     }
   }
@@ -14233,6 +10095,129 @@ async function answerQuestion(
 
 
   // ========================================================
+  // DISTRIBUTED MULTI-WORKSHEET ANALYTICAL FOLLOW-UP
+  // ========================================================
+  //
+  // A previous cross-worksheet result may have dataset = null because it
+  // represents ALL worksheets. Short continuations such as:
+  //   "what about the lowest?"
+  // must therefore inherit the verified distributed plan itself rather than
+  // ask the user to choose one worksheet. This runs before Groq/local planning
+  // so a planner failure cannot collapse the multi-worksheet context.
+  //
+  const distributedWorksheetFollowUp =
+    buildDistributedWorksheetFollowUpResolution({
+      datasets,
+      schema,
+      question: cleanQuestion,
+      previousPlan:
+        conversationContext?.lastPlan || null,
+      previousSemanticPlan:
+        conversationContext?.semanticPlan || null,
+    });
+
+  if (distributedWorksheetFollowUp) {
+    updateConversation(sessionId, {
+      question: cleanQuestion,
+      plan: distributedWorksheetFollowUp.plan,
+      result: distributedWorksheetFollowUp.result,
+    });
+
+    return {
+      ...distributedWorksheetFollowUp.result,
+      answer: formatUserFacingAnswer(
+        buildSemanticVerifiedAnswer({
+          question: cleanQuestion,
+          plan: distributedWorksheetFollowUp.plan,
+          result: distributedWorksheetFollowUp.result,
+        }) || distributedWorksheetFollowUp.result?.answer
+      ),
+      debugPlan: distributedWorksheetFollowUp.plan,
+      plannerSource: "conversation-multi-worksheet",
+
+      ...buildGroqHandoffDiagnostics(),
+    };
+  }
+
+
+  // ========================================================
+  // DETERMINISTIC CROSS-WORKSHEET GROUPED RANKING
+  // ========================================================
+  //
+  // Handles questions that rank a shared row dimension ACROSS all same-schema
+  // worksheets, e.g. "Which commodity had the highest average ...?". This is
+  // different from ranking the worksheets themselves. A single explicitly
+  // named worksheet still stays single-sheet.
+  //
+  const crossWorksheetGroupedRanking =
+    buildCrossWorksheetGroupedRankingResolution({
+      datasets,
+      schema,
+      question: cleanQuestion,
+    });
+
+  if (crossWorksheetGroupedRanking) {
+    updateConversation(sessionId, {
+      question: cleanQuestion,
+      plan: crossWorksheetGroupedRanking.plan,
+      result: crossWorksheetGroupedRanking.result,
+    });
+
+    return {
+      ...crossWorksheetGroupedRanking.result,
+      answer: formatUserFacingAnswer(
+        buildSemanticVerifiedAnswer({
+          question: cleanQuestion,
+          plan: crossWorksheetGroupedRanking.plan,
+          result: crossWorksheetGroupedRanking.result,
+        }) || crossWorksheetGroupedRanking.result?.answer
+      ),
+      plannerSource: "deterministic-cross-worksheet-group-ranking",
+    };
+  }
+
+
+  // ========================================================
+  // DETERMINISTIC DISTRIBUTED MULTI-WORKSHEET QUERY
+  // ========================================================
+  //
+  // Handles same-schema reports partitioned across worksheets when the user
+  // explicitly asks for a result in EACH/EVERY/ALL partition (for example,
+  // each province, every region, all branches, or each worksheet). The
+  // partition field is discovered from the live schema/data; no worksheet or
+  // business value is hardcoded. This runs before Groq/local planning so a
+  // fallback cannot accidentally collapse a multi-worksheet request to one
+  // arbitrary sheet.
+  //
+  const distributedWorksheetResolution =
+    buildDistributedWorksheetResolution({
+      datasets,
+      schema,
+      question: cleanQuestion,
+    });
+
+  if (distributedWorksheetResolution) {
+    updateConversation(sessionId, {
+      question: cleanQuestion,
+      plan: distributedWorksheetResolution.plan,
+      result: distributedWorksheetResolution.result,
+    });
+
+    return {
+      ...distributedWorksheetResolution.result,
+      answer: formatUserFacingAnswer(
+        buildSemanticVerifiedAnswer({
+          question: cleanQuestion,
+          plan: distributedWorksheetResolution.plan,
+          result: distributedWorksheetResolution.result,
+        }) || distributedWorksheetResolution.result?.answer
+      ),
+      plannerSource: "deterministic-multi-worksheet",
+    };
+  }
+
+
+  // ========================================================
   // DETERMINISTIC MULTI-CATEGORY COUNT
   // ========================================================
   //
@@ -14271,50 +10256,113 @@ async function answerQuestion(
     return {
       ...multiCategoryCount
         .result,
+
+      answer:
+        formatUserFacingAnswer(
+          multiCategoryCount
+            .result
+            ?.answer
+        ),
+
       plannerSource:
         "deterministic-multi-category",
     };
   }
 
 
+
   // ========================================================
   // 1. GROQ FIRST
   // ========================================================
 
-  let groqPlan = null;
-  let groqPlanningError = null;
-
   /**
-   * IMPORTANT:
-   * Only GROQ PLANNING is inside this try/catch.
-   *
-   * If Groq successfully returns a plan, execution errors must
-   * not silently cause a second planner to choose another field.
+   * Groq already ran before deterministic/local semantic planning.
+   * A low-confidence/failed Groq plan intentionally reaches this point
+   * as null so the local fallback can take over without a second API call.
    */
-  try {
-    groqPlan =
-      await createSchemaAwarePlan({
-        question:
-          cleanQuestion,
-
-        schema,
-
-        context:
-          conversationContext,
-
-        retrievalContext,
-      });
-  } catch (error) {
-    groqPlanningError =
-      error;
-
-    console.error(
-      "Groq planning failed; local fallback will be used:",
-      error
+  if (
+    !groqPrimaryAttempted
+  ) {
+    throw new Error(
+      "Groq primary planner was not initialized."
     );
   }
 
+
+  /**
+   * ========================================================
+   * REFERENTIAL PARAPHRASE SEMANTIC RECOVERY
+   * ========================================================
+   *
+   * A follow-up may omit the actual schema field:
+   *
+   *   "Tell me what they produce."
+   *   "Show what they provide."
+   *   "Which things are they using?"
+   *
+   * The deterministic explicit-field resolver cannot select a column when the
+   * field name itself is absent. If the normal Groq planner also fails to
+   * return valid JSON, do ONE constrained semantic re-plan before falling back
+   * to the generic local parser.
+   *
+   * This does not hardcode a worksheet, field, domain noun, or data value.
+   * Groq still chooses only from the live schema, while conversation memory
+   * supplies the verified referent/scope.
+   */
+  if (
+    false &&
+    !groqPlan &&
+    conversationContext?.isFollowUp === true &&
+    normalizeSemanticReferentialQuestion(
+      cleanQuestion
+    )
+  ) {
+    try {
+      const recoveryQuestion =
+        [
+          "This is a referential follow-up data question.",
+          "Use the previous verified conversation subject and filters.",
+          "Resolve the live schema field whose meaning best answers the user's action.",
+          "Return a dataset lookup plan rather than a general explanation.",
+          `User question: ${cleanQuestion}`,
+        ].join(" ");
+
+      groqPlan =
+        await createSchemaAwarePlan({
+          question:
+            recoveryQuestion,
+          schema,
+          context:
+            conversationContext,
+          retrievalContext,
+        });
+
+      if (groqPlan) {
+        groqReferentialRecovery =
+          true;
+      }
+    } catch (recoveryError) {
+      if (
+        process.env.NODE_ENV !==
+          "production"
+      ) {
+        console.warn(
+          "Referential semantic recovery planner failed; continuing to local fallback:",
+          recoveryError
+        );
+      }
+    }
+  }
+
   if (groqPlan) {
+    groqPlan =
+      recoverHighConfidenceAggregateClarification({
+        datasets,
+        schema,
+        plan: groqPlan,
+        question: cleanQuestion,
+      });
+
     groqPlan =
       applyConversationContext(
         groqPlan,
@@ -14351,6 +10399,19 @@ async function answerQuestion(
 
         question:
           cleanQuestion,
+      });
+
+    /**
+     * Explicit worksheet names in the CURRENT question outrank a planner's
+     * inherited/default worksheet choice. This is generic and is especially
+     * important for reports whose worksheets share the same schema.
+     */
+    groqPlan =
+      reconcileExplicitDatasetMention({
+        plan: groqPlan,
+        question: cleanQuestion,
+        datasets,
+        schema,
       });
 
     groqPlan =
@@ -14485,12 +10546,16 @@ async function answerQuestion(
         ...result,
 
         answer:
-          finalAnswer,
+          formatUserFacingAnswer(
+            finalAnswer
+          ),
 
         oneToManyResolved,
 
         plannerSource:
-          "groq",
+          groqReferentialRecovery
+            ? "groq-referential-recovery"
+            : "groq",
       };
     } catch (groqExecutionError) {
       console.error(
@@ -14542,6 +10607,14 @@ async function answerQuestion(
       });
 
     localPlan =
+      recoverHighConfidenceAggregateClarification({
+        datasets,
+        schema,
+        plan: localPlan,
+        question: cleanQuestion,
+      });
+
+    localPlan =
       applyConversationContext(
         localPlan,
         conversationContext,
@@ -14579,6 +10652,106 @@ async function answerQuestion(
           cleanQuestion,
       });
 
+    /**
+     * V7.30 LOCAL FALLBACK HARDENING
+     * Reconstruct high-confidence current-question meaning from live schema
+     * and live row values when Groq planning is unavailable. This is generic:
+     * no worksheet, province, metric, commodity, status, or business value is
+     * hardcoded.
+     */
+    localPlan =
+      hardenLocalPlan({
+        plan: localPlan,
+        question: cleanQuestion,
+        datasets,
+        schema,
+        context: conversationContext,
+      });
+
+    /**
+     * V7.33 STRONG LOCAL SEMANTIC RESOLVER
+     *
+     * When Groq is unavailable, independently scan every live worksheet and
+     * score the CURRENT question against live schema names, worksheet names,
+     * row structure, and explicit row-value filters.
+     *
+     * The current question wins. Previous conversation filters are inherited
+     * only for genuinely referential wording and only when those filter
+     * columns exist in the selected live worksheet.
+     */
+    const strongLocalSemanticPlan =
+      resolveStrongLocalSemanticPlan({
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
+
+    if (
+      strongLocalSemanticPlan &&
+      (
+        localPlan?.route !==
+          "dataset" ||
+        !localPlan?.dataset ||
+        !localPlan?.column ||
+        Number(
+          strongLocalSemanticPlan.localSemanticConfidence ||
+          0
+        ) >=
+          Number(
+            localPlan.localConfidence ||
+            localPlan.confidence ||
+            0
+          )
+      )
+    ) {
+      localPlan =
+        strongLocalSemanticPlan;
+    }
+
+    /**
+     * V7.35 LOCAL/GROQ DATA-PLANNER PARITY
+     *
+     * Mirror Groq's executable DATASET/SCHEMA planning surface locally.
+     * This uses only the live schema and live row values and never calls
+     * an external model.
+     */
+    localPlan =
+      ensureLocalPlannerParity({
+        plan:
+          localPlan,
+        question:
+          cleanQuestion,
+        schema,
+        datasets,
+        context:
+          conversationContext,
+      });
+
+    /**
+     * If Groq is unavailable and the current turn is an elliptical
+     * referential follow-up, reuse the previous VERIFIED dataset/output field
+     * when it is still valid in the live schema.
+     *
+     * Example pattern:
+     *   explicit field turn -> "Tell me what they <action>."
+     *
+     * This allows the local fallback to remain useful during provider
+     * rate limits instead of routing the question back to a general LLM call.
+     */
+    localPlan =
+      recoverLocalReferentialPlanFromConversation({
+        plan:
+          localPlan,
+        question:
+          cleanQuestion,
+        context:
+          conversationContext,
+        schema,
+      });
+
     localPlan =
       repairMultiEntityFilters({
         datasets,
@@ -14611,6 +10784,28 @@ async function answerQuestion(
         localPlan
       );
 
+    // Local fallback must be deterministic AND self-aware. Attach component
+    // confidence and refuse only critical unresolved plans rather than
+    // confidently executing a guessed dataset/metric/group.
+    const localConfidenceResolution = attachLocalConfidence({
+      plan: localPlan,
+      datasets,
+      schema,
+    });
+    localPlan = localConfidenceResolution.plan;
+
+    if (localConfidenceResolution.evaluation.critical &&
+        localConfidenceResolution.evaluation.score < 0.55) {
+      localPlan = {
+        route: "clarify",
+        question:
+          "I could not confidently resolve the worksheet, metric, or grouping from that question. Could you be a little more specific?",
+        confidence: localConfidenceResolution.evaluation.score,
+        localConfidenceBreakdown: localConfidenceResolution.evaluation.breakdown,
+        localConfidenceIssues: localConfidenceResolution.evaluation.issues,
+      };
+    }
+
     if (
       process.env.NODE_ENV !==
         "production"
@@ -14633,6 +10828,92 @@ async function answerQuestion(
     let finalAnswer =
       result.answer;
 
+    const semanticLocalListAnswer =
+      String(
+        localPlan.operation ||
+        ""
+      )
+        .trim()
+        .toLowerCase() ===
+        "list"
+        ? buildSemanticVerifiedAnswer({
+            question:
+              cleanQuestion,
+            plan:
+              localPlan,
+            result,
+          })
+        : null;
+
+    if (
+      semanticLocalListAnswer
+    ) {
+      finalAnswer =
+        semanticLocalListAnswer;
+    }
+
+    /**
+     * Keep local-fallback response semantics consistent with the normal
+     * conversational path. Paired lookups should use the deterministic
+     * natural narrative rather than raw repeated "<label> - <value>" lines.
+     * No external language-model call is required here.
+     */
+    const effectiveLocalResultPlan =
+      result?.debugPlan && typeof result.debugPlan === "object"
+        ? result.debugPlan
+        : localPlan;
+
+    const effectiveLocalSelectColumns =
+      Array.isArray(effectiveLocalResultPlan?.selectColumns)
+        ? effectiveLocalResultPlan.selectColumns.filter(Boolean)
+        : [];
+
+    const effectiveLocalOutputColumns =
+      effectiveLocalSelectColumns.filter(
+        (column) =>
+          normalizeText(column) !==
+          normalizeText(effectiveLocalResultPlan?.labelColumn)
+      );
+
+    if (
+      String(
+        localPlan.operation ||
+        ""
+      )
+        .trim()
+        .toLowerCase() ===
+        "lookup" &&
+      localPlan.column &&
+      localPlan.labelColumn &&
+      normalizeText(
+        localPlan.column
+      ) !==
+      normalizeText(
+        localPlan.labelColumn
+      ) &&
+      effectiveLocalResultPlan?.multiAttributeEntityProjectionApplied !== true &&
+      effectiveLocalOutputColumns.length < 2
+    ) {
+      const semanticLocalAnswer =
+        buildSemanticVerifiedAnswer({
+          question:
+            normalizeSemanticReferentialQuestion(
+              cleanQuestion
+            ) ||
+            cleanQuestion,
+          plan:
+            effectiveLocalResultPlan,
+          result,
+        });
+
+      if (
+        semanticLocalAnswer
+      ) {
+        finalAnswer =
+          semanticLocalAnswer;
+      }
+    }
+
     let oneToManyResolved =
       undefined;
 
@@ -14641,6 +10922,7 @@ async function answerQuestion(
      * Groq availability does not change conversational output semantics.
      */
     if (
+      !semanticLocalListAnswer &&
       String(
         localPlan.operation ||
         ""
@@ -14698,7 +10980,9 @@ async function answerQuestion(
       ...result,
 
       answer:
-        finalAnswer,
+        formatUserFacingAnswer(
+          finalAnswer
+        ),
 
       oneToManyResolved,
 
@@ -14710,6 +10994,33 @@ async function answerQuestion(
        * This tells us WHY Groq was unavailable without changing
        * the dataset answer.
        */
+      groqStatus:
+        groqDiagnostic.status,
+
+      groqPlanConfidence:
+        groqPrimaryConfidence,
+
+      groqConfidenceIssues:
+        groqPrimaryIssues,
+
+      groqHttpStatus:
+        groqDiagnostic.httpStatus,
+
+      groqErrorCode:
+        groqDiagnostic.code,
+
+      groqJsonRetryUsed:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryUsed
+        ),
+
+      groqJsonRetryRecovered:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryRecovered
+        ),
+
       groqPlanningError:
         groqPlanningError?.message ||
         null,
@@ -14732,13 +11043,52 @@ async function answerQuestion(
       plannerSource:
         "local-fallback",
 
+      groqStatus:
+        groqDiagnostic.status,
+
+      groqPlanConfidence:
+        groqPrimaryConfidence,
+
+      groqConfidenceIssues:
+        groqPrimaryIssues,
+
+      groqHttpStatus:
+        groqDiagnostic.httpStatus,
+
+      groqErrorCode:
+        groqDiagnostic.code,
+
+      groqJsonRetryUsed:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryUsed
+        ),
+
+      groqJsonRetryRecovered:
+        Boolean(
+          groqDiagnostic
+            .jsonRetryRecovered
+        ),
+
       groqPlanningError:
         groqPlanningError?.message ||
         null,
 
       answer:
-        localError.message ||
-        "The chatbot could not process the question.",
+        isExternalLanguageServiceError(
+          localError
+        )
+          ? (
+              normalizeSemanticReferentialQuestion(
+                cleanQuestion
+              )
+                ? "I couldn't resolve that follow-up locally from the available conversation context. Please mention the field you want, and I can answer it directly from the dataset."
+                : "The language service is temporarily unavailable, and this question could not be completed locally. Please try again shortly."
+            )
+          : (
+              localError.message ||
+              "The chatbot could not process the question."
+            ),
     };
   }
 

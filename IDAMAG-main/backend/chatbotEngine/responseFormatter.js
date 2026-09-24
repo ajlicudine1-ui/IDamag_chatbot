@@ -842,10 +842,28 @@ function formatAggregateAnswer({
   dataset,
   subject = "",
 }) {
-  const label =
+  const rawLabel =
     lowerLabel(
       column
     );
+
+  const normalizedOperation = String(operation || "").trim().toLowerCase();
+  const label = (() => {
+    if (!rawLabel) return rawLabel;
+    if (normalizedOperation === "sum") {
+      return rawLabel.replace(/^(?:total|sum of|sum)\s+/i, "").trim() || rawLabel;
+    }
+    if (["average", "avg", "mean"].includes(normalizedOperation)) {
+      return rawLabel.replace(/^(?:average|avg|mean)\s+/i, "").trim() || rawLabel;
+    }
+    if (["minimum", "min"].includes(normalizedOperation)) {
+      return rawLabel.replace(/^(?:minimum|min|lowest)\s+/i, "").trim() || rawLabel;
+    }
+    if (["maximum", "max"].includes(normalizedOperation)) {
+      return rawLabel.replace(/^(?:maximum|max|highest)\s+/i, "").trim() || rawLabel;
+    }
+    return rawLabel;
+  })();
 
   const formatted =
     formatVerifiedValue(
@@ -975,13 +993,20 @@ function formatGroupedAggregateAnswer({
     ) ||
     "group";
 
+  const displayGroupValue = (item) =>
+    item?.value === null ||
+    item?.value === undefined ||
+    item?.missing === true
+      ? "No value recorded"
+      : formatVerifiedValue(
+          item.value
+        );
+
   const lines =
     results.map(
       (item) =>
         `${item.label}: ` +
-        `${formatVerifiedValue(
-          item.value
-        )}`
+        `${displayGroupValue(item)}`
     );
 
   if (
@@ -990,9 +1015,7 @@ function formatGroupedAggregateAnswer({
     return (
       `The ${aggregation} ${metric} for ` +
       `${results[0].label} is ` +
-      `${formatVerifiedValue(
-        results[0].value
-      )}.`
+      `${displayGroupValue(results[0])}.`
     );
   }
 
@@ -1006,14 +1029,10 @@ function formatGroupedAggregateAnswer({
       results[1];
 
     const firstValue =
-      formatVerifiedValue(
-        first.value
-      );
+      displayGroupValue(first);
 
     const secondValue =
-      formatVerifiedValue(
-        second.value
-      );
+      displayGroupValue(second);
 
     if (
       operation ===
@@ -1077,9 +1096,7 @@ function formatGroupedAggregateAnswer({
       .map(
         (item, index) =>
           `${index + 1}. ${item.label}: ` +
-          `${formatVerifiedValue(
-            item.value
-          )}`
+          `${displayGroupValue(item)}`
       )
       .join("\n")
   );
@@ -1098,6 +1115,7 @@ function formatRankingAnswer({
   labelColumn,
   aggregation,
   direction,
+  selectColumns = [],
   results = [],
 }) {
   if (!results.length) {
@@ -1138,13 +1156,25 @@ function formatRankingAnswer({
         ? `${aggregation} ${metric}`
         : metric;
 
-    return (
+    const detailColumns = (Array.isArray(selectColumns) ? selectColumns : [])
+      .filter((name) =>
+        name &&
+        name !== labelColumn &&
+        name !== column &&
+        item?.row &&
+        nonEmpty(item.row?.[name])
+      );
+
+    const detailText = detailColumns.length
+      ? ` ${detailColumns.map((name) => `${humanizeLabel(name)}: ${formatVerifiedValue(item.row?.[name])}`).join('; ')}.`
+      : '';
+
+    const base =
       `${item.label} has the ${rankWord} ` +
       `${aggregatePhrase} at ` +
-      `${formatVerifiedValue(
-        item.value
-      )}.`
-    );
+      `${formatVerifiedValue(item.value)}.`;
+
+    return detailText ? `${base}${detailText}` : base;
   }
 
   const heading =
@@ -1626,6 +1656,8 @@ function formatVerifiedResultAnswer({
       direction:
         result?.direction ||
         plan?.direction,
+      selectColumns:
+        Array.isArray(plan?.selectColumns) ? plan.selectColumns : [],
       results:
         rows,
     });
