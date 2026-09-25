@@ -179,6 +179,7 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://192.168.56.1:5173",
   "https://i-damag-portal.vercel.app",
+   "https://idamag.vercel.app",  // add this line
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
