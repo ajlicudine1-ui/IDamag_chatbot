@@ -1,31 +1,27 @@
 import React from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
+import { expireSessionAfterCloseGrace } from './sessionTimeout';
 
 const ProtectedRoute = ({ children, requiresAdmin = false }) => {
-  const storedUserStr = localStorage.getItem('user');
-  
-  // Safety check: handle null, undefined, or empty session
-  if (!storedUserStr || storedUserStr === 'null' || storedUserStr === 'undefined') {
-    return <Navigate to="/login" replace />;
-  }
-
+  const location = useLocation();
+  expireSessionAfterCloseGrace();
+  let user;
   try {
-    const user = JSON.parse(storedUserStr);
-    
-    if (!user) {
-      return <Navigate to="/login" replace />;
-    }
-
-    if (requiresAdmin && user.role !== 'Admin') {
-      return <Navigate to="/reports" replace />;
-    }
-
-    return children;
-  } catch (error) {
-    console.error("Session parsing error:", error);
-    localStorage.removeItem('user'); // Clear corrupted session
-    return <Navigate to="/login" replace />;
+    user = JSON.parse(localStorage.getItem('user'));
+  } catch {
+    localStorage.removeItem('user');
   }
+
+  const sessionVersion = localStorage.getItem('idamag_auth_version');
+  if (sessionVersion !== '2' || !user || !user.id || !['Admin', 'Staff'].includes(user.role)) {
+    localStorage.removeItem('user');
+    localStorage.removeItem('idamag_auth_version');
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+  if (requiresAdmin && user.role !== 'Admin') {
+    return <Navigate to="/" replace />;
+  }
+  return children;
 };
 
 export default ProtectedRoute;

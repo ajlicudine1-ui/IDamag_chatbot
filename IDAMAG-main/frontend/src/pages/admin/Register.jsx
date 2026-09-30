@@ -8,7 +8,6 @@ import {
   getDivisions
 } from '../../services/api';
 
-import logo from '../../assets/dalogo.png';
 import SearchableSelect from '../../components/common/SearchableSelect';
 
 
@@ -18,7 +17,7 @@ function Register() {
     firstName: '',
     lastName: '',
     suffix: '',
-    email: '',
+    username: '',
     password: '',
     confirmPassword: '',
     officeId: '',
@@ -421,6 +420,7 @@ function Register() {
         confirmPassword,
         ...submitData
       } = formData;
+      submitData.username = submitData.username.trim().toLowerCase();
 
 
       try {
@@ -456,7 +456,7 @@ function Register() {
           err.response?.data?.error ||
           (
             "Registration failed. " +
-            "Please make sure email is unique."
+            "Please choose a username that is not already in use."
           )
         );
 
@@ -507,67 +507,17 @@ function Register() {
             HEADER
             ===================================================== */}
 
-        <div
-          className="
-            text-center
-            mb-10
-          "
-        >
-
-          <div
-            className="
-              w-16
-              h-16
-              mx-auto
-              mb-4
-              flex
-              items-center
-              justify-center
-              transition-transform
-              hover:scale-105
-              duration-300
-            "
-          >
-
+        <div className="text-center mb-10">
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
             <img
-              src={logo}
-              alt="DA Logo"
-              className="
-                w-full
-                h-full
-                object-contain
-                drop-shadow-md
-              "
+              src="/I-DAMAG%20NAME%20LOGO.png"
+              alt="I-DAMAG Logo"
+              className="mx-auto h-16 w-auto object-contain"
             />
-
-          </div>
-
-
-          <h1
-            className="
-              text-2xl
-              font-extrabold
-              text-slate-900
-              tracking-tight
-            "
-          >
-            Create Account
           </h1>
-
-
-          <p
-            className="
-              text-sm
-              font-bold
-              text-slate-500
-              mt-1.5
-              uppercase
-              tracking-widest
-            "
-          >
-            Ilocos DAmag
+          <p className="text-sm font-bold text-slate-500 mt-1.5 uppercase tracking-widest">
+            Create Account
           </p>
-
         </div>
 
 
@@ -883,59 +833,26 @@ function Register() {
 
 
           {/* ===================================================
-              EMAIL
+              USERNAME
               =================================================== */}
 
-          <div
-            className="
-              md:col-span-12
-            "
-          >
-
-            <label
-              className="
-                block
-                text-xs
-                font-bold
-                text-slate-700
-                mb-1.5
-                pl-1
-              "
-            >
-              Email Address
+          <div className="md:col-span-12">
+            <label className="block text-xs font-bold text-slate-700 mb-1.5 pl-1">
+              Username
             </label>
-
             <input
-              type="email"
+              type="text"
               required
-              value={
-                formData.email
-              }
-              onChange={
-                handleInputChange(
-                  'email'
-                )
-              }
-              className="
-                w-full
-                px-4
-                py-3
-                bg-slate-50
-                border
-                border-slate-200
-                rounded-xl
-                text-sm
-                focus:ring-4
-                focus:ring-moss-600/10
-                focus:border-moss-600
-                transition-all
-                outline-none
-              "
-              placeholder="
-                juan.delacruz@da.gov.ph
-              "
+              minLength={3}
+              maxLength={40}
+              pattern="[A-Za-z0-9._-]+"
+              title="Use letters, numbers, dots, underscores, or hyphens."
+              autoComplete="username"
+              value={formData.username}
+              onChange={handleInputChange('username')}
+              className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-moss-600/10 focus:border-moss-600 transition-all outline-none"
+              placeholder="Choose a username"
             />
-
           </div>
 
 

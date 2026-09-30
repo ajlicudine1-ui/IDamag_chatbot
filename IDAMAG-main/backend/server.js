@@ -181,16 +181,20 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://192.168.56.1:5173",
   "https://i-damag-portal.vercel.app",
-   "https://idamag.vercel.app",  // add this line
+  "https://idamag.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
-app.use(
+app.use((req, res, next) =>
   cors({
     origin(origin, callback) {
       console.log("Request origin:", origin);
 
-      if (!origin || allowedOrigins.includes(origin)) {
+      // A frontend and API deployed by this Vercel project share one host.
+      // Preview deployment URLs change, so accept only this request's own host.
+      const host = req.get("host");
+      const sameDeployment = Boolean(host) && origin === `https://${host}`;
+      if (!origin || sameDeployment || allowedOrigins.includes(origin)) {
         return callback(null, true);
       }
 
@@ -215,7 +219,7 @@ app.use(
       "Authorization",
       "x-user-id",
     ],
-  })
+  })(req, res, next)
 );
 
 
@@ -288,10 +292,19 @@ const logActivity = async (
 
 app.post("/api/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const username = String(req.body.username || "")
+      .trim()
+      .toLowerCase();
+    const { password } = req.body;
+
+    if (!username || !password) {
+      return res.status(400).json({
+        message: "Username and password are required",
+      });
+    }
 
     const user = await User.findOne({
-      where: { email },
+      where: { username },
       include: ["office", "division"],
     });
 
@@ -299,13 +312,13 @@ app.post("/api/login", async (req, res) => {
       await logActivity(
         null,
         "LOGIN_ATTEMPT",
-        `Failed login attempt for email: ${email}`,
-        { email },
+        `Failed login attempt for username: ${username}`,
+        { username },
         req
       );
 
       return res.status(401).json({
-        message: "Invalid email or password",
+        message: "Invalid username or password",
       });
     }
 
@@ -327,13 +340,13 @@ app.post("/api/login", async (req, res) => {
       await logActivity(
         user.id,
         "LOGIN_FAIL",
-        `Incorrect password for ${user.email}`,
+        `Incorrect password for ${user.username}`,
         null,
         req
       );
 
       return res.status(401).json({
-        message: "Invalid email or password",
+        message: "Invalid username or password",
       });
     }
 
@@ -346,7 +359,7 @@ app.post("/api/login", async (req, res) => {
         await logActivity(
           user.id,
           "ACTIVATE_USER",
-          `Account activated on first login: ${user.email}`,
+          `Account activated on first login: ${user.username}`,
           null,
           req
         );
@@ -354,7 +367,7 @@ app.post("/api/login", async (req, res) => {
         await logActivity(
           user.id,
           "LOGIN_BLOCKED",
-          `Login blocked for inactive account: ${user.email}`,
+          `Login blocked for inactive account: ${user.username}`,
           null,
           req
         );
@@ -369,7 +382,7 @@ app.post("/api/login", async (req, res) => {
     await logActivity(
       user.id,
       "LOGIN_SUCCESS",
-      `User logged in: ${user.email}`,
+      `User logged in: ${user.username}`,
       null,
       req
     );
@@ -1759,6 +1772,44 @@ app.post(
         divisionId,
       } = req.body;
 
+      const email = typeof req.body.email === "string"
+        ? req.body.email.trim().toLowerCase()
+        : "";
+      req.body.email = email || null;
+
+      let username = typeof req.body.username === "string"
+        ? req.body.username.trim().toLowerCase()
+        : "";
+      const isAdminCreated = !req.body.password;
+
+      if (isAdminCreated && !username) {
+        const base = "staff"
+          .replace(/[^a-z0-9._-]/g, "")
+          .slice(0, 32) || "staff";
+        username = base;
+        let suffix = 2;
+        while (await User.findOne({ where: { username } })) {
+          username = `${base}${suffix}`;
+          suffix += 1;
+        }
+      }
+
+      if (!username || username.length < 3 || username.length > 40 || !/^[a-z0-9._-]+$/.test(username)) {
+        return res.status(400).json({
+          message: "Username must be 3 to 40 characters and use only letters, numbers, dots, underscores, or hyphens.",
+        });
+      }
+
+      const duplicateUsername = await User.findOne({ where: { username } });
+      if (duplicateUsername) {
+        return res.status(409).json({
+          message: "That username is already in use. Please choose another.",
+        });
+      }
+
+      req.body.username = username;
+      if (!req.body.email) delete req.body.email;
+
       const division =
         await Division.findByPk(
           divisionId
@@ -1780,9 +1831,6 @@ app.post(
       let plainPassword =
         req.body.password;
 
-      let isAdminCreated =
-        false;
-
       if (!plainPassword) {
         plainPassword =
           generateSecurePassword();
@@ -1790,8 +1838,6 @@ app.post(
         req.body.requiresPasswordChange =
           true;
 
-        isAdminCreated =
-          true;
       }
 
       const salt =
@@ -1814,22 +1860,25 @@ app.post(
         await logActivity(
           null,
           "ADD_USER",
-          `Admin added new user: ${user.email}`,
+          `Admin added new user: ${user.username}`,
           {
             userId: user.id,
           },
           req
         );
 
-        sendWelcomeEmail(
-          user.email,
-          plainPassword
-        );
+        if (user.email) {
+          await sendWelcomeEmail(
+            user.email,
+            plainPassword,
+            user.username
+          );
+        }
       } else {
         await logActivity(
           user.id,
           "REGISTRATION",
-          `New user self-registered: ${user.email}`,
+          `New user self-registered: ${user.username}`,
           null,
           req
         );
@@ -1839,13 +1888,21 @@ app.post(
         user.toJSON();
 
       delete userResponse.password;
+      if (isAdminCreated && !user.email) {
+        userResponse.temporaryPassword = plainPassword;
+      }
 
       res
         .status(201)
         .json(userResponse);
     } catch (error) {
+      if (error.name === "SequelizeUniqueConstraintError") {
+        return res.status(409).json({
+          message: "That username is already in use. Please choose another.",
+        });
+      }
       res.status(400).json({
-        error: error.message,
+        message: error.message,
       });
     }
   }

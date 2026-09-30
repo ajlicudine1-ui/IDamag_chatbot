@@ -1,17 +1,19 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { Eye, EyeOff } from 'lucide-react';
 
 import { login } from '../../services/api';
 import logo from '../../assets/dalogo.png';
+import { clearPendingClose } from '../../components/auth/sessionTimeout';
 
 function Login() {
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
 
   // Auto-dismiss error after 3 seconds
   useEffect(() => {
@@ -34,12 +36,23 @@ function Login() {
     setError('');
     
     try {
-      const res = await login({ email, password });
+      const res = await login({ username: username.trim(), password });
       // Store user info in localStorage for "session"
       localStorage.setItem('user', JSON.stringify(res.data));
-      navigate('/reports');
+      clearPendingClose();
+      localStorage.setItem('idamag_auth_version', '2');
+      const requested = location.state?.from;
+      const requestedPath = requested
+        ? `${requested.pathname}${requested.search || ''}${requested.hash || ''}`
+        : null;
+      const canVisitRequested = res.data.role === 'Admin' ||
+        (requestedPath && !['/reports', '/users', '/office-division-management', '/activity-logs', '/feedback-management'].some(
+          path => requestedPath === path || requestedPath.startsWith(`${path}/`)
+        ));
+      navigate(requestedPath && canVisitRequested ? requestedPath :
+        res.data.role === 'Admin' ? '/reports' : '/', { replace: true });
     } catch (err) {
-      setError(err.response?.data?.message || 'Login failed. Please check your credentials.');
+      setError(err.response?.data?.message || 'Login failed. Please check your username and password.');
     } finally {
       setIsLoading(false);
     }
@@ -52,7 +65,11 @@ function Login() {
           <div className="w-16 h-16 mx-auto mb-4 flex items-center justify-center transition-transform hover:scale-105 duration-300">
             <img src={logo} alt="DA Logo" className="w-full h-full object-contain drop-shadow-md" />
           </div>
-          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Ilocos DAmag</h1>
+          <img
+            src="/I-DAMAG%20NAME%20LOGO.png"
+            alt="I-DAMAG"
+            className="mx-auto mb-2 h-auto max-h-20 w-full max-w-[260px] object-contain"
+          />
           <p className="text-sm font-bold text-slate-500 mt-1.5 uppercase tracking-widest">Staff Portal</p>
         </div>
 
@@ -67,14 +84,14 @@ function Login() {
 
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
-            <label className="block text-xs font-bold text-slate-700 mb-1.5">Email Address</label>
+            <label className="block text-xs font-bold text-slate-700 mb-1.5">Username</label>
             <input 
-              type="email" 
+              type="text" 
               required
-              value={email}
-              onChange={handleInputChange(setEmail)}
+              value={username}
+              onChange={handleInputChange(setUsername)}
               className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:ring-4 focus:ring-moss-600/10 focus:border-moss-600 transition-all outline-none"
-              placeholder="name@da.gov.ph"
+              placeholder="Enter your username"
             />
           </div>
           <div>
