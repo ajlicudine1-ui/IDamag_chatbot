@@ -127,7 +127,7 @@ function renderChatMessage(text) {
 
 function App() {
   const location = useLocation();
-  const showChatbot = location.pathname !== "/login" && location.pathname !== "/register" && Boolean(localStorage.getItem("user"));
+  const showChatbot = location.pathname !== "/login" && location.pathname !== "/register" && Boolean(sessionStorage.getItem("user"));
   const [isChatbotOpen, setIsChatbotOpen] =
     useState(false);
 
@@ -190,6 +190,10 @@ function App() {
     useState(null);
   const [selectedReport, setSelectedReport] =
     useState(null);
+  const [selectedWorksheet, setSelectedWorksheet] =
+    useState("");
+  const [isPublicDashboardContext, setIsPublicDashboardContext] =
+    useState(false);
 
   // Selection loading and errors
   const [selectionLoading, setSelectionLoading] =
@@ -205,6 +209,175 @@ function App() {
   const [messages, setMessages] = useState([]);
   const [chatLoading, setChatLoading] =
     useState(false);
+
+  // Keep the floating chatbot scoped to the category and section selected
+  // on the public dashboard page.
+  useEffect(() => {
+    const applyPublicSelection = async (event, openSelectedReport) => {
+      const detail = event.detail || {};
+      const category = detail.category || {};
+      const section = detail.section || {};
+      const categoryId = Number(category.id);
+      const sectionId = Number(section.id);
+      const selectedReportId = openSelectedReport
+        ? Number(detail.report?.id)
+        : null;
+
+      if (
+        !Number.isInteger(categoryId) ||
+        categoryId <= 0 ||
+        !Number.isInteger(sectionId) ||
+        sectionId <= 0 ||
+        (openSelectedReport && (!Number.isInteger(selectedReportId) || selectedReportId <= 0))
+      ) {
+        return;
+      }
+
+      const normalizedCategory = {
+        id: categoryId,
+        code: category.acronym || category.code || "",
+        acronym: category.acronym || category.code || "",
+        name: category.name || "Selected Category",
+      };
+      const normalizedSection = {
+        id: sectionId,
+        code: section.acronym || section.code || "",
+        acronym: section.acronym || section.code || "",
+        name: section.name || "Selected Subcategory",
+        divisionId: categoryId,
+      };
+
+      // A category/subcategory click updates the chatbot's context in the
+      // background. Open the chat automatically only when a dashboard itself
+      // was selected.
+      if (openSelectedReport) {
+        setIsChatbotOpen(true);
+      }
+      setIsPublicDashboardContext(true);
+      setSelectedDivision(normalizedCategory);
+      setSelectedOffice(normalizedSection);
+      setSelectedReport(null);
+      setSelectedWorksheet("");
+      setOffices([normalizedSection]);
+      setReports([]);
+      setQuestion("");
+      setMessages([]);
+      setSelectionError("");
+      setSelectionLoading(true);
+
+      try {
+        const response = await fetch(
+          `${API_URL}/chatbot/reports?officeId=${encodeURIComponent(sectionId)}`,
+          {
+            method: "GET",
+            headers: { Accept: "application/json" },
+          }
+        );
+        const data = await readJsonResponse(response);
+
+        if (!response.ok) {
+          throw new Error(
+            data.message || data.error || "Unable to load dashboards for this category."
+          );
+        }
+
+        const connectedReports = (Array.isArray(data.reports) ? data.reports : [])
+          .filter((report) => Boolean(report.hasSheet))
+          .map((report) => ({
+            id: Number(report.id),
+            title: report.title || "Untitled Dashboard",
+            description: report.description || "",
+            hasSheet: true,
+            worksheets: Array.isArray(report.worksheets)
+              ? report.worksheets.map((worksheet) => ({
+                  id: Number(worksheet.id),
+                  name: worksheet.name || "Unnamed worksheet",
+                  gid: worksheet.gid || "",
+                }))
+              : [],
+          }));
+
+        setReports(connectedReports);
+
+        if (!openSelectedReport) {
+          if (connectedReports.length === 0) {
+            setMessages([
+              {
+                role: "bot",
+                text: `There are no dashboards with connected chatbot data in "${normalizedSection.name}" yet.`,
+              },
+            ]);
+          }
+          return;
+        }
+
+        const matchingReport = connectedReports.find(
+          (report) => report.id === selectedReportId
+        );
+
+        if (matchingReport) {
+          setSelectedReport(matchingReport);
+          setSelectedWorksheet("");
+          setMessages([
+            {
+              role: "bot",
+              text: matchingReport.worksheets.length
+                ? `Hello! You selected "${matchingReport.title}". Its available worksheets are listed below. Choose one to focus your questions, or leave "All worksheets" selected.`
+                : `Hello! You selected "${matchingReport.title}". Ask me a question about its connected Google Sheet data.`,
+            },
+          ]);
+        } else {
+          const publicReport = detail.report || {};
+          const reportWithoutChatData = {
+            id: selectedReportId,
+            title: publicReport.title || "Selected dashboard",
+            description: publicReport.description || "",
+            hasSheet: false,
+          };
+          setSelectedReport(reportWithoutChatData);
+          setSelectedWorksheet("");
+          setMessages([
+            {
+              role: "bot",
+              text: `"${reportWithoutChatData.title}" does not have chatbot worksheets connected in "${normalizedSection.name}" yet.`,
+            },
+          ]);
+        }
+      } catch (error) {
+        console.error("Unable to apply public dashboard selection:", error);
+        setSelectionError(
+          error.message || "Unable to load dashboards for this category."
+        );
+      } finally {
+        setSelectionLoading(false);
+      }
+    };
+
+    const handlePublicCategorySelected = (event) =>
+      applyPublicSelection(event, false);
+    const handlePublicDashboardSelected = (event) =>
+      applyPublicSelection(event, true);
+
+    window.addEventListener(
+      "idamag:public-category-selected",
+      handlePublicCategorySelected
+    );
+    window.addEventListener(
+      "idamag:public-dashboard-selected",
+      handlePublicDashboardSelected
+    );
+
+    return () => {
+      window.removeEventListener(
+        "idamag:public-category-selected",
+        handlePublicCategorySelected
+      );
+      window.removeEventListener(
+        "idamag:public-dashboard-selected",
+        handlePublicDashboardSelected
+      );
+    };
+  }, []);
 
   // Stop capturing audio when the chat closes or the selected report changes.
   useEffect(() => {
@@ -302,9 +475,11 @@ function App() {
   }, []);
 
   const resetChatbot = () => {
+    setIsPublicDashboardContext(false);
     setSelectedDivision(null);
     setSelectedOffice(null);
     setSelectedReport(null);
+    setSelectedWorksheet("");
 
     setOffices([]);
     setReports([]);
@@ -316,12 +491,36 @@ function App() {
     setChatLoading(false);
   };
 
+  // Clicking any React Router link to Home resets the chatbot's dashboard
+  // and worksheet context while leaving the floating chatbot open.
+  useEffect(() => {
+    const handleHomeClick = (event) => {
+      if (!(event.target instanceof Element)) return;
+
+      const homeLink = event.target.closest('a[href="/"]');
+      if (!homeLink) return;
+
+      resetChatbot();
+      setSelectionLoading(false);
+    };
+
+    document.addEventListener("click", handleHomeClick, true);
+    return () => {
+      document.removeEventListener("click", handleHomeClick, true);
+    };
+  }, []);
+
   /*
    * Step 1:
    * Load top-level divisions from the offices table.
    */
   useEffect(() => {
-    if (!isChatbotOpen || divisions.length > 0) {
+    if (
+      !isChatbotOpen ||
+      divisions.length > 0 ||
+      selectedDivision ||
+      selectedReport
+    ) {
       return;
     }
 
@@ -414,14 +613,14 @@ function App() {
     return () => {
       isMounted = false;
     };
-  }, [isChatbotOpen, divisions.length]);
+  }, [isChatbotOpen, divisions.length, selectedDivision, selectedReport]);
 
   /*
    * Step 2:
    * Load offices/sections after selecting a division.
    */
   useEffect(() => {
-    if (!selectedDivision?.id) {
+    if (!selectedDivision?.id || isPublicDashboardContext) {
       return;
     }
 
@@ -517,14 +716,14 @@ function App() {
     return () => {
       isMounted = false;
     };
-  }, [selectedDivision]);
+  }, [selectedDivision, isPublicDashboardContext]);
 
   /*
    * Step 3:
    * Load reports after selecting an office/section.
    */
   useEffect(() => {
-    if (!selectedOffice?.id) {
+    if (!selectedOffice?.id || isPublicDashboardContext) {
       return;
     }
 
@@ -581,6 +780,13 @@ function App() {
               hasSheet: Boolean(
                 report.hasSheet
               ),
+              worksheets: Array.isArray(report.worksheets)
+                ? report.worksheets.map((worksheet) => ({
+                    id: Number(worksheet.id),
+                    name: worksheet.name || "Unnamed worksheet",
+                    gid: worksheet.gid || "",
+                  }))
+                : [],
             }))
           );
         }
@@ -610,7 +816,7 @@ function App() {
     return () => {
       isMounted = false;
     };
-  }, [selectedOffice]);
+  }, [selectedOffice, isPublicDashboardContext]);
 
   const handleToggleChatbot = () => {
     setIsChatbotOpen((current) => !current);
@@ -618,14 +824,17 @@ function App() {
 
   const handleCloseChatbot = () => {
     setIsChatbotOpen(false);
+    setIsPublicDashboardContext(false);
     resetChatbot();
   };
 
   const handleSelectDivision = (division) => {
+    setIsPublicDashboardContext(false);
     setSelectedDivision(division);
 
     setSelectedOffice(null);
     setSelectedReport(null);
+    setSelectedWorksheet("");
 
     setOffices([]);
     setReports([]);
@@ -636,9 +845,11 @@ function App() {
   };
 
   const handleSelectOffice = (office) => {
+    setIsPublicDashboardContext(false);
     setSelectedOffice(office);
 
     setSelectedReport(null);
+    setSelectedWorksheet("");
     setReports([]);
 
     setMessages([]);
@@ -648,6 +859,7 @@ function App() {
 
   const handleSelectReport = (report) => {
     setSelectedReport(report);
+    setSelectedWorksheet("");
 
     setSelectionError("");
     setQuestion("");
@@ -666,7 +878,9 @@ function App() {
     setMessages([
       {
         role: "bot",
-        text: `Hello! You selected "${report.title}". Ask me a question about its connected Google Sheet data.`,
+        text: Array.isArray(report.worksheets) && report.worksheets.length
+          ? `Hello! You selected "${report.title}". Its available worksheets are listed below. Choose one to focus your questions, or leave "All worksheets" selected.`
+          : `Hello! You selected "${report.title}". Ask me a question about its connected Google Sheet data.`,
       },
     ]);
   };
@@ -680,6 +894,7 @@ function App() {
     }
 
     if (selectedOffice) {
+      setIsPublicDashboardContext(false);
       setSelectedOffice(null);
       setSelectedReport(null);
 
@@ -692,6 +907,7 @@ function App() {
     }
 
     if (selectedDivision) {
+      setIsPublicDashboardContext(false);
       setSelectedDivision(null);
       setSelectedOffice(null);
       setSelectedReport(null);
@@ -782,6 +998,8 @@ function App() {
             reportId: Number(
               selectedReport.id
             ),
+
+            worksheetName: selectedWorksheet || null,
 
             sessionId:
               getChatSessionId(),
@@ -999,7 +1217,7 @@ function App() {
         <Route
           path="/reports"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute requiresAdmin={true}>
               <StaffDashboard />
             </ProtectedRoute>
           }
@@ -1528,6 +1746,11 @@ function App() {
                                 ? "Google Sheet connected"
                                 : "No Google Sheet connected"}
                             </p>
+                            {report.hasSheet && report.worksheets?.length > 0 && (
+                              <p className="mt-1 text-[10px] leading-relaxed text-slate-500">
+                                Available worksheets: {report.worksheets.map((worksheet) => worksheet.name).join(", ")}
+                              </p>
+                            )}
                           </div>
 
                           <span className="shrink-0 text-xl text-[#7AA574] transition group-hover:translate-x-1 group-hover:text-[#235E26]">
@@ -1575,10 +1798,59 @@ function App() {
                     }`}
                   >
                     {selectedReport.hasSheet
-                      ? "Using the connected Google Sheet"
+                      ? selectedWorksheet
+                        ? `Worksheet: ${selectedWorksheet}`
+                        : "Using the connected Google Sheet"
                       : "No Google Sheet is connected"}
                   </p>
                 </div>
+
+                {selectedReport.hasSheet && Array.isArray(selectedReport.worksheets) && selectedReport.worksheets.length > 0 && (
+                  <div className="shrink-0 border-b border-[#D7E7D5] bg-white px-3 py-2.5">
+                    <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-[#235E26]">
+                      Available worksheets
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedWorksheet("");
+                          setMessages([{
+                            role: "bot",
+                            text: `All worksheets in "${selectedReport.title}" are available for your questions.`,
+                          }]);
+                        }}
+                        className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                          !selectedWorksheet
+                            ? "border-[#2F6F32] bg-[#2F6F32] text-white"
+                            : "border-[#B8D5B6] bg-white text-[#235E26] hover:bg-[#EAF4E8]"
+                        }`}
+                      >
+                        All worksheets
+                      </button>
+                      {selectedReport.worksheets.map((worksheet) => (
+                        <button
+                          key={worksheet.id || worksheet.name}
+                          type="button"
+                          onClick={() => {
+                            setSelectedWorksheet(worksheet.name);
+                            setMessages([{
+                              role: "bot",
+                              text: `Worksheet "${worksheet.name}" selected. Ask a question about this worksheet.`,
+                            }]);
+                          }}
+                          className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold transition ${
+                            selectedWorksheet === worksheet.name
+                              ? "border-[#2F6F32] bg-[#2F6F32] text-white"
+                              : "border-[#B8D5B6] bg-white text-[#235E26] hover:bg-[#EAF4E8]"
+                          }`}
+                        >
+                          {worksheet.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 {/* Messages */}
 

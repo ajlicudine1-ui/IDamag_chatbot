@@ -185,7 +185,7 @@ function StaffDashboard() {
 
   useEffect(() => {
     const storedUser = JSON.parse(
-      localStorage.getItem("user")
+      sessionStorage.getItem("user")
     );
 
     setUser(storedUser);
@@ -2421,4 +2421,4 @@ function StaffDashboard() {
   );
 }
 
-export default StaffDashboard;
+export default StaffDashboard; 

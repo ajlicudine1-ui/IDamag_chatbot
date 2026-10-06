@@ -4,6 +4,7 @@ import { Eye, EyeOff } from 'lucide-react';
 
 import { login } from '../../services/api';
 import logo from '../../assets/dalogo.png';
+import { RAED_REPORT_URL } from '../../components/auth/RaedRedirect';
 import { clearPendingClose } from '../../components/auth/sessionTimeout';
 
 function Login() {
@@ -37,10 +38,14 @@ function Login() {
     
     try {
       const res = await login({ username: username.trim(), password });
-      // Store user info in localStorage for "session"
-      localStorage.setItem('user', JSON.stringify(res.data));
+      // Store user info in this tab only
+      sessionStorage.setItem('user', JSON.stringify(res.data));
       clearPendingClose();
-      localStorage.setItem('idamag_auth_version', '2');
+      sessionStorage.setItem('idamag_auth_version', '2');
+      if (res.data.role === 'RAED') {
+        window.location.replace(RAED_REPORT_URL);
+        return;
+      }
       const requested = location.state?.from;
       const requestedPath = requested
         ? `${requested.pathname}${requested.search || ''}${requested.hash || ''}`

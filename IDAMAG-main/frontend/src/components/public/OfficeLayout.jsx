@@ -189,14 +189,52 @@ function OfficeLayout() {
     };
   }, [officeId]);
 
-  // Auto-collapse the sidebar when a report opens.
-  // Because this only runs when selectedReport changes, the user can
-  // still expand/collapse the sidebar manually while viewing the report.
+  // Auto-collapse the sidebar when a report opens and share the selected
+  // category/section with the floating chatbot.
   useEffect(() => {
-    if (selectedReport) {
-      setIsManualCollapsed(true);
-    }
-  }, [selectedReport]);
+    if (!selectedReport || !selectedDivision || !office) return;
+
+    setIsManualCollapsed(true);
+    window.dispatchEvent(
+      new CustomEvent("idamag:public-dashboard-selected", {
+        detail: {
+          category: {
+            id: office.id,
+            name: office.name,
+            acronym: office.acronym || "",
+          },
+          section: {
+            id: selectedDivision.id,
+            name: selectedDivision.name,
+            acronym: selectedDivision.acronym || "",
+          },
+          report: selectedReport,
+        },
+      })
+    );
+  }, [selectedReport, selectedDivision, office]);
+
+  const handleSelectDivision = (division) => {
+    setSelectedDivision(division);
+    if (!office) return;
+
+    window.dispatchEvent(
+      new CustomEvent("idamag:public-category-selected", {
+        detail: {
+          category: {
+            id: office.id,
+            name: office.name,
+            acronym: office.acronym || "",
+          },
+          section: {
+            id: division.id,
+            name: division.name,
+            acronym: division.acronym || "",
+          },
+        },
+      })
+    );
+  };
 
   // Load reports when the selected division changes
   useEffect(() => {
@@ -294,7 +332,7 @@ function OfficeLayout() {
           setIsManualCollapsed={setIsManualCollapsed}
           divisions={divisions}
           selectedDivision={selectedDivision}
-          setSelectedDivision={setSelectedDivision}
+          setSelectedDivision={handleSelectDivision}
         />
 
         <main className="flex-grow overflow-y-auto bg-slate-50 relative h-full">
